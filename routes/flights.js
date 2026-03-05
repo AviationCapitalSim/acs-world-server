@@ -39,8 +39,13 @@ router.get("/flights", async (req, res) => {
         status,
         updated_at
       FROM global_flights
-      WHERE latitude BETWEEN $1 AND $2
-      AND longitude BETWEEN $3 AND $4
+      WHERE
+      (
+       latitude BETWEEN $1 AND $2
+       AND longitude BETWEEN $3 AND $4
+      )
+      OR latitude IS NULL
+      OR longitude IS NULL
     `;
 
     const params = [minLat, maxLat, minLng, maxLng];
