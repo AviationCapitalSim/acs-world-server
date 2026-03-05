@@ -18,14 +18,24 @@ router.get("/flights", async (req, res) => {
 
   let sql = `
     SELECT
-      flight_id, airline_id, flight_number, aircraft_type,
-      origin, destination,
-      latitude, longitude, altitude, heading, ground_speed,
-      dep_time, arr_time, status, updated_at
+      flight_id,
+      airline_id,
+      flight_number,
+      aircraft_type,
+      origin,
+      destination,
+      latitude,
+      longitude,
+      speed,
+      dep_time,
+      arr_time,
+      status,
+      updated_at
     FROM global_flights
     WHERE latitude BETWEEN $1 AND $2
       AND longitude BETWEEN $3 AND $4
   `;
+
   const params = [minLat, maxLat, minLng, maxLng];
 
   if (!all && airlinesParam) {
@@ -36,18 +46,20 @@ router.get("/flights", async (req, res) => {
     }
   }
 
-  sql += ` ORDER BY updated_at DESC LIMIT 5000;`;
+  sql += ` ORDER BY updated_at DESC LIMIT 5000`;
 
   const { rows } = await pool.query(sql, params);
 
-  return res.json({
+  res.json({
     server_time: Date.now(),
     count: rows.length,
     flights: rows
   });
 });
 
+
 router.post("/flight/departure", async (req, res) => {
+
   const b = req.body || {};
   const now = Date.now();
 
@@ -55,18 +67,26 @@ router.post("/flight/departure", async (req, res) => {
     return res.status(400).json({ status: "error", msg: "missing fields" });
   }
 
-  await pool.query(
-    `
+  await pool.query(`
     INSERT INTO global_flights (
-      flight_id, airline_id, flight_number, aircraft_type,
-      origin, destination,
-      latitude, longitude, altitude, heading, ground_speed,
-      dep_time, arr_time, status, updated_at
+      flight_id,
+      airline_id,
+      flight_number,
+      aircraft_type,
+      origin,
+      destination,
+      latitude,
+      longitude,
+      speed,
+      dep_time,
+      arr_time,
+      status,
+      updated_at
     ) VALUES (
       $1,$2,$3,$4,
       $5,$6,
-      $7,$8,$9,$10,$11,
-      $12,$13,$14,$15
+      $7,$8,$9,
+      $10,$11,$12,$13
     )
     ON CONFLICT (flight_id) DO UPDATE SET
       airline_id=EXCLUDED.airline_id,
@@ -76,44 +96,47 @@ router.post("/flight/departure", async (req, res) => {
       destination=EXCLUDED.destination,
       latitude=EXCLUDED.latitude,
       longitude=EXCLUDED.longitude,
-      altitude=EXCLUDED.altitude,
-      heading=EXCLUDED.heading,
-      ground_speed=EXCLUDED.ground_speed,
+      speed=EXCLUDED.speed,
       dep_time=EXCLUDED.dep_time,
       arr_time=EXCLUDED.arr_time,
       status=EXCLUDED.status,
       updated_at=EXCLUDED.updated_at
-    `,
-    [
-      b.flight_id,
-      b.airline_id,
-      b.flight_number || null,
-      b.aircraft_type || null,
-      b.origin,
-      b.destination,
-      Number.isFinite(Number(b.latitude)) ? Number(b.latitude) : null,
-      Number.isFinite(Number(b.longitude)) ? Number(b.longitude) : null,
-      Number.isFinite(Number(b.altitude)) ? Number(b.altitude) : null,
-      Number.isFinite(Number(b.heading)) ? Number(b.heading) : null,
-      Number.isFinite(Number(b.ground_speed)) ? Number(b.ground_speed) : null,
-      Number.isFinite(Number(b.dep_time)) ? Number(b.dep_time) : null,
-      Number.isFinite(Number(b.arr_time)) ? Number(b.arr_time) : null,
-      Number.isFinite(Number(b.status)) ? Number(b.status) : 1,
-      now
-    ]
-  );
+  `,[
+    b.flight_id,
+    b.airline_id,
+    b.flight_number || null,
+    b.aircraft_type || null,
+    b.origin,
+    b.destination,
+    Number(b.latitude) || null,
+    Number(b.longitude) || null,
+    Number(b.speed) || null,
+    Number(b.dep_time) || null,
+    Number(b.arr_time) || null,
+    Number(b.status) || 1,
+    now
+  ]);
 
-  return res.json({ status: "ok", server_time: now });
+  res.json({ status:"ok", server_time:now });
+
 });
 
-router.post("/flight/arrival", async (req, res) => {
+
+router.post("/flight/arrival", async (req,res)=>{
+
   const { flight_id } = req.body || {};
-  if (!flight_id) {
-    return res.status(400).json({ status: "error", msg: "flight_id required" });
+
+  if(!flight_id){
+    return res.status(400).json({ status:"error", msg:"flight_id required" });
   }
 
-  await pool.query(`DELETE FROM global_flights WHERE flight_id=$1`, [flight_id]);
-  return res.json({ status: "ok", server_time: Date.now() });
+  await pool.query(
+    `DELETE FROM global_flights WHERE flight_id=$1`,
+    [flight_id]
+  );
+
+  res.json({ status:"ok", server_time:Date.now() });
+
 });
 
 export default router;
