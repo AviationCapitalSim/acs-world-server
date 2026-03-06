@@ -6,6 +6,7 @@ import worldRoutes from "./routes/world.js";
 
 dotenv.config();
 
+
 const app = express();
 
 app.set("trust proxy", 1);
