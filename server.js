@@ -22,6 +22,7 @@ app.get("/health", (req, res) => {
 });
 
 app.use("/v1", flightRoutes);
+app.use("/v1", worldRoutes);
 
 const PORT = process.env.PORT || 3000;
 
