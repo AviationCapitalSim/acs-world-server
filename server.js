@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import flightRoutes from "./routes/flights.js";
+import worldRoutes from "./routes/world.js";
 
 dotenv.config();
 
