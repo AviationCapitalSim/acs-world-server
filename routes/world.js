@@ -1,6 +1,7 @@
-const express = require("express");
+import express from "express";
+import pool from "../db/pool.js";
+
 const router = express.Router();
-const pool = require("../db/pool");
 
 /* ============================================================
    GET WORLD STATE
@@ -35,4 +36,4 @@ router.get("/world", async (req, res) => {
 
 });
 
-module.exports = router;
+export default router;
