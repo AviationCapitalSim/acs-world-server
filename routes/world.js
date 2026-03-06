@@ -1,11 +1,10 @@
 import express from "express";
-import pool from "../db/pool.js";
+import { pool } from "../db/pool.js";
 
 const router = express.Router();
 
 /* ============================================================
    GET WORLD STATE
-   Returns the single global ACS world
    ============================================================ */
 
 router.get("/world", async (req, res) => {
