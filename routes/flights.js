@@ -23,29 +23,29 @@ router.get("/flights", async (req, res) => {
     const airlinesParam = (req.query.airlines || "").trim();
     const all = String(req.query.all || "") === "1";
 
-    let sql = `
-SELECT
-  flight_id,
-  airline_id,
-  flight_number,
-  aircraft_type,
-  origin,
-  destination,
-  latitude,
-  longitude,
-  speed,
-  dep_time,
-  arr_time,
-  status,
-  updated_at
-FROM global_flights
-WHERE
-  latitude IS NOT NULL
-  AND longitude IS NOT NULL
-  AND latitude BETWEEN $1 AND $2
-  AND longitude BETWEEN $3 AND $4
+let sql = `
+  SELECT
+    flight_id,
+    airline_id,
+    flight_number,
+    aircraft_type,
+    origin,
+    destination,
+    latitude,
+    longitude,
+    speed,
+    dep_time,
+    arr_time,
+    status,
+    updated_at
+  FROM global_flights
+  WHERE
+    latitude IS NOT NULL
+    AND longitude IS NOT NULL
+    AND latitude BETWEEN $1 AND $2
+    AND longitude BETWEEN $3 AND $4
 `;
-
+    
 sql += ` ORDER BY updated_at DESC LIMIT 5000`;
     
     const params = [minLat, maxLat, minLng, maxLng];
