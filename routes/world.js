@@ -3,6 +3,8 @@ import { pool } from "../db/pool.js";
 
 const router = express.Router();
 
+export default router;
+
 /* ============================================================
    GET WORLD STATE
    ============================================================ */
@@ -73,8 +75,3 @@ router.post("/world", async (req, res) => {
 
 });
 
-/* ============================================================
-   EXPORT ROUTER
-   ============================================================ */
-
-export default router;
