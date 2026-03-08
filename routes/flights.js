@@ -24,29 +24,27 @@ router.get("/flights", async (req, res) => {
     const all = String(req.query.all || "") === "1";
 
     let sql = `
-      SELECT
-        flight_id,
-        airline_id,
-        flight_number,
-        aircraft_type,
-        origin,
-        destination,
-        latitude,
-        longitude,
-        speed,
-        dep_time,
-        arr_time,
-        status,
-        updated_at
-      FROM global_flights
-      WHERE
-      (
-       latitude BETWEEN $1 AND $2
-       AND longitude BETWEEN $3 AND $4
-      )
-      OR latitude IS NULL
-      OR longitude IS NULL
-    `;
+SELECT
+  flight_id,
+  airline_id,
+  flight_number,
+  aircraft_type,
+  origin,
+  destination,
+  latitude,
+  longitude,
+  speed,
+  dep_time,
+  arr_time,
+  status,
+  updated_at
+FROM global_flights
+WHERE
+  latitude IS NOT NULL
+  AND longitude IS NOT NULL
+  AND latitude BETWEEN $1 AND $2
+  AND longitude BETWEEN $3 AND $4
+`;
 
     const params = [minLat, maxLat, minLng, maxLng];
 
@@ -138,9 +136,9 @@ router.post("/flight/departure", async (req, res) => {
       b.aircraft_type || null,
       b.origin,
       b.destination,
-      Number(b.latitude) || null,
-      Number(b.longitude) || null,
-      Number(b.speed) || null,
+      Number.isFinite(Number(b.latitude)) ? Number(b.latitude) : null,
+      Number.isFinite(Number(b.longitude)) ? Number(b.longitude) : null,
+      Number.isFinite(Number(b.speed)) ? Number(b.speed) : null,
       Number(b.dep_time) || null,
       Number(b.arr_time) || null,
       Number(b.status) || 1,
