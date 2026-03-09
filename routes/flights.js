@@ -50,8 +50,6 @@ LIMIT 5000
         
     const params = [minLat, maxLat, minLng, maxLng];
 
-    sql += ` ORDER BY updated_at DESC LIMIT 5000`;
-
     const { rows } = await pool.query(sql, params);
 
     res.json({
