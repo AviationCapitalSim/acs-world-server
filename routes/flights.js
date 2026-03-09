@@ -3,6 +3,18 @@ import { pool } from "../db/pool.js";
 
 const router = express.Router();
 
+// =============================================
+// TEMP RESET GLOBAL FLIGHTS (REMOVE AFTER USE)
+// =============================================
+
+(async () => {
+  try {
+    await pool.query("TRUNCATE TABLE global_flights");
+    console.log("✈️ GLOBAL_FLIGHTS TABLE RESET");
+  } catch (err) {
+    console.error("RESET ERROR:", err);
+  }
+})();
 
 // =============================================
 // GET FLIGHTS
