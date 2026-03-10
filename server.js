@@ -3,6 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import flightRoutes from "./routes/flights.js";
 import worldRoutes from "./routes/world.js";
+import systemRoutes from "./routes/system.js";
 
 dotenv.config();
 
@@ -27,6 +28,7 @@ app.get("/health", (req, res) => {
 
 app.use("/v1", flightRoutes);
 app.use("/v1", worldRoutes);
+app.use("/v1", systemRoutes);
 
 const PORT = process.env.PORT || 3000;
 
