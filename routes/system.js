@@ -13,11 +13,16 @@ router.get("/system/state", async (req, res) => {
 
     const result = await pool.query(`
       SELECT
-        current_season,
-        world_status,
-        game_year,
-        reset_flag,
-        maintenance_mode
+  current_season,
+  world_status,
+  game_year,
+  reset_flag,
+  maintenance_mode,
+  real_start,
+  frozen_sim_time,
+  updated_at,
+  last_reset_at,
+  world_version
       FROM system_state
       LIMIT 1
     `);
