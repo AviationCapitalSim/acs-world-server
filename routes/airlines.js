@@ -1,5 +1,6 @@
 import express from "express";
 import { pool } from "../db/pool.js";
+import crypto from "crypto";
 
 const router = express.Router();
 
