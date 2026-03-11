@@ -5,7 +5,7 @@ const router = express.Router();
 
 /* ============================================================
    CREATE AIRLINE
-   ============================================================ */
+============================================================ */
 
 router.post("/airlines/create", async (req, res) => {
 
@@ -22,40 +22,44 @@ router.post("/airlines/create", async (req, res) => {
 
   try {
 
-   const result = await pool.query(`
-  INSERT INTO airlines
-  (
-    user_id,
-    airline_name,
-    iata,
-    icao,
-    country,
-    region,
-    business_model,
-    operation_mode
-  )
-  VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-  RETURNING airline_id
-`,
-[
-  user_id,
-  airline_name,
-  airline_iata,
-  airline_icao,
-  country,
-  region,
-  business_model,
-  operation_mode
-]);
+    const insert = await pool.query(
+      `
+      INSERT INTO airlines
+      (
+        user_id,
+        airline_name,
+        iata,
+        icao,
+        country,
+        region,
+        business_model,
+        operation_mode
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+      RETURNING airline_id
+      `,
+      [
+        user_id,
+        airline_name,
+        airline_iata,
+        airline_icao,
+        country,
+        region,
+        business_model,
+        operation_mode
+      ]
+    );
 
-const airlineId = result.rows[0].airline_id;
-     
-    await pool.query(`
+    const airlineId = insert.rows[0].airline_id;
+
+    await pool.query(
+      `
       UPDATE users
       SET airline_id = $1
       WHERE user_id = $2
-    `,
-   [airlineId, user_id]
+      `,
+      [airlineId, user_id]
+    );
 
     res.json({
       ok: true,
@@ -68,7 +72,7 @@ const airlineId = result.rows[0].airline_id;
 
     res.status(500).json({
       ok: false,
-      error: err.message || "CREATE_AIRLINE_FAILED"
+      error: err.message
     });
 
   }
