@@ -55,7 +55,7 @@ const airlineId = result.rows[0].airline_id;
       SET airline_id = $1
       WHERE user_id = $2
     `,
-    [String(airlineId), user_id]);
+   [airlineId, user_id]
 
     res.json({
       ok: true,
