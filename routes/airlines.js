@@ -79,21 +79,4 @@ router.post("/airlines/create", async (req, res) => {
 
 });
 
-router.get("/admin/drop-airlines", async (req, res) => {
-
-  try {
-
-    await pool.query(`DROP TABLE airlines`);
-
-    res.json({ ok: true, message: "airlines table deleted" });
-
-  } catch (err) {
-
-    console.error(err);
-    res.json({ ok: false, error: err.message });
-
-  }
-
-});
-
 export default router;
