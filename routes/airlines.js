@@ -10,7 +10,6 @@ const router = express.Router();
 router.post("/airlines/create", async (req, res) => {
 
   const body = req.body;
-
   const userUUID = body.user_id;
 
   try {
@@ -43,13 +42,13 @@ router.post("/airlines/create", async (req, res) => {
       ]
     );
 
-    const airlineId = insert.rows[0].airline_id.toString();
+    const airlineId = insertAirline.rows[0].airline_id;
 
     console.log("DEBUG CREATE AIRLINE", {
-    airlineId,
-    user_id
-   });   
-     
+      airlineId,
+      userUUID
+    });
+
     await pool.query(
       `
       UPDATE users
