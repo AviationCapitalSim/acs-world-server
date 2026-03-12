@@ -43,8 +43,13 @@ router.post("/airlines/create", async (req, res) => {
       ]
     );
 
-    const airlineId = insertAirline.rows[0].airline_id;
+    const airlineId = insert.rows[0].airline_id.toString();
 
+    console.log("DEBUG CREATE AIRLINE", {
+    airlineId,
+    user_id
+   });   
+     
     await pool.query(
       `
       UPDATE users
