@@ -11,13 +11,14 @@ const router = express.Router();
 router.post("/auth/register", async (req, res) => {
 
   const {
-    fullName,
-    email,
-    country,
-    dob,
-    passwordHash,
-    termsAccepted
-  } = req.body;
+  fullName,
+  email,
+  country,
+  dob,
+  age,
+  passwordHash,
+  termsAccepted
+} = req.body;
 
   try {
 
@@ -36,15 +37,26 @@ router.post("/auth/register", async (req, res) => {
     const userId = crypto.randomUUID();
 
     // crear usuario
-    await pool.query(`
-      INSERT INTO users
-      (user_id, full_name, email, country, dob, created_at, terms_accepted)
-      VALUES ($1,$2,$3,$4,$5,NOW(),$6)
-    `,
-    [userId, fullName, email, country, dob, termsAccepted]
-    );
+     
+   await pool.query(`
+  INSERT INTO users
+  (user_id, full_name, email, country, dob, age, created_at, terms_accepted)
+  VALUES ($1,$2,$3,$4,$5,$6,NOW(),$7)
+`,
+[userId, fullName, email, country, dob, age, termsAccepted]
+);
 
+// registrar aceptación de términos
+     
+await pool.query(`
+  INSERT INTO terms_cond
+  (user_id, accepted_at, version)
+  VALUES ($1, NOW(), '1.0')
+`,
+[userId]);
+     
     // guardar auth
+     
     await pool.query(`
       INSERT INTO users_auth
       (user_id, email, password_hash)
