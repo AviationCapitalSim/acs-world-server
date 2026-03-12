@@ -9,20 +9,13 @@ const router = express.Router();
 
 router.post("/airlines/create", async (req, res) => {
 
-  const {
-    user_id,
-    airline_name,
-    airline_iata,
-    airline_icao,
-    country,
-    region,
-    business_model,
-    operation_mode
-  } = req.body;
+  const body = req.body;
+
+  const userUUID = body.user_id;
 
   try {
 
-    const insert = await pool.query(
+    const insertAirline = await pool.query(
       `
       INSERT INTO airlines
       (
@@ -39,18 +32,18 @@ router.post("/airlines/create", async (req, res) => {
       RETURNING airline_id
       `,
       [
-        user_id,
-        airline_name,
-        airline_iata,
-        airline_icao,
-        country,
-        region,
-        business_model,
-        operation_mode
+        userUUID,
+        body.airline_name,
+        body.airline_iata,
+        body.airline_icao,
+        body.country,
+        body.region,
+        body.business_model,
+        body.operation_mode
       ]
     );
 
-    const airlineId = insert.rows[0].airline_id;
+    const airlineId = insertAirline.rows[0].airline_id;
 
     await pool.query(
       `
@@ -58,7 +51,10 @@ router.post("/airlines/create", async (req, res) => {
       SET airline_id = $1
       WHERE user_id = $2
       `,
-      [airlineId, user_id]
+      [
+        airlineId,
+        userUUID
+      ]
     );
 
     res.json({
