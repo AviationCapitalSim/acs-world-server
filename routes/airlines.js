@@ -14,6 +14,25 @@ router.post("/airlines/create", async (req, res) => {
 
   try {
 
+    // 1️⃣ Check if user already has an airline
+    const existing = await pool.query(
+      `
+      SELECT airline_id
+      FROM airlines
+      WHERE user_id = $1
+      LIMIT 1
+      `,
+      [userUUID]
+    );
+
+    if (existing.rows.length > 0) {
+      return res.status(400).json({
+        ok: false,
+        error: "USER_ALREADY_HAS_AIRLINE"
+      });
+    }
+
+    // 2️⃣ Create airline
     const insertAirline = await pool.query(
       `
       INSERT INTO airlines
@@ -48,18 +67,6 @@ router.post("/airlines/create", async (req, res) => {
       airlineId,
       userUUID
     });
-
-    await pool.query(
-      `
-      UPDATE users
-      SET airline_id = $1
-      WHERE user_id = $2
-      `,
-      [
-        airlineId,
-        userUUID
-      ]
-    );
 
     res.json({
       ok: true,
