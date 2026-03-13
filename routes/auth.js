@@ -150,21 +150,29 @@ router.post("/auth/login", async (req, res) => {
 
 router.post("/users/set-base", async (req, res) => {
 
-  const { user_id, base_icao } = req.body;
+ const { user_id, base_icao } = req.body;
 
+if (!user_id || !base_icao) {
+  return res.status(400).json({
+    status: "missing_data"
+  });
+}
+   
   try {
 
-    await pool.query(
+    const result = await pool.query(
       `
       UPDATE users
       SET base_icao = $1
       WHERE user_id = $2
+      RETURNING base_icao
       `,
       [base_icao, user_id]
     );
 
     res.json({
-      ok: true
+      status: "success",
+      base: result.rows[0]?.base_icao || null
     });
 
   } catch (err) {
@@ -172,12 +180,11 @@ router.post("/users/set-base", async (req, res) => {
     console.error("SET BASE ERROR:", err);
 
     res.status(500).json({
-      ok: false
+      status: "error"
     });
 
   }
 
 });
-       
 
 export default router;
