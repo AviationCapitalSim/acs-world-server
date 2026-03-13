@@ -144,4 +144,40 @@ router.post("/auth/login", async (req, res) => {
 
 });
 
+/* ============================================================
+   SET USER BASE
+   ============================================================ */
+
+router.post("/users/set-base", async (req, res) => {
+
+  const { user_id, base_icao } = req.body;
+
+  try {
+
+    await pool.query(
+      `
+      UPDATE users
+      SET base_icao = $1
+      WHERE user_id = $2
+      `,
+      [base_icao, user_id]
+    );
+
+    res.json({
+      ok: true
+    });
+
+  } catch (err) {
+
+    console.error("SET BASE ERROR:", err);
+
+    res.status(500).json({
+      ok: false
+    });
+
+  }
+
+});
+       
+
 export default router;
