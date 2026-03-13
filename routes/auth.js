@@ -50,8 +50,8 @@ router.post("/auth/register", async (req, res) => {
      
 await pool.query(`
   INSERT INTO terms_cond
-  (email, version, user_agent, source, accepted_at, user_id)
-  VALUES ($1, '1.0', $2, 'register', NOW(), $3)
+  (timestamp, email, version, user_agent, source, user_id, accepted_at)
+  VALUES (NOW(), $1, '1.0', $2, 'register', $3, NOW())
 `,
 [
   email,
