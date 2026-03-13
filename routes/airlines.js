@@ -63,10 +63,21 @@ router.post("/airlines/create", async (req, res) => {
 
     const airlineId = insertAirline.rows[0].airline_id;
 
-    console.log("DEBUG CREATE AIRLINE", {
-      airlineId,
-      userUUID
-    });
+// 3️⃣ Link airline to user
+await pool.query(
+`
+UPDATE users
+SET airline_id = $1
+WHERE user_id = $2
+`,
+[airlineId, userUUID]
+);
+
+console.log("DEBUG CREATE AIRLINE", {
+  airlineId,
+  userUUID,
+  linked: true
+});
 
     res.json({
       ok: true,
