@@ -50,10 +50,14 @@ router.post("/auth/register", async (req, res) => {
      
 await pool.query(`
   INSERT INTO terms_cond
-  (user_id, accepted_at, version)
-  VALUES ($1, NOW(), '1.0')
+  (email, version, user_agent, source, accepted_at, user_id)
+  VALUES ($1, '1.0', $2, 'register', NOW(), $3)
 `,
-[userId]);
+[
+  email,
+  req.headers["user-agent"] || "",
+  userId
+]);
      
     // guardar auth
      
