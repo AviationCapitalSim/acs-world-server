@@ -179,5 +179,81 @@ router.post("/users/set-base", async (req, res) => {
 
 });
        
+/* ============================================================
+   GET USER PROFILE (DASHBOARD SOURCE)
+   ============================================================ */
+
+router.get("/users/profile/:user_id", async (req, res) => {
+
+  const { user_id } = req.params;
+
+  try {
+
+    /* --------------------------------------------------------
+       USER
+    -------------------------------------------------------- */
+
+    const userResult = await pool.query(`
+      SELECT
+        user_id,
+        full_name,
+        email,
+        country,
+        airline_id,
+        base_icao
+      FROM users
+      WHERE user_id = $1
+    `, [user_id]);
+
+    if (!userResult.rows.length) {
+      return res.json({
+        status: "USER_NOT_FOUND"
+      });
+    }
+
+    const user = userResult.rows[0];
+
+    /* --------------------------------------------------------
+       AIRLINE
+    -------------------------------------------------------- */
+
+    let airline = null;
+
+    if (user.airline_id) {
+
+      const airlineResult = await pool.query(`
+        SELECT
+          airline_id,
+          airline_name,
+          country
+        FROM airlines
+        WHERE airline_id = $1
+      `, [user.airline_id]);
+
+      airline = airlineResult.rows[0] || null;
+
+    }
+
+    /* --------------------------------------------------------
+       RESPONSE
+    -------------------------------------------------------- */
+
+    res.json({
+      status: "success",
+      user,
+      airline
+    });
+
+  } catch (err) {
+
+    console.error("PROFILE ERROR:", err);
+
+    res.status(500).json({
+      status: "ERROR"
+    });
+
+  }
+
+});
 
 export default router;
