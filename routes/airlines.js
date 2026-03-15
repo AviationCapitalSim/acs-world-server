@@ -1,3 +1,12 @@
+import express from "express";
+import { pool } from "../db/pool.js";
+
+const router = express.Router();
+
+/* ============================================================
+   CREATE AIRLINE
+============================================================ */
+
 router.post("/airlines/create", async (req, res) => {
 
   const body = req.body;
