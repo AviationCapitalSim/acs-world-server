@@ -6,6 +6,7 @@ import worldRoutes from "./routes/world.js";
 import systemRoutes from "./routes/system.js";
 import authRoutes from "./routes/auth.js";
 import airlineRoutes from "./routes/airlines.js";
+import hrRoutes from "./routes/hr.js";
 
 dotenv.config();
 
@@ -33,6 +34,7 @@ app.use("/v1", worldRoutes);
 app.use("/v1", systemRoutes);
 app.use("/v1", authRoutes);
 app.use("/v1", airlineRoutes);
+app.use("/v1", hrRoutes);
 
 const PORT = process.env.PORT || 3000;
 
