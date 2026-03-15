@@ -188,7 +188,7 @@ router.patch("/hr/staff", async (req, res) => {
       UPDATE hr_departments
       SET
         staff = $3,
-        payroll = staff * salary,
+        payroll = $3 * salary,
         updated_at = NOW()
       WHERE airline_id = $1
       AND dept_id = $2
@@ -196,9 +196,7 @@ router.patch("/hr/staff", async (req, res) => {
       [airline_id, dept_id, staff]
     );
 
-    res.json({
-      ok: true
-    });
+    res.json({ ok: true });
 
   } catch (err) {
 
