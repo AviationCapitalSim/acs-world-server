@@ -1,21 +1,19 @@
-import express from "express";
-import { pool } from "../db/pool.js";
-
-const router = express.Router();
-
-/* ============================================================
-   CREATE AIRLINE
-============================================================ */
-
 router.post("/airlines/create", async (req, res) => {
 
   const body = req.body;
   const userUUID = body.user_id;
 
+  const client = await pool.connect();
+
   try {
 
-    // 1️⃣ Check if user already has an airline
-    const existing = await pool.query(
+    await client.query("BEGIN");
+
+    /* ============================================================
+       1️⃣ Check if user already has an airline
+    ============================================================ */
+
+    const existing = await client.query(
       `
       SELECT airline_id
       FROM airlines
@@ -26,14 +24,21 @@ router.post("/airlines/create", async (req, res) => {
     );
 
     if (existing.rows.length > 0) {
+
+      await client.query("ROLLBACK");
+
       return res.status(400).json({
         ok: false,
         error: "USER_ALREADY_HAS_AIRLINE"
       });
+
     }
 
-    // 2️⃣ Create airline
-    const insertAirline = await pool.query(
+    /* ============================================================
+       2️⃣ Create airline
+    ============================================================ */
+
+    const insertAirline = await client.query(
       `
       INSERT INTO airlines
       (
@@ -63,21 +68,44 @@ router.post("/airlines/create", async (req, res) => {
 
     const airlineId = insertAirline.rows[0].airline_id;
 
-// 3️⃣ Link airline to user
-await pool.query(
-`
-UPDATE users
-SET airline_id = $1
-WHERE user_id = $2
-`,
-[airlineId, userUUID]
-);
+    /* ============================================================
+       3️⃣ Link airline to user
+    ============================================================ */
 
-console.log("DEBUG CREATE AIRLINE", {
-  airlineId,
-  userUUID,
-  linked: true
-});
+    await client.query(
+      `
+      UPDATE users
+      SET airline_id = $1
+      WHERE user_id = $2
+      `,
+      [airlineId, userUUID]
+    );
+
+    /* ============================================================
+       4️⃣ Initialize HR Departments
+    ============================================================ */
+
+    await client.query(
+      `
+      SELECT init_airline_hr($1)
+      `,
+      [airlineId]
+    );
+
+    console.log("HR INITIALIZED FOR AIRLINE", airlineId);
+
+    /* ============================================================
+       COMMIT
+    ============================================================ */
+
+    await client.query("COMMIT");
+
+    console.log("DEBUG CREATE AIRLINE", {
+      airlineId,
+      userUUID,
+      linked: true,
+      hrInitialized: true
+    });
 
     res.json({
       ok: true,
@@ -86,6 +114,8 @@ console.log("DEBUG CREATE AIRLINE", {
 
   } catch (err) {
 
+    await client.query("ROLLBACK");
+
     console.error("CREATE AIRLINE ERROR:", err);
 
     res.status(500).json({
@@ -93,8 +123,10 @@ console.log("DEBUG CREATE AIRLINE", {
       error: err.message
     });
 
+  } finally {
+
+    client.release();
+
   }
 
 });
-
-export default router;
