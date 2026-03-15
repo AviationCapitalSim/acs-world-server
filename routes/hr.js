@@ -171,4 +171,46 @@ router.get("/hr/departments/:airlineId", async (req, res) => {
 
 });
 
+/* ============================================================
+   PATCH HR STAFF (PERSIST STAFF CHANGES)
+   ------------------------------------------------------------
+   Guarda cambios de staff en Railway
+   ============================================================ */
+
+router.patch("/hr/staff", async (req, res) => {
+
+  const { airline_id, dept_id, staff } = req.body;
+
+  try {
+
+    await pool.query(
+      `
+      UPDATE hr_departments
+      SET
+        staff = $3,
+        payroll = staff * salary,
+        updated_at = NOW()
+      WHERE airline_id = $1
+      AND dept_id = $2
+      `,
+      [airline_id, dept_id, staff]
+    );
+
+    res.json({
+      ok: true
+    });
+
+  } catch (err) {
+
+    console.error("HR UPDATE ERROR:", err);
+
+    res.status(500).json({
+      ok: false,
+      error: err.message
+    });
+
+  }
+
+});
+
 export default router;
