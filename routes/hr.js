@@ -179,7 +179,7 @@ router.get("/hr/departments/:airlineId", async (req, res) => {
 
 router.patch("/hr/staff", async (req, res) => {
 
-  const { airline_id, dept_id, staff, morale } = req.body;
+ const { airline_id, dept_id, staff, morale, salary, payroll } = req.body;
 
   try {
 
