@@ -184,18 +184,19 @@ router.patch("/hr/staff", async (req, res) => {
   try {
 
     await pool.query(
-      `
-      UPDATE hr_departments
-      SET
-        staff = $3,
-        morale = COALESCE($4, morale),
-        payroll = $3 * salary,
-        updated_at = NOW()
-      WHERE airline_id = $1
-      AND dept_id = $2
-      `,
-      [airline_id, dept_id, staff, morale]
-    );
+`
+UPDATE hr_departments
+SET
+  staff = $3,
+  morale = COALESCE($4, morale),
+  salary = COALESCE($5, salary),
+  payroll = COALESCE($6, payroll),
+  updated_at = NOW()
+WHERE airline_id = $1
+AND dept_id = $2
+`,
+[airline_id, dept_id, staff, morale, salary, payroll]
+);
 
     res.json({ ok: true });
 
