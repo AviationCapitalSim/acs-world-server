@@ -179,7 +179,7 @@ router.get("/hr/departments/:airlineId", async (req, res) => {
 
 router.patch("/hr/staff", async (req, res) => {
 
-  const { airline_id, dept_id, staff } = req.body;
+  const { airline_id, dept_id, staff, morale } = req.body;
 
   try {
 
@@ -188,12 +188,13 @@ router.patch("/hr/staff", async (req, res) => {
       UPDATE hr_departments
       SET
         staff = $3,
+        morale = COALESCE($4, morale),
         payroll = $3 * salary,
         updated_at = NOW()
       WHERE airline_id = $1
       AND dept_id = $2
       `,
-      [airline_id, dept_id, staff]
+      [airline_id, dept_id, staff, morale]
     );
 
     res.json({ ok: true });
