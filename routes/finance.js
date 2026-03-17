@@ -180,22 +180,15 @@ router.patch("/finance/update", async (req,res)=>{
 
 router.post("/finance/log", async (req,res)=>{
 
+  const {
+    airline_id,
+    type,
+    source,
+    amount,
+    timestamp
+  } = req.body;
+
   try{
-
-    const {
-      airline_id,
-      type,
-      source,
-      amount,
-      timestamp
-    } = req.body;
-
-    if(!airline_id){
-      return res.status(400).json({
-        ok:false,
-        error:"airline_id required"
-      });
-    }
 
     await pool.query(
       `
@@ -211,10 +204,10 @@ router.post("/finance/log", async (req,res)=>{
       `,
       [
         airline_id,
-        type || "UNKNOWN",
-        source || "SYSTEM",
-        Number(amount) || 0,
-        timestamp || new Date().toISOString()
+        type,
+        source,
+        amount,
+        timestamp
       ]
     );
 
