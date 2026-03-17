@@ -182,7 +182,7 @@ router.post("/finance/log", async (req,res)=>{
 
   try{
 
-    const {
+    let {
       airline_id,
       type,
       source,
@@ -196,6 +196,35 @@ router.post("/finance/log", async (req,res)=>{
         error:"airline_id required"
       });
     }
+
+    /* --------------------------------------------------------
+       NORMALIZAR AMOUNT
+       Evita bigint overflow y notación científica
+    -------------------------------------------------------- */
+
+    let safeAmount = 0;
+
+    if(amount !== undefined && amount !== null){
+
+      const parsed = Number(amount);
+
+      if(Number.isFinite(parsed)){
+        safeAmount = Math.trunc(parsed);
+      }
+
+    }
+
+    /* --------------------------------------------------------
+       TIMESTAMP SEGURO
+    -------------------------------------------------------- */
+
+    const safeTimestamp = timestamp
+      ? new Date(timestamp)
+      : new Date();
+
+    /* --------------------------------------------------------
+       INSERT
+    -------------------------------------------------------- */
 
     await pool.query(
       `
@@ -213,8 +242,8 @@ router.post("/finance/log", async (req,res)=>{
         airline_id,
         type || "UNKNOWN",
         source || "SYSTEM",
-        Number(amount) || 0,
-        timestamp || new Date().toISOString()
+        safeAmount,
+        safeTimestamp
       ]
     );
 
