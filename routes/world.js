@@ -23,7 +23,12 @@ router.get("/world", async (req, res) => {
       });
     }
 
-    res.json(result.rows[0]);
+    const world = result.rows[0];
+
+    res.json({
+    ...world,
+    server_now: Date.now()
+   });
 
   } catch (err) {
 
