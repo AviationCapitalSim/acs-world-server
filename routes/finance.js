@@ -70,8 +70,9 @@ router.get("/finance/:airlineId", async (req,res)=>{
 
 });
 
+
 /* ============================================================
-   UPDATE COMPANY FINANCE
+   UPDATE / UPSERT COMPANY FINANCE
    ============================================================ */
 
 router.patch("/finance/update", async (req,res)=>{
@@ -98,24 +99,44 @@ router.patch("/finance/update", async (req,res)=>{
 
     await pool.query(
       `
-      UPDATE company_finance
-      SET
-        capital = $2,
-        revenue = $3,
-        expenses = $4,
-        profit = $5,
-        live_revenue = $6,
-        weekly_revenue = $7,
-        cost_fuel = $8,
-        cost_maintenance = $9,
-        cost_hr = $10,
-        cost_leasing = $11,
-        cost_airport = $12,
-        cost_other = $13,
-        debt = $14,
-        fleet_size = $15,
+      INSERT INTO company_finance (
+        airline_id,
+        capital,
+        revenue,
+        expenses,
+        profit,
+        live_revenue,
+        weekly_revenue,
+        cost_fuel,
+        cost_maintenance,
+        cost_hr,
+        cost_leasing,
+        cost_airport,
+        cost_other,
+        debt,
+        fleet_size,
+        updated_at
+      )
+      VALUES(
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW()
+      )
+      ON CONFLICT (airline_id)
+      DO UPDATE SET
+        capital = EXCLUDED.capital,
+        revenue = EXCLUDED.revenue,
+        expenses = EXCLUDED.expenses,
+        profit = EXCLUDED.profit,
+        live_revenue = EXCLUDED.live_revenue,
+        weekly_revenue = EXCLUDED.weekly_revenue,
+        cost_fuel = EXCLUDED.cost_fuel,
+        cost_maintenance = EXCLUDED.cost_maintenance,
+        cost_hr = EXCLUDED.cost_hr,
+        cost_leasing = EXCLUDED.cost_leasing,
+        cost_airport = EXCLUDED.cost_airport,
+        cost_other = EXCLUDED.cost_other,
+        debt = EXCLUDED.debt,
+        fleet_size = EXCLUDED.fleet_size,
         updated_at = NOW()
-      WHERE airline_id = $1
       `,
       [
         airline_id,
@@ -151,6 +172,7 @@ router.patch("/finance/update", async (req,res)=>{
   }
 
 });
+
 
 /* ============================================================
    ADD FINANCE LOG ENTRY
