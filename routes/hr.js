@@ -213,4 +213,39 @@ AND dept_id = $2
 
 });
 
+/* ============================================================
+   GET HR PAYROLL TOTAL
+   ============================================================ */
+
+router.get("/hr/payroll/:airlineId", async (req, res) => {
+
+  const { airlineId } = req.params;
+
+  try {
+
+    const result = await pool.query(`
+      SELECT COALESCE(SUM(payroll),0) AS total
+      FROM hr_departments
+      WHERE airline_id = $1
+    `,[airlineId]);
+
+    res.json({
+      ok: true,
+      payroll: Number(result.rows[0].total)
+    });
+
+  } catch(err){
+
+    console.error("HR PAYROLL ERROR:", err);
+
+    res.status(500).json({
+      ok:false,
+      error: err.message
+    });
+
+  }
+
+});
+
+
 export default router;
