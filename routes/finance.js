@@ -70,30 +70,47 @@ router.get("/finance/:airlineId", async (req,res)=>{
 
 });
 
-
 /* ============================================================
    UPDATE / UPSERT COMPANY FINANCE
    ============================================================ */
 
 router.patch("/finance/update", async (req,res)=>{
 
-  const {
-    airline_id,
-    capital,
-    revenue,
-    expenses,
-    profit,
-    live_revenue,
-    weekly_revenue,
-    cost_fuel,
-    cost_maintenance,
-    cost_hr,
-    cost_leasing,
-    cost_airport,
-    cost_other,
-    debt,
-    fleet_size
-  } = req.body;
+  const toInt = (v) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return 0;
+    return Math.round(n);
+  };
+
+  const toAirlineId = (v) => {
+    const n = Number(v);
+    if (!Number.isInteger(n) || n <= 0) return null;
+    return n;
+  };
+
+  const airline_id = toAirlineId(req.body.airline_id);
+
+  if (!airline_id) {
+    return res.status(400).json({
+      ok:false,
+      error:"INVALID_AIRLINE_ID"
+    });
+  }
+
+  const capital          = toInt(req.body.capital);
+  const revenue          = toInt(req.body.revenue);
+  const expenses         = toInt(req.body.expenses);
+  const profit           = toInt(req.body.profit);
+  const live_revenue     = toInt(req.body.live_revenue);
+  const weekly_revenue   = toInt(req.body.weekly_revenue);
+  const cost_fuel        = toInt(req.body.cost_fuel);
+  const cost_maintenance = toInt(req.body.cost_maintenance);
+  const cost_hr          = toInt(req.body.cost_hr);
+  const cost_leasing     = toInt(req.body.cost_leasing);
+  const cost_airport     = toInt(req.body.cost_airport);
+  const cost_other       = toInt(req.body.cost_other);
+  const debt             = toInt(req.body.debt);
+  const fleet_size       = toInt(req.body.fleet_size);
 
   try{
 
@@ -157,7 +174,9 @@ router.patch("/finance/update", async (req,res)=>{
       ]
     );
 
-    res.json({ok:true});
+    res.json({
+      ok:true
+    });
 
   }
   catch(err){
