@@ -77,23 +77,25 @@ async function ensureHRInitialized(airlineId) {
     await pool.query(
       `
       INSERT INTO hr_departments
-      (
-        airline_id,
-        dept_id,
-        dept_name,
-        base_role,
-        staff,
-        required,
-        morale,
-        salary,
-        payroll,
-        bonus,
-        years
-      )
-      VALUES
-      (
-        $1,$2,$3,$4,$5,$6,100,0,0,0,0
-      )
+(
+  airline_id,
+  dept_id,
+  dept_name,
+  base_role,
+  staff,
+  required,
+  morale,
+  salary,
+  payroll,
+  bonus,
+  years
+)
+VALUES
+(
+  $1,$2,$3,$4,$5,$6,100,0,0,0,0
+)
+ON CONFLICT (airline_id, dept_id)
+DO NOTHING
       `,
       [
         airlineId,
