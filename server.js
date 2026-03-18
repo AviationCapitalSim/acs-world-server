@@ -14,7 +14,15 @@ dotenv.config();
 const app = express();
 
 app.set("trust proxy", 1);
-app.use(cors());
+
+app.use(cors({
+  origin: "*",
+  methods: ["GET","POST","PATCH","PUT","DELETE","OPTIONS"],
+  allowedHeaders: ["Content-Type","Authorization"]
+}));
+
+app.options("*", cors());
+
 app.use(express.json({ limit: "1mb" }));
 
 // ✅ Health check (NO DB) — Railway debe recibir respuesta sí o sí
