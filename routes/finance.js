@@ -246,4 +246,57 @@ router.post("/finance/log", async (req,res)=>{
 
 });
 
+/* ============================================================
+   GET FINANCE LOG (CANONICAL LEDGER)
+   ============================================================ */
+
+router.get("/finance/log/:airlineId", async (req,res)=>{
+
+  const airlineId = Number(req.params.airlineId);
+
+  if(!Number.isInteger(airlineId)){
+    return res.status(400).json({
+      ok:false,
+      error:"INVALID_AIRLINE_ID"
+    });
+  }
+
+  try{
+
+    const result = await pool.query(
+      `
+      SELECT
+        id,
+        airline_id,
+        type,
+        source,
+        amount,
+        timestamp
+      FROM finance_log
+      WHERE airline_id = $1
+      ORDER BY timestamp DESC
+      LIMIT 100
+      `,
+      [airlineId]
+    );
+
+    res.json({
+      ok:true,
+      logs: result.rows
+    });
+
+  }
+  catch(err){
+
+    console.error("FINANCE LOG FETCH ERROR",err);
+
+    res.status(500).json({
+      ok:false,
+      error:err.message
+    });
+
+  }
+
+});
+
 export default router;
