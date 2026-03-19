@@ -246,4 +246,44 @@ router.post("/finance/log", async (req,res)=>{
 
 });
 
+/* ============================================================
+   GET FINANCE LOG HISTORY
+   ============================================================ */
+
+router.get("/finance/log/:airlineId", async (req,res)=>{
+
+  const airlineId = req.params.airlineId;
+
+  try{
+
+    const result = await pool.query(
+      `
+      SELECT *
+      FROM finance_log
+      WHERE airline_id = $1
+      ORDER BY timestamp DESC
+      LIMIT 50
+      `,
+      [airlineId]
+    );
+
+    res.json({
+      ok:true,
+      logs: result.rows
+    });
+
+  }
+  catch(err){
+
+    console.error("FINANCE LOG FETCH ERROR",err);
+
+    res.status(500).json({
+      ok:false,
+      error:err.message
+    });
+
+  }
+
+});
+
 export default router;
