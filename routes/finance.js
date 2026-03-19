@@ -71,7 +71,7 @@ router.get("/finance/:airlineId", async (req,res)=>{
 });
 
 /* ============================================================
-   UPDATE / UPSERT COMPANY FINANCE
+   APPLY FINANCE DELTA (CANONICAL · EVENT-DRIVEN)
    ============================================================ */
 
 router.patch("/finance/update", async (req,res)=>{
@@ -82,106 +82,107 @@ router.patch("/finance/update", async (req,res)=>{
     return Math.round(n);
   };
 
-  const toAirlineId = (v) => {
-    const n = Number(v);
-    if (!Number.isInteger(n) || n <= 0) return null;
-    return n;
-  };
+  const airline_id = Number(req.body.airline_id);
 
-  const airline_id = toAirlineId(req.body.airline_id);
-
-  if (!airline_id) {
+  if (!Number.isInteger(airline_id) || airline_id <= 0) {
     return res.status(400).json({
       ok:false,
       error:"INVALID_AIRLINE_ID"
     });
   }
 
-  const capital          = toInt(req.body.capital);
-  const revenue          = toInt(req.body.revenue);
-  const expenses         = toInt(req.body.expenses);
-  const profit           = toInt(req.body.profit);
-  const live_revenue     = toInt(req.body.live_revenue);
-  const weekly_revenue   = toInt(req.body.weekly_revenue);
-  const cost_fuel        = toInt(req.body.cost_fuel);
-  const cost_maintenance = toInt(req.body.cost_maintenance);
-  const cost_hr          = toInt(req.body.cost_hr);
-  const cost_leasing     = toInt(req.body.cost_leasing);
-  const cost_airport     = toInt(req.body.cost_airport);
-  const cost_other       = toInt(req.body.cost_other);
-  const debt             = toInt(req.body.debt);
-  const fleet_size       = toInt(req.body.fleet_size);
+  /* ============================================================
+     DELTA VALUES (PER EVENT, NOT SNAPSHOT)
+     ============================================================ */
+
+  const delta = {
+    capital:          toInt(req.body.capital),
+    revenue:          toInt(req.body.revenue),
+    expenses:         toInt(req.body.expenses),
+    profit:           toInt(req.body.profit),
+    live_revenue:     toInt(req.body.live_revenue),
+    weekly_revenue:   toInt(req.body.weekly_revenue),
+    cost_fuel:        toInt(req.body.cost_fuel),
+    cost_maintenance: toInt(req.body.cost_maintenance),
+    cost_hr:          toInt(req.body.cost_hr),
+    cost_leasing:     toInt(req.body.cost_leasing),
+    cost_airport:     toInt(req.body.cost_airport),
+    cost_other:       toInt(req.body.cost_other),
+    debt:             toInt(req.body.debt),
+    fleet_size:       toInt(req.body.fleet_size)
+  };
 
   try{
 
+    await pool.query("BEGIN");
+
+    /* ============================================================
+       ENSURE ROW EXISTS
+       ============================================================ */
+
     await pool.query(
       `
-      INSERT INTO company_finance (
-        airline_id,
-        capital,
-        revenue,
-        expenses,
-        profit,
-        live_revenue,
-        weekly_revenue,
-        cost_fuel,
-        cost_maintenance,
-        cost_hr,
-        cost_leasing,
-        cost_airport,
-        cost_other,
-        debt,
-        fleet_size,
-        updated_at
-      )
-      VALUES(
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW()
-      )
-      ON CONFLICT (airline_id)
-      DO UPDATE SET
-        capital = EXCLUDED.capital,
-        revenue = EXCLUDED.revenue,
-        expenses = EXCLUDED.expenses,
-        profit = EXCLUDED.profit,
-        live_revenue = EXCLUDED.live_revenue,
-        weekly_revenue = EXCLUDED.weekly_revenue,
-        cost_fuel = EXCLUDED.cost_fuel,
-        cost_maintenance = EXCLUDED.cost_maintenance,
-        cost_hr = EXCLUDED.cost_hr,
-        cost_leasing = EXCLUDED.cost_leasing,
-        cost_airport = EXCLUDED.cost_airport,
-        cost_other = EXCLUDED.cost_other,
-        debt = EXCLUDED.debt,
-        fleet_size = EXCLUDED.fleet_size,
-        updated_at = NOW()
+      INSERT INTO company_finance (airline_id)
+      VALUES($1)
+      ON CONFLICT (airline_id) DO NOTHING
+      `,
+      [airline_id]
+    );
+
+    /* ============================================================
+       APPLY DELTA (ATOMIC)
+       ============================================================ */
+
+    await pool.query(
+      `
+      UPDATE company_finance
+      SET
+        capital          = COALESCE(capital,0) + $2,
+        revenue          = COALESCE(revenue,0) + $3,
+        expenses         = COALESCE(expenses,0) + $4,
+        profit           = COALESCE(profit,0) + $5,
+        live_revenue     = COALESCE(live_revenue,0) + $6,
+        weekly_revenue   = COALESCE(weekly_revenue,0) + $7,
+        cost_fuel        = COALESCE(cost_fuel,0) + $8,
+        cost_maintenance = COALESCE(cost_maintenance,0) + $9,
+        cost_hr          = COALESCE(cost_hr,0) + $10,
+        cost_leasing     = COALESCE(cost_leasing,0) + $11,
+        cost_airport     = COALESCE(cost_airport,0) + $12,
+        cost_other       = COALESCE(cost_other,0) + $13,
+        debt             = COALESCE(debt,0) + $14,
+        fleet_size       = GREATEST(COALESCE(fleet_size,0), $15),
+        updated_at       = NOW()
+      WHERE airline_id = $1
       `,
       [
         airline_id,
-        capital,
-        revenue,
-        expenses,
-        profit,
-        live_revenue,
-        weekly_revenue,
-        cost_fuel,
-        cost_maintenance,
-        cost_hr,
-        cost_leasing,
-        cost_airport,
-        cost_other,
-        debt,
-        fleet_size
+        delta.capital,
+        delta.revenue,
+        delta.expenses,
+        delta.profit,
+        delta.live_revenue,
+        delta.weekly_revenue,
+        delta.cost_fuel,
+        delta.cost_maintenance,
+        delta.cost_hr,
+        delta.cost_leasing,
+        delta.cost_airport,
+        delta.cost_other,
+        delta.debt,
+        delta.fleet_size
       ]
     );
 
-    res.json({
-      ok:true
-    });
+    await pool.query("COMMIT");
+
+    res.json({ ok:true });
 
   }
   catch(err){
 
-    console.error("FINANCE UPDATE ERROR",err);
+    await pool.query("ROLLBACK");
+
+    console.error("FINANCE DELTA ERROR",err);
 
     res.status(500).json({
       ok:false,
@@ -191,7 +192,6 @@ router.patch("/finance/update", async (req,res)=>{
   }
 
 });
-
 
 /* ============================================================
    ADD FINANCE LOG ENTRY
