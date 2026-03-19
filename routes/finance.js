@@ -264,21 +264,22 @@ router.get("/finance/log/:airlineId", async (req,res)=>{
   try{
 
     const result = await pool.query(
-      `
-      SELECT
-        id,
-        airline_id,
-        type,
-        source,
-        amount,
-        timestamp
-      FROM finance_log
-      WHERE airline_id = $1
-      ORDER BY timestamp DESC
-      LIMIT 100
-      `,
-      [airlineId]
-    );
+  `
+  SELECT
+    id,
+    airline_id,
+    type,
+    source,
+    CAST(amount AS BIGINT) AS amount,
+    CAST(timestamp AS BIGINT) AS timestamp
+  FROM finance_log
+  WHERE airline_id = $1
+    AND timestamp IS NOT NULL
+  ORDER BY timestamp DESC
+  LIMIT 100
+  `,
+  [airlineId]
+);
 
     res.json({
       ok:true,
