@@ -9,9 +9,30 @@ const router = express.Router();
 
 router.get("/finance/:airlineId", async (req,res)=>{
 
-  const airlineId = req.params.airlineId;
+  const airlineId = Number(req.params.airlineId);
+
+  if(!Number.isInteger(airlineId) || airlineId <= 0){
+    return res.status(400).json({
+      ok:false,
+      error:"INVALID_AIRLINE_ID"
+    });
+  }
 
   try{
+
+    /* ✅ STEP 1 — ENSURE ROW EXISTS (ATÓMICO) */
+
+    await pool.query(
+      `
+      INSERT INTO company_finance (airline_id, capital)
+      VALUES ($1, 700000)
+      ON CONFLICT (airline_id)
+      DO NOTHING
+      `,
+      [airlineId]
+    );
+
+    /* ✅ STEP 2 — FETCH REAL STATE */
 
     const result = await pool.query(
       `
@@ -22,38 +43,9 @@ router.get("/finance/:airlineId", async (req,res)=>{
       [airlineId]
     );
 
-    if(result.rows.length === 0){
-
-      /* Crear cuenta financiera inicial */
-
-      await pool.query(
-        `
-        INSERT INTO company_finance
-        (airline_id,capital)
-        VALUES($1,700000)
-        `,
-        [airlineId]
-      );
-
-      const fresh = await pool.query(
-        `
-        SELECT *
-        FROM company_finance
-        WHERE airline_id = $1
-        `,
-        [airlineId]
-      );
-
-      return res.json({
-        ok:true,
-        finance:fresh.rows[0]
-      });
-
-    }
-
-    res.json({
+    return res.json({
       ok:true,
-      finance:result.rows[0]
+      finance: result.rows[0]
     });
 
   }
