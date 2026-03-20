@@ -318,12 +318,7 @@ router.get("/finance/log/:airlineId", async (req,res)=>{
 });
 
 /* ============================================================
-   ✈️ FINANCE — FLIGHT EVENT (CANONICAL OCC ENGINE)
-   ------------------------------------------------------------
-   • Backend calcula TODO
-   • Inserta log agregado
-   • Actualiza company_finance
-   • Devuelve snapshot actualizado
+   ✈️ FINANCE — FLIGHT EVENT (CANONICAL OCC ENGINE) ✅ FIXED
    ============================================================ */
 
 router.post("/finance/flight-event", async (req,res)=>{
@@ -345,24 +340,30 @@ router.post("/finance/flight-event", async (req,res)=>{
   try{
 
     /* ============================================================
-       🧮 CALCULOS (BACKEND AUTHORITY)
+       🔒 FORCE INTEGER (CRITICAL FIX)
        ============================================================ */
 
-    const r = Number(revenue || 0);
+    const toInt = (v) => {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return 0;
+      return Math.round(n);
+    };
 
-    const fuel        = Number(cost_fuel || 0);
-    const handling    = Number(cost_handling || 0);
-    const slot        = Number(cost_slot || 0);
-    const navigation  = Number(cost_navigation || 0);
-    const overflight  = Number(cost_overflight || 0);
+    const airlineId = toInt(airline_id);
 
-    const airport = handling + slot + navigation + overflight;
+    const r           = toInt(revenue);
+    const fuel        = toInt(cost_fuel);
+    const handling    = toInt(cost_handling);
+    const slot        = toInt(cost_slot);
+    const navigation  = toInt(cost_navigation);
+    const overflight  = toInt(cost_overflight);
+
+    const airport   = handling + slot + navigation + overflight;
     const totalCost = fuel + airport;
-
-    const profit = r - totalCost;
+    const profit    = r - totalCost;
 
     /* ============================================================
-       📊 LOG (AGREGADO — NO RUTAS)
+       📊 LOG (AGREGADO)
        ============================================================ */
 
     await pool.query(`
@@ -370,13 +371,13 @@ router.post("/finance/flight-event", async (req,res)=>{
       (airline_id, type, source, amount, timestamp)
       VALUES($1,'INCOME','FLIGHT',$2,$3)
     `,[
-      airline_id,
+      airlineId,
       r,
       Date.now()
     ]);
 
     /* ============================================================
-       🏦 UPDATE COMPANY FINANCE (ATÓMICO)
+       🏦 UPDATE COMPANY FINANCE
        ============================================================ */
 
     await pool.query(`
@@ -390,27 +391,37 @@ router.post("/finance/flight-event", async (req,res)=>{
         live_revenue   = COALESCE(live_revenue,0) + $2,
 
         cost_fuel      = COALESCE(cost_fuel,0) + $5,
-        cost_airport   = COALESCE(cost_airport,0) + $6,
+
+        cost_handling  = COALESCE(cost_handling,0) + $6,
+        cost_slots     = COALESCE(cost_slots,0) + $7,
+        cost_navigation= COALESCE(cost_navigation,0) + $8,
+        cost_overflight= COALESCE(cost_overflight,0) + $9,
+
+        cost_airport   = COALESCE(cost_airport,0) + $10,
 
         updated_at = NOW()
 
       WHERE airline_id = $1
     `,[
-      airline_id,
+      airlineId,
       r,
       totalCost,
       profit,
       fuel,
+      handling,
+      slot,
+      navigation,
+      overflight,
       airport
     ]);
 
     /* ============================================================
-       📥 DEVOLVER SNAPSHOT REAL
+       📥 RETURN SNAPSHOT
        ============================================================ */
 
     const result = await pool.query(
       `SELECT * FROM company_finance WHERE airline_id = $1`,
-      [airline_id]
+      [airlineId]
     );
 
     res.json({
