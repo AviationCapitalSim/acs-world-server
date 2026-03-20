@@ -89,18 +89,44 @@ router.patch("/finance/update", async (req,res)=>{
     });
   }
 
+  /* ============================================================
+     🟦 CORE VALUES
+  ============================================================ */
+
   const capital          = toInt(req.body.capital);
   const revenue          = toInt(req.body.revenue);
   const expenses         = toInt(req.body.expenses);
-  const profit           = toInt(req.body.profit);
+
+  // 🔥 BACKEND ES AUTORIDAD DE PROFIT
+  const profit           = revenue - expenses;
+
   const live_revenue     = toInt(req.body.live_revenue);
   const weekly_revenue   = toInt(req.body.weekly_revenue);
+
+  /* ============================================================
+     🟦 COSTS (EXPANDED STRUCTURE)
+  ============================================================ */
+
   const cost_fuel        = toInt(req.body.cost_fuel);
   const cost_maintenance = toInt(req.body.cost_maintenance);
   const cost_hr          = toInt(req.body.cost_hr);
   const cost_leasing     = toInt(req.body.cost_leasing);
-  const cost_airport     = toInt(req.body.cost_airport);
+
+  // 🆕 NUEVAS COLUMNAS
+  const cost_handling    = toInt(req.body.cost_handling);
+  const cost_slots       = toInt(req.body.cost_slots);
+  const cost_navigation  = toInt(req.body.cost_navigation);
+  const cost_overflight  = toInt(req.body.cost_overflight);
+
+  // 🟡 LEGACY (mantener temporal)
+  const cost_airport     =
+    cost_handling +
+    cost_slots +
+    cost_navigation +
+    cost_overflight;
+
   const cost_other       = toInt(req.body.cost_other);
+
   const debt             = toInt(req.body.debt);
   const fleet_size       = toInt(req.body.fleet_size);
 
@@ -120,6 +146,10 @@ router.patch("/finance/update", async (req,res)=>{
         cost_maintenance,
         cost_hr,
         cost_leasing,
+        cost_handling,
+        cost_slots,
+        cost_navigation,
+        cost_overflight,
         cost_airport,
         cost_other,
         debt,
@@ -127,7 +157,11 @@ router.patch("/finance/update", async (req,res)=>{
         updated_at
       )
       VALUES(
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW()
+        $1,$2,$3,$4,$5,$6,$7,
+        $8,$9,$10,$11,
+        $12,$13,$14,$15,
+        $16,$17,$18,$19,
+        NOW()
       )
       ON CONFLICT (airline_id)
       DO UPDATE SET
@@ -141,6 +175,10 @@ router.patch("/finance/update", async (req,res)=>{
         cost_maintenance = EXCLUDED.cost_maintenance,
         cost_hr = EXCLUDED.cost_hr,
         cost_leasing = EXCLUDED.cost_leasing,
+        cost_handling = EXCLUDED.cost_handling,
+        cost_slots = EXCLUDED.cost_slots,
+        cost_navigation = EXCLUDED.cost_navigation,
+        cost_overflight = EXCLUDED.cost_overflight,
         cost_airport = EXCLUDED.cost_airport,
         cost_other = EXCLUDED.cost_other,
         debt = EXCLUDED.debt,
@@ -159,6 +197,10 @@ router.patch("/finance/update", async (req,res)=>{
         cost_maintenance,
         cost_hr,
         cost_leasing,
+        cost_handling,
+        cost_slots,
+        cost_navigation,
+        cost_overflight,
         cost_airport,
         cost_other,
         debt,
@@ -166,9 +208,7 @@ router.patch("/finance/update", async (req,res)=>{
       ]
     );
 
-    res.json({
-      ok:true
-    });
+    res.json({ ok:true });
 
   }
   catch(err){
@@ -183,7 +223,6 @@ router.patch("/finance/update", async (req,res)=>{
   }
 
 });
-
 
 /* ============================================================
    ADD FINANCE LOG ENTRY
