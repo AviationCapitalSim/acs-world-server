@@ -30,7 +30,7 @@ router.get("/finance/:airlineId", async (req,res)=>{
         `
         INSERT INTO company_finance
         (airline_id,capital)
-        VALUES($1,5000000)
+        VALUES($1,700000)
         `,
         [airlineId]
       );
