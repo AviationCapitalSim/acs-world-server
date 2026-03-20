@@ -317,4 +317,119 @@ router.get("/finance/log/:airlineId", async (req,res)=>{
 
 });
 
+/* ============================================================
+   ✈️ FINANCE — FLIGHT EVENT (CANONICAL OCC ENGINE)
+   ------------------------------------------------------------
+   • Backend calcula TODO
+   • Inserta log agregado
+   • Actualiza company_finance
+   • Devuelve snapshot actualizado
+   ============================================================ */
+
+router.post("/finance/flight-event", async (req,res)=>{
+
+  const {
+    airline_id,
+    revenue,
+    cost_fuel,
+    cost_handling,
+    cost_slot,
+    cost_navigation,
+    cost_overflight
+  } = req.body;
+
+  if(!airline_id){
+    return res.status(400).json({ ok:false, error:"NO_AIRLINE_ID" });
+  }
+
+  try{
+
+    /* ============================================================
+       🧮 CALCULOS (BACKEND AUTHORITY)
+       ============================================================ */
+
+    const r = Number(revenue || 0);
+
+    const fuel        = Number(cost_fuel || 0);
+    const handling    = Number(cost_handling || 0);
+    const slot        = Number(cost_slot || 0);
+    const navigation  = Number(cost_navigation || 0);
+    const overflight  = Number(cost_overflight || 0);
+
+    const airport = handling + slot + navigation + overflight;
+    const totalCost = fuel + airport;
+
+    const profit = r - totalCost;
+
+    /* ============================================================
+       📊 LOG (AGREGADO — NO RUTAS)
+       ============================================================ */
+
+    await pool.query(`
+      INSERT INTO finance_log
+      (airline_id, type, source, amount, timestamp)
+      VALUES($1,'INCOME','FLIGHT',$2,$3)
+    `,[
+      airline_id,
+      r,
+      Date.now()
+    ]);
+
+    /* ============================================================
+       🏦 UPDATE COMPANY FINANCE (ATÓMICO)
+       ============================================================ */
+
+    await pool.query(`
+      UPDATE company_finance
+      SET
+        revenue        = COALESCE(revenue,0) + $2,
+        expenses       = COALESCE(expenses,0) + $3,
+        profit         = COALESCE(profit,0) + $4,
+        capital        = COALESCE(capital,0) + $4,
+
+        live_revenue   = COALESCE(live_revenue,0) + $2,
+
+        cost_fuel      = COALESCE(cost_fuel,0) + $5,
+        cost_airport   = COALESCE(cost_airport,0) + $6,
+
+        updated_at = NOW()
+
+      WHERE airline_id = $1
+    `,[
+      airline_id,
+      r,
+      totalCost,
+      profit,
+      fuel,
+      airport
+    ]);
+
+    /* ============================================================
+       📥 DEVOLVER SNAPSHOT REAL
+       ============================================================ */
+
+    const result = await pool.query(
+      `SELECT * FROM company_finance WHERE airline_id = $1`,
+      [airline_id]
+    );
+
+    res.json({
+      ok:true,
+      finance: result.rows[0]
+    });
+
+  }
+  catch(err){
+
+    console.error("FLIGHT EVENT ERROR",err);
+
+    res.status(500).json({
+      ok:false,
+      error:err.message
+    });
+
+  }
+
+});
+
 export default router;
