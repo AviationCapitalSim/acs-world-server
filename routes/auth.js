@@ -307,4 +307,37 @@ router.get("/users/profile/:user_id", async (req, res) => {
 
 });
 
+/* ============================================================
+   GET CURRENT SESSION
+   ============================================================ */
+
+import { requireAuth } from "../middleware/auth.js";
+
+router.get("/session", requireAuth, async (req, res) => {
+
+  try {
+
+    const result = await pool.query(`
+      SELECT user_id, email, airline_id
+      FROM users
+      WHERE user_id = $1
+    `, [req.user_id]);
+
+    if (!result.rows.length) {
+      return res.status(404).json({ ok: false });
+    }
+
+    res.json({
+      ok: true,
+      user: result.rows[0]
+    });
+
+  } catch (err) {
+
+    console.error("SESSION ERROR:", err);
+
+    res.status(500).json({ ok: false });
+  }
+});
+
 export default router;
