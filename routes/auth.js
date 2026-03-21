@@ -141,7 +141,7 @@ router.post("/auth/login", async (req, res) => {
   rawToken,
   tokenHash,
   user.user_id,
-  user.user.airline_id,
+  user.airline_id,
   expiresAt,
   ip,
   userAgent
