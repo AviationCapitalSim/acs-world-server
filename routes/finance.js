@@ -219,13 +219,14 @@ router.patch("/finance/update", requireAuth, async (req,res)=>{
 
 router.post("/finance/log", requireAuth, async (req,res)=>{
 
-  const {
-    airline_id,
-    type,
-    source,
-    amount,
-    timestamp
-  } = req.body;
+  const airline_id = req.airline_id;
+
+const {
+  type,
+  source,
+  amount,
+  timestamp
+} = req.body;
 
   try{
 
@@ -312,14 +313,16 @@ router.get("/finance/log", requireAuth, async (req,res)=>{
 
 router.post("/finance/flight-event", requireAuth, async (req,res)=>{
 
-  const airline_id = req.airline_id;
-    revenue,
-    cost_fuel,
-    cost_handling,
-    cost_slot,
-    cost_navigation,
-    cost_overflight
-  } = req.body;
+const {
+  revenue,
+  cost_fuel,
+  cost_handling,
+  cost_slot,
+  cost_navigation,
+  cost_overflight
+} = req.body;
+
+const airline_id = req.airline_id;
 
   try{
 
