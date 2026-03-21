@@ -155,8 +155,8 @@ res.cookie("acs_session", rawToken, {
   httpOnly: true,
   secure: true,
   sameSite: "none",
-  expires: expiresAt,
-  path: "/"
+  path: "/",
+  maxAge: 7 * 24 * 60 * 60 * 1000
 });
 
 /* ============================================================
