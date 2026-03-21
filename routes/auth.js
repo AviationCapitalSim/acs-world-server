@@ -171,15 +171,17 @@ router.post("/auth/login", async (req, res) => {
       }
     });
 
-  } catch (err) {
+  catch (err) {
 
-    console.error("LOGIN ERROR:", err);
+  console.error("LOGIN ERROR:", err);
 
-    res.status(500).json({
-      status: "ERROR"
-    });
+  res.status(500).json({
+    status: "ERROR",
+    message: err.message,
+    detail: err.detail || null
+  });
 
-  }
+}
 
 });
 
