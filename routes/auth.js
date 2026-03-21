@@ -113,9 +113,48 @@ router.post("/auth/login", async (req, res) => {
       return res.json({ status: "WRONG_PASSWORD" });
     }
 
+    // ============================================================
+    // 🔐 CREATE SESSION (NEW CORE)
+    // ============================================================
+
+    const rawToken = crypto.randomBytes(48).toString("hex");
+
+    const tokenHash = crypto
+      .createHash("sha256")
+      .update(rawToken)
+      .digest("hex");
+
+    const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 7); // 7 días
+
+    const ip =
+      req.headers["x-forwarded-for"]?.split(",")[0] ||
+      req.socket.remoteAddress ||
+      "";
+
+    const userAgent = req.headers["user-agent"] || "";
+
+    await pool.query(`
+      INSERT INTO sessions
+      (session_token, token_hash, user_id, airline_id, created_at, expires_at, ip_address, user_agent, active, last_seen_at)
+      VALUES ($1,$2,$3,$4,NOW(),$5,$6,$7,true,NOW())
+    `, [
+      rawToken,            // legacy (no se usará luego)
+      tokenHash,
+      user.user_id,
+      user.airline_id,
+      expiresAt,
+      ip,
+      userAgent
+    ]);
+
+    // ============================================================
+    // RESPONSE
+    // ============================================================
+
     if (!user.airline_id) {
       return res.json({
         status: "NO_AIRLINE",
+        token: rawToken,
         user: {
           userId: user.user_id,
           email: user.email
@@ -125,6 +164,7 @@ router.post("/auth/login", async (req, res) => {
 
     res.json({
       status: "HAS_AIRLINE",
+      token: rawToken,
       user: {
         userId: user.user_id,
         email: user.email,
