@@ -133,14 +133,15 @@ router.post("/auth/login", async (req, res) => {
 
     const userAgent = req.headers["user-agent"] || "";
 
-    await pool.query(`
+  await pool.query(`
   INSERT INTO sessions
-  (token_hash, user_id, airline_id, created_at, expires_at, ip_address, user_agent, active, last_seen_at)
-  VALUES ($1,$2,$3,NOW(),$4,$5,$6,true,NOW())
+  (session_token, token_hash, user_id, airline_id, created_at, expires_at, ip_address, user_agent, active, last_seen_at)
+  VALUES ($1,$2,$3,$4,NOW(),$5,$6,$7,true,NOW())
 `, [
+  rawToken,
   tokenHash,
   user.user_id,
-  user.airline_id,
+  user.user.airline_id,
   expiresAt,
   ip,
   userAgent
