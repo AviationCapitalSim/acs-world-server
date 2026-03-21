@@ -161,7 +161,7 @@ router.post("/auth/login", async (req, res) => {
       });
     }
 
-    res.json({
+      res.json({
       status: "HAS_AIRLINE",
       token: rawToken,
       user: {
@@ -171,7 +171,7 @@ router.post("/auth/login", async (req, res) => {
       }
     });
 
-  catch (err) {
+  } catch (err) {
 
   console.error("LOGIN ERROR:", err);
 
