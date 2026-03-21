@@ -1,5 +1,6 @@
 import express from "express";
 import { pool } from "../db/pool.js";
+import { requireAuth } from "../middleware/auth.js";
 
 const router = express.Router();
 
@@ -7,16 +8,9 @@ const router = express.Router();
    GET COMPANY FINANCE
    ============================================================ */
 
-router.get("/finance/:airlineId", async (req,res)=>{
+router.get("/finance", requireAuth, async (req,res)=>{
 
-  const airlineId = Number(req.params.airlineId);
-
-  if(!Number.isInteger(airlineId) || airlineId <= 0){
-    return res.status(400).json({
-      ok:false,
-      error:"INVALID_AIRLINE_ID"
-    });
-  }
+  const airlineId = req.airline_id;
 
   try{
 
@@ -66,8 +60,8 @@ router.get("/finance/:airlineId", async (req,res)=>{
    UPDATE / UPSERT COMPANY FINANCE
    ============================================================ */
 
-router.patch("/finance/update", async (req,res)=>{
-
+router.patch("/finance/update", requireAuth, async (req,res)=>{
+   
   const toInt = (v) => {
     const n = Number(v);
     if (!Number.isFinite(n)) return 0;
@@ -80,14 +74,7 @@ router.patch("/finance/update", async (req,res)=>{
     return n;
   };
 
-  const airline_id = toAirlineId(req.body.airline_id);
-
-  if (!airline_id) {
-    return res.status(400).json({
-      ok:false,
-      error:"INVALID_AIRLINE_ID"
-    });
-  }
+  const airline_id = req.airline_id;
 
   /* ============================================================
      🟦 CORE VALUES
@@ -113,12 +100,14 @@ router.patch("/finance/update", async (req,res)=>{
   const cost_leasing     = toInt(req.body.cost_leasing);
 
   // 🆕 NUEVAS COLUMNAS
+   
   const cost_handling    = toInt(req.body.cost_handling);
   const cost_slots       = toInt(req.body.cost_slots);
   const cost_navigation  = toInt(req.body.cost_navigation);
   const cost_overflight  = toInt(req.body.cost_overflight);
 
   // 🟡 LEGACY (mantener temporal)
+   
   const cost_airport     =
     cost_handling +
     cost_slots +
@@ -228,7 +217,7 @@ router.patch("/finance/update", async (req,res)=>{
    ADD FINANCE LOG ENTRY
    ============================================================ */
 
-router.post("/finance/log", async (req,res)=>{
+router.post("/finance/log", requireAuth, async (req,res)=>{
 
   const {
     airline_id,
@@ -281,9 +270,9 @@ router.post("/finance/log", async (req,res)=>{
    GET FINANCE LOG HISTORY
    ============================================================ */
 
-router.get("/finance/log/:airlineId", async (req,res)=>{
+router.get("/finance/log", requireAuth, async (req,res)=>{
 
-  const airlineId = req.params.airlineId;
+  const airlineId = req.airline_id;
 
   try{
 
@@ -321,10 +310,9 @@ router.get("/finance/log/:airlineId", async (req,res)=>{
    ✈️ FINANCE — FLIGHT EVENT (CANONICAL OCC ENGINE) ✅ FIXED
    ============================================================ */
 
-router.post("/finance/flight-event", async (req,res)=>{
+router.post("/finance/flight-event", requireAuth, async (req,res)=>{
 
-  const {
-    airline_id,
+  const airline_id = req.airline_id;
     revenue,
     cost_fuel,
     cost_handling,
@@ -332,10 +320,6 @@ router.post("/finance/flight-event", async (req,res)=>{
     cost_navigation,
     cost_overflight
   } = req.body;
-
-  if(!airline_id){
-    return res.status(400).json({ ok:false, error:"NO_AIRLINE_ID" });
-  }
 
   try{
 
