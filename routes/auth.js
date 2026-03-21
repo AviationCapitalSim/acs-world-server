@@ -147,31 +147,40 @@ router.post("/auth/login", async (req, res) => {
   userAgent
 ]);
      
-    // ============================================================
-    // RESPONSE
-    // ============================================================
+   /* ============================================================
+   SET SECURE SESSION COOKIE
+   ============================================================ */
 
-    if (!user.airline_id) {
-      return res.json({
-        status: "NO_AIRLINE",
-        token: rawToken,
-        user: {
-          userId: user.user_id,
-          email: user.email
-        }
-      });
+res.cookie("acs_session", rawToken, {
+  httpOnly: true,
+  secure: true,
+  sameSite: "none",
+  expires: expiresAt,
+  path: "/"
+});
+
+/* ============================================================
+   RESPONSE
+   ============================================================ */
+
+if (!user.airline_id) {
+  return res.json({
+    status: "NO_AIRLINE",
+    user: {
+      userId: user.user_id,
+      email: user.email
     }
+  });
+}
 
-      res.json({
-      status: "HAS_AIRLINE",
-      token: rawToken,
-      user: {
-        userId: user.user_id,
-        email: user.email,
-        airline: user.airline_id
-      }
-    });
-
+return res.json({
+  status: "HAS_AIRLINE",
+  user: {
+    userId: user.user_id,
+    email: user.email,
+    airline: user.airline_id
+  }
+});
   } catch (err) {
 
   console.error("LOGIN ERROR:", err);
