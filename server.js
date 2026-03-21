@@ -8,6 +8,7 @@ import authRoutes from "./routes/auth.js";
 import airlineRoutes from "./routes/airlines.js";
 import hrRoutes from "./routes/hr.js";
 import financeRoutes from "./routes/finance.js";
+import cookieParser from "cookie-parser";
 
 dotenv.config();
 
@@ -24,6 +25,7 @@ app.use(cors({
 app.options("*", cors());
 
 app.use(express.json({ limit: "1mb" }));
+app.use(cookieParser());
 
 // ✅ Health check (NO DB) — Railway debe recibir respuesta sí o sí
 app.get("/health", (req, res) => {
