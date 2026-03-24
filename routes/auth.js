@@ -165,22 +165,28 @@ res.cookie("acs_session", rawToken, {
 
 if (!user.airline_id) {
   return res.json({
+    ok: true,
     status: "NO_AIRLINE",
+    token: rawToken,
     user: {
-      userId: user.user_id,
-      email: user.email
+      user_id: user.user_id,
+      email: user.email,
+      airline_id: null
     }
   });
 }
 
 return res.json({
+  ok: true,
   status: "HAS_AIRLINE",
+  token: rawToken,
   user: {
-    userId: user.user_id,
+    user_id: user.user_id,
     email: user.email,
-    airline: user.airline_id
+    airline_id: user.airline_id
   }
 });
+     
   } catch (err) {
 
   console.error("LOGIN ERROR:", err);
@@ -337,6 +343,70 @@ router.get("/session", requireAuth, async (req, res) => {
     console.error("SESSION ERROR:", err);
 
     res.status(500).json({ ok: false });
+  }
+});
+
+/* ============================================================
+   TOKEN AUTH — GET CURRENT USER
+   ============================================================ */
+
+router.get("/auth/me", async (req, res) => {
+  try {
+
+    const authHeader = req.headers.authorization || "";
+
+    if (!authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ ok: false, error: "NO_TOKEN" });
+    }
+
+    const rawToken = authHeader.slice(7).trim();
+
+    if (!rawToken) {
+      return res.status(401).json({ ok: false, error: "EMPTY_TOKEN" });
+    }
+
+    const tokenHash = crypto
+      .createHash("sha256")
+      .update(rawToken)
+      .digest("hex");
+
+    const result = await pool.query(`
+      SELECT user_id, airline_id, expires_at, active
+      FROM sessions
+      WHERE token_hash = $1
+      LIMIT 1
+    `, [tokenHash]);
+
+    if (!result.rows.length) {
+      return res.status(401).json({ ok: false, error: "INVALID_TOKEN" });
+    }
+
+    const session = result.rows[0];
+
+    if (!session.active) {
+      return res.status(401).json({ ok: false, error: "SESSION_INACTIVE" });
+    }
+
+    if (new Date(session.expires_at) < new Date()) {
+      return res.status(401).json({ ok: false, error: "SESSION_EXPIRED" });
+    }
+
+    return res.json({
+      ok: true,
+      user: {
+        user_id: session.user_id,
+        airline_id: session.airline_id
+      }
+    });
+
+  } catch (err) {
+
+    console.error("AUTH ME ERROR:", err);
+
+    return res.status(500).json({
+      ok: false,
+      error: "AUTH_ME_ERROR"
+    });
   }
 });
 
