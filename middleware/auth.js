@@ -21,7 +21,7 @@ export async function requireAuth(req, res, next) {
       .digest("hex");
 
     const result = await pool.query(`
-      SELECT user_id, airline_id, expires_at, active
+      SELECT user_id, airline_id, expires_at, active, ip_address, user_agent
       FROM sessions
       WHERE token_hash = $1
       LIMIT 1
@@ -33,6 +33,37 @@ export async function requireAuth(req, res, next) {
 
     const session = result.rows[0];
 
+    /* ============================================================
+   DEVICE / IP VALIDATION (SAFE MODE — NO BLOCK)
+   ============================================================ */
+
+const currentIP =
+  req.headers["x-forwarded-for"]?.split(",")[0] ||
+  req.socket.remoteAddress ||
+  "";
+
+const currentUA = req.headers["user-agent"] || "";
+
+// ⚠️ Comparación simple (no estricta)
+if (session.ip_address && session.user_agent) {
+
+  const ipChanged = session.ip_address !== currentIP;
+  const uaChanged = session.user_agent !== currentUA;
+
+  if (ipChanged || uaChanged) {
+
+    console.warn("⚠️ SUSPICIOUS SESSION DETECTED", {
+      user_id: session.user_id,
+      previous_ip: session.ip_address,
+      current_ip: currentIP,
+      previous_ua: session.user_agent,
+      current_ua: currentUA
+    });
+
+    // (FUTURO) aquí puedes registrar en DB o security_log
+  }
+}
+     
     if (!session.active) {
       return res.status(401).json({ ok: false, error: "SESSION_INACTIVE" });
     }
