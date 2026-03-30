@@ -16,8 +16,24 @@ const app = express();
 
 app.set("trust proxy", 1);
 
+const allowedOrigins = [
+  "https://aviationcapitalsim.com",
+  "https://www.aviationcapitalsim.com",
+  "https://aviationcapitalsim.github.io"
+];
+
 app.use(cors({
-  origin: "https://aviationcapitalsim.github.io",
+  origin: function(origin, callback) {
+
+    // permitir requests sin origin (ej: curl, health checks)
+    if (!origin) return callback(null, true);
+
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    } else {
+      return callback(new Error("CORS not allowed: " + origin));
+    }
+  },
   credentials: true,
   methods: ["GET","POST","PATCH","PUT","DELETE","OPTIONS"],
   allowedHeaders: ["Content-Type","Authorization"]
