@@ -16,26 +16,11 @@ const app = express();
 
 app.set("trust proxy", 1);
 
-/* ============================================================
-   🔐 CORS — ACS PRODUCTION
-   ============================================================ */
-
 app.use(cors({
-  origin: [
-    "https://aviationcapitalsim.com",
-    "https://www.aviationcapitalsim.com"
-  ],
+  origin: "https://aviationcapitalsim.github.io",
   credentials: true,
   methods: ["GET","POST","PATCH","PUT","DELETE","OPTIONS"],
   allowedHeaders: ["Content-Type","Authorization"]
-}));
-
-app.options("*", cors({
-  origin: [
-    "https://aviationcapitalsim.com",
-    "https://www.aviationcapitalsim.com"
-  ],
-  credentials: true
 }));
 
 app.options("*", cors());
