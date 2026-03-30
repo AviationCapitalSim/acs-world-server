@@ -10,6 +10,8 @@ import hrRoutes from "./routes/hr.js";
 import financeRoutes from "./routes/finance.js";
 import cookieParser from "cookie-parser";
 import helmet from "helmet";
+import rateLimit from "express-rate-limit";
+
 
 dotenv.config();
 
@@ -19,6 +21,26 @@ const app = express();
 app.use(helmet({
   contentSecurityPolicy: false // evitamos romper frontend por ahora
 }));
+
+// 🚦 GLOBAL RATE LIMIT (protección general)
+const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutos
+  max: 300, // máximo 300 requests por IP
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+// 🔐 LOGIN RATE LIMIT (anti brute force)
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutos
+  max: 10, // máximo 10 intentos
+  message: {
+    status: "RATE_LIMIT",
+    message: "Too many login attempts. Try again in 15 minutes."
+  }
+});
+
+app.use(globalLimiter);
 
 app.set("trust proxy", 1);
 
@@ -66,6 +88,7 @@ app.get("/health", (req, res) => {
 app.use("/v1", flightRoutes);
 app.use("/v1", worldRoutes);
 app.use("/v1", systemRoutes);
+app.use("/v1/auth/login", loginLimiter);
 app.use("/v1", authRoutes);
 app.use("/v1", airlineRoutes);
 app.use("/v1", hrRoutes);
