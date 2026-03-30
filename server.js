@@ -9,10 +9,16 @@ import airlineRoutes from "./routes/airlines.js";
 import hrRoutes from "./routes/hr.js";
 import financeRoutes from "./routes/finance.js";
 import cookieParser from "cookie-parser";
+import helmet from "helmet";
 
 dotenv.config();
 
 const app = express();
+
+// 🔐 SECURITY HEADERS (HELMET)
+app.use(helmet({
+  contentSecurityPolicy: false // evitamos romper frontend por ahora
+}));
 
 app.set("trust proxy", 1);
 
