@@ -52,19 +52,18 @@ if (session.ip_address && session.user_agent) {
 
   if (ipChanged || uaChanged) {
 
-    /* ============================================================
+/* ============================================================
    SECURITY LOG — SUSPICIOUS SESSION
    ============================================================ */
 
 await pool.query(`
   INSERT INTO security_log
-  (event_type, user_id, ip_address, user_agent, created_at)
-  VALUES ($1, $2, $3, $4, NOW())
+  (user_id, action, ip_address, date)
+  VALUES ($1, $2, $3, NOW())
 `, [
-  "SUSPICIOUS_SESSION",
   session.user_id,
-  currentIP,
-  currentUA
+  "SUSPICIOUS_SESSION",
+  currentIP
 ]);
 
     // (FUTURO) aquí puedes registrar en DB o security_log
