@@ -16,41 +16,23 @@ const app = express();
 
 app.set("trust proxy", 1);
 
-/* ============================================================
-   🔐 CORS — ACS GLOBAL (FIX REAL)
-   ============================================================ */
-
 app.use(cors({
-  origin: function (origin, callback) {
-
-    // Permitir requests sin origin (health checks, curl, etc.)
-    if (!origin) return callback(null, true);
-
-    const allowedOrigins = [
-      "https://aviationcapitalsim.com",
-      "https://www.aviationcapitalsim.com"
-    ];
-
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    }
-
-    console.warn("❌ CORS BLOCKED:", origin);
-    return callback(new Error("CORS NOT ALLOWED"), false);
-  },
-
+  origin: [
+    "https://aviationcapitalsim.com",
+    "https://www.aviationcapitalsim.com"
+  ],
   credentials: true,
   methods: ["GET","POST","PATCH","PUT","DELETE","OPTIONS"],
   allowedHeaders: ["Content-Type","Authorization"]
 }));
 
-/* ============================================================
-   🔐 HANDLE PREFLIGHT (CRÍTICO)
-   ============================================================ */
-
-app.options("*", (req, res) => {
-  res.sendStatus(204);
-});
+app.options("*", cors({
+  origin: [
+    "https://aviationcapitalsim.com",
+    "https://www.aviationcapitalsim.com"
+  ],
+  credentials: true
+}));
 
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
