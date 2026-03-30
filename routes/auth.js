@@ -133,6 +133,18 @@ router.post("/auth/login", async (req, res) => {
 
     const userAgent = req.headers["user-agent"] || "";
 
+/* ============================================================
+   INVALIDATE PREVIOUS ACTIVE SESSIONS
+   ============================================================ */
+
+await pool.query(`
+  UPDATE sessions
+  SET active = false
+  WHERE user_id = $1
+    AND active = true
+`, [user.user_id]);
+     
+     
   await pool.query(`
   INSERT INTO sessions
   (session_token, token_hash, user_id, airline_id, created_at, expires_at, ip_address, user_agent, active, last_seen_at)
