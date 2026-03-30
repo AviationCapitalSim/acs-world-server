@@ -52,13 +52,20 @@ if (session.ip_address && session.user_agent) {
 
   if (ipChanged || uaChanged) {
 
-    console.warn("⚠️ SUSPICIOUS SESSION DETECTED", {
-      user_id: session.user_id,
-      previous_ip: session.ip_address,
-      current_ip: currentIP,
-      previous_ua: session.user_agent,
-      current_ua: currentUA
-    });
+    /* ============================================================
+   SECURITY LOG — SUSPICIOUS SESSION
+   ============================================================ */
+
+await pool.query(`
+  INSERT INTO security_log
+  (event_type, user_id, ip_address, user_agent, created_at)
+  VALUES ($1, $2, $3, $4, NOW())
+`, [
+  "SUSPICIOUS_SESSION",
+  session.user_id,
+  currentIP,
+  currentUA
+]);
 
     // (FUTURO) aquí puedes registrar en DB o security_log
   }
