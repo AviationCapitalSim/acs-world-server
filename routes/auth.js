@@ -169,9 +169,12 @@ await pool.query(`
   WHERE user_id = $1
     AND active = true
 `, [user.user_id]);
-     
-     
-  await pool.query(`
+
+/* ============================================================
+   CREATE NEW SESSION
+   ============================================================ */
+
+await pool.query(`
   INSERT INTO sessions
   (session_token, token_hash, user_id, airline_id, created_at, expires_at, ip_address, user_agent, active, last_seen_at)
   VALUES ($1,$2,$3,$4,NOW(),$5,$6,$7,true,NOW())
@@ -183,6 +186,20 @@ await pool.query(`
   expiresAt,
   ip,
   userAgent
+]);
+
+/* ============================================================
+   SECURITY LOG — LOGIN SUCCESS
+   ============================================================ */
+
+await pool.query(`
+  INSERT INTO security_log
+  (user_id, action, ip_address, date)
+  VALUES ($1, $2, $3, NOW())
+`, [
+  user.user_id,
+  "LOGIN_SUCCESS",
+  ip
 ]);
      
    /* ============================================================
