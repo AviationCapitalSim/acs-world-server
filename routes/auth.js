@@ -104,14 +104,40 @@ router.post("/auth/login", async (req, res) => {
     `, [email]);
 
     if (!result.rows.length) {
-      return res.json({ status: "NO_USER" });
-    }
+
+  await pool.query(`
+    INSERT INTO security_log
+    (user_id, action, ip_address, date)
+    VALUES ($1, $2, $3, NOW())
+  `, [
+    null,
+    "LOGIN_NO_USER",
+    req.headers["x-forwarded-for"]?.split(",")[0] ||
+    req.socket.remoteAddress ||
+    ""
+  ]);
+
+  return res.json({ status: "NO_USER" });
+}
 
     const user = result.rows[0];
 
     if (user.password_hash !== passwordHash) {
-      return res.json({ status: "WRONG_PASSWORD" });
-    }
+
+  await pool.query(`
+    INSERT INTO security_log
+    (user_id, action, ip_address, date)
+    VALUES ($1, $2, $3, NOW())
+  `, [
+    user.user_id,
+    "LOGIN_WRONG_PASSWORD",
+    req.headers["x-forwarded-for"]?.split(",")[0] ||
+    req.socket.remoteAddress ||
+    ""
+  ]);
+
+  return res.json({ status: "WRONG_PASSWORD" });
+}
 
     // ============================================================
     // 🔐 CREATE SESSION (NEW CORE)
