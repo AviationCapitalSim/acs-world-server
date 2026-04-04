@@ -104,40 +104,14 @@ router.post("/auth/login", async (req, res) => {
     `, [email]);
 
     if (!result.rows.length) {
-
-  await pool.query(`
-    INSERT INTO security_log
-    (user_id, action, ip_address, date)
-    VALUES ($1, $2, $3, NOW())
-  `, [
-    null,
-    "LOGIN_NO_USER",
-    req.headers["x-forwarded-for"]?.split(",")[0] ||
-    req.socket.remoteAddress ||
-    ""
-  ]);
-
-  return res.json({ status: "NO_USER" });
-}
+      return res.json({ status: "NO_USER" });
+    }
 
     const user = result.rows[0];
 
     if (user.password_hash !== passwordHash) {
-
-  await pool.query(`
-    INSERT INTO security_log
-    (user_id, action, ip_address, date)
-    VALUES ($1, $2, $3, NOW())
-  `, [
-    user.user_id,
-    "LOGIN_WRONG_PASSWORD",
-    req.headers["x-forwarded-for"]?.split(",")[0] ||
-    req.socket.remoteAddress ||
-    ""
-  ]);
-
-  return res.json({ status: "WRONG_PASSWORD" });
-}
+      return res.json({ status: "WRONG_PASSWORD" });
+    }
 
     // ============================================================
     // 🔐 CREATE SESSION (NEW CORE)
@@ -169,25 +143,11 @@ await pool.query(`
   WHERE user_id = $1
     AND active = true
 `, [user.user_id]);
-
-/* ============================================================
-   CREATE NEW SESSION
-   ============================================================ */
-
-await pool.query(`
+     
+     
+  await pool.query(`
   INSERT INTO sessions
-  (
-    session_token,
-    token_hash,
-    user_id,
-    airline_id,
-    created_at,
-    expires_at,
-    ip_address,
-    user_agent,
-    active,
-    last_seen_at
-  )
+  (session_token, token_hash, user_id, airline_id, created_at, expires_at, ip_address, user_agent, active, last_seen_at)
   VALUES ($1,$2,$3,$4,NOW(),$5,$6,$7,true,NOW())
 `, [
   rawToken,
@@ -197,20 +157,6 @@ await pool.query(`
   expiresAt,
   ip,
   userAgent
-]);
-
-/* ============================================================
-   SECURITY LOG — LOGIN SUCCESS
-   ============================================================ */
-
-await pool.query(`
-  INSERT INTO security_log
-  (user_id, action, ip_address, date)
-  VALUES ($1, $2, $3, NOW())
-`, [
-  user.user_id,
-  "LOGIN_SUCCESS",
-  ip
 ]);
      
    /* ============================================================
