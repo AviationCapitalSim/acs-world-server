@@ -103,15 +103,35 @@ router.post("/auth/login", async (req, res) => {
       WHERE u.email = $1
     `, [email]);
 
-    if (!result.rows.length) {
-      return res.json({ status: "NO_USER" });
-    }
+   if (!result.rows.length) {
+
+  await pool.query(`
+    INSERT INTO security_log (user_id, action, ip_address)
+    VALUES ($1, $2, $3)
+  `, [
+    null,
+    'LOGIN_NO_USER',
+    req.headers["x-forwarded-for"]?.split(",")[0] || req.socket.remoteAddress || ""
+  ]);
+
+  return res.json({ status: "NO_USER" });
+}
 
     const user = result.rows[0];
 
     if (user.password_hash !== passwordHash) {
-      return res.json({ status: "WRONG_PASSWORD" });
-    }
+
+  await pool.query(`
+    INSERT INTO security_log (user_id, action, ip_address)
+    VALUES ($1, $2, $3)
+  `, [
+    user.user_id,
+    'LOGIN_WRONG_PASSWORD',
+    req.headers["x-forwarded-for"]?.split(",")[0] || req.socket.remoteAddress || ""
+  ]);
+
+  return res.json({ status: "WRONG_PASSWORD" });
+}
 
     // ============================================================
     // 🔐 CREATE SESSION (NEW CORE)
@@ -157,6 +177,15 @@ await pool.query(`
   expiresAt,
   ip,
   userAgent
+]);
+
+await pool.query(`
+  INSERT INTO security_log (user_id, action, ip_address)
+  VALUES ($1, $2, $3)
+`, [
+  user.user_id,
+  'LOGIN_SUCCESS',
+  ip
 ]);
      
    /* ============================================================
