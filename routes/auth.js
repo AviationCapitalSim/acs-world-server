@@ -94,54 +94,54 @@ router.post("/auth/login", async (req, res) => {
 
   const { email, passwordHash } = req.body;
 
-/* ============================================================
-   LOGIN PROTECTION — BRUTE FORCE DEFENSE
-   ============================================================ */
+  /* ============================================================
+     LOGIN PROTECTION — BRUTE FORCE DEFENSE
+     ============================================================ */
 
-const ip =
-  req.headers["x-forwarded-for"]?.split(",")[0] ||
-  req.socket.remoteAddress ||
-  "";
+  const ip =
+    req.headers["x-forwarded-for"]?.split(",")[0] ||
+    req.socket.remoteAddress ||
+    "";
 
-const attemptsRes = await pool.query(`
-  SELECT COUNT(*) AS attempts
-  FROM security_log
-  WHERE ip_address = $1
-  AND action IN ('LOGIN_WRONG_PASSWORD', 'LOGIN_NO_USER')
-  AND date > NOW() - INTERVAL '10 minutes'
-`, [ip]);
-
-const attempts = Number(attemptsRes.rows[0].attempts);
-
-if (attempts >= 5) {
-
-  const firstRes = await pool.query(`
-    SELECT MIN(date) AS first_attempt
-    FROM security_log
-    WHERE ip_address = $1
-    AND action IN ('LOGIN_WRONG_PASSWORD', 'LOGIN_NO_USER')
-    AND date > NOW() - INTERVAL '10 minutes'
-  `, [ip]);
-
-  const firstAttempt = firstRes.rows[0].first_attempt;
-
-  let retrySeconds = 600;
-
-  if (firstAttempt) {
-    retrySeconds = Math.max(
-      0,
-      600 - Math.floor((Date.now() - new Date(firstAttempt).getTime()) / 1000)
-    );
-  }
-
-  return res.status(429).json({
-    ok: false,
-    error: "TOO_MANY_ATTEMPTS",
-    retry_in_seconds: retrySeconds
-  });
-}
-  
   try {
+
+    const attemptsRes = await pool.query(`
+      SELECT COUNT(*) AS attempts
+      FROM security_log
+      WHERE ip_address = $1
+      AND action IN ('LOGIN_WRONG_PASSWORD', 'LOGIN_NO_USER')
+      AND date > NOW() - INTERVAL '10 minutes'
+    `, [ip]);
+
+    const attempts = Number(attemptsRes.rows[0].attempts);
+
+    if (attempts >= 5) {
+
+      const firstRes = await pool.query(`
+        SELECT MIN(date) AS first_attempt
+        FROM security_log
+        WHERE ip_address = $1
+        AND action IN ('LOGIN_WRONG_PASSWORD', 'LOGIN_NO_USER')
+        AND date > NOW() - INTERVAL '10 minutes'
+      `, [ip]);
+
+      const firstAttempt = firstRes.rows[0].first_attempt;
+
+      let retrySeconds = 600;
+
+      if (firstAttempt) {
+        retrySeconds = Math.max(
+          0,
+          600 - Math.floor((Date.now() - new Date(firstAttempt).getTime()) / 1000)
+        );
+      }
+
+      return res.status(429).json({
+        ok: false,
+        error: "TOO_MANY_ATTEMPTS",
+        retry_in_seconds: retrySeconds
+      });
+    }
 
     const result = await pool.query(`
       SELECT u.user_id, u.email, u.airline_id, a.password_hash
@@ -150,41 +150,45 @@ if (attempts >= 5) {
       WHERE u.email = $1
     `, [email]);
 
-   if (!result.rows.length) {
+    if (!result.rows.length) {
 
-  await pool.query(`
-    INSERT INTO security_log (user_id, action, ip_address)
-    VALUES ($1, $2, $3)
-  `, [
-    null,
-    'LOGIN_NO_USER',
-    req.headers["x-forwarded-for"]?.split(",")[0] || req.socket.remoteAddress || ""
-  ]);
+      await pool.query(`
+        INSERT INTO security_log (user_id, action, ip_address)
+        VALUES ($1, $2, $3)
+      `, [
+        null,
+        'LOGIN_NO_USER',
+        ip
+      ]);
 
-  return res.status(401).json({
-  ok: false,
-  error: "INVALID_CREDENTIALS"
-});
+      await new Promise(r => setTimeout(r, 400));
+
+      return res.status(401).json({
+        ok: false,
+        error: "INVALID_CREDENTIALS"
+      });
+    }
 
     const user = result.rows[0];
 
     if (user.password_hash !== passwordHash) {
 
-  await pool.query(`
-    INSERT INTO security_log (user_id, action, ip_address)
-    VALUES ($1, $2, $3)
-  `, [
-    user.user_id,
-    'LOGIN_WRONG_PASSWORD',
-    req.headers["x-forwarded-for"]?.split(",")[0] || req.socket.remoteAddress || ""
-  ]);
+      await pool.query(`
+        INSERT INTO security_log (user_id, action, ip_address)
+        VALUES ($1, $2, $3)
+      `, [
+        user.user_id,
+        'LOGIN_WRONG_PASSWORD',
+        ip
+      ]);
 
-  await new Promise(r => setTimeout(r, 400));
+      await new Promise(r => setTimeout(r, 400));
 
-  return res.status(401).json({
-  ok: false,
-  error: "INVALID_CREDENTIALS"
-});
+      return res.status(401).json({
+        ok: false,
+        error: "INVALID_CREDENTIALS"
+      });
+    }
 
     // ============================================================
     // 🔐 CREATE SESSION (NEW CORE)
@@ -199,99 +203,91 @@ if (attempts >= 5) {
 
     const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 7); // 7 días
 
-    const ip =
-      req.headers["x-forwarded-for"]?.split(",")[0] ||
-      req.socket.remoteAddress ||
-      "";
-
     const userAgent = req.headers["user-agent"] || "";
 
-/* ============================================================
-   INVALIDATE PREVIOUS ACTIVE SESSIONS
-   ============================================================ */
+    /* ============================================================
+       INVALIDATE PREVIOUS ACTIVE SESSIONS
+       ============================================================ */
 
-await pool.query(`
-  UPDATE sessions
-  SET active = false
-  WHERE user_id = $1
-    AND active = true
-`, [user.user_id]);
-     
-     
-  await pool.query(`
-  INSERT INTO sessions
-  (session_token, token_hash, user_id, airline_id, created_at, expires_at, ip_address, user_agent, active, last_seen_at)
-  VALUES ($1,$2,$3,$4,NOW(),$5,$6,$7,true,NOW())
-`, [
-  rawToken,
-  tokenHash,
-  user.user_id,
-  user.airline_id,
-  expiresAt,
-  ip,
-  userAgent
-]);
+    await pool.query(`
+      UPDATE sessions
+      SET active = false
+      WHERE user_id = $1
+        AND active = true
+    `, [user.user_id]);
 
-await pool.query(`
-  INSERT INTO security_log (user_id, action, ip_address)
-  VALUES ($1, $2, $3)
-`, [
-  user.user_id,
-  'LOGIN_SUCCESS',
-  ip
-]);
-     
-   /* ============================================================
-   SET SECURE SESSION COOKIE
-   ============================================================ */
+    await pool.query(`
+      INSERT INTO sessions
+      (session_token, token_hash, user_id, airline_id, created_at, expires_at, ip_address, user_agent, active, last_seen_at)
+      VALUES ($1,$2,$3,$4,NOW(),$5,$6,$7,true,NOW())
+    `, [
+      rawToken,
+      tokenHash,
+      user.user_id,
+      user.airline_id,
+      expiresAt,
+      ip,
+      userAgent
+    ]);
 
-res.cookie("acs_session", rawToken, {
-  httpOnly: true,
-  secure: true,
-  sameSite: "none",
-  path: "/",
-  maxAge: 7 * 24 * 60 * 60 * 1000
-});
+    await pool.query(`
+      INSERT INTO security_log (user_id, action, ip_address)
+      VALUES ($1, $2, $3)
+    `, [
+      user.user_id,
+      'LOGIN_SUCCESS',
+      ip
+    ]);
 
-/* ============================================================
-   RESPONSE
-   ============================================================ */
+    /* ============================================================
+       SET SECURE SESSION COOKIE
+       ============================================================ */
 
-if (!user.airline_id) {
-  return res.json({
-    ok: true,
-    status: "NO_AIRLINE",
-    token: rawToken,
-    user: {
-      user_id: user.user_id,
-      email: user.email,
-      airline_id: null
+    res.cookie("acs_session", rawToken, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "none",
+      path: "/",
+      maxAge: 7 * 24 * 60 * 60 * 1000
+    });
+
+    /* ============================================================
+       RESPONSE
+       ============================================================ */
+
+    if (!user.airline_id) {
+      return res.json({
+        ok: true,
+        status: "NO_AIRLINE",
+        user: {
+          user_id: user.user_id,
+          email: user.email,
+          airline_id: null
+        }
+      });
     }
-  });
-}
 
-return res.json({
-  ok: true,
-  status: "HAS_AIRLINE",
-  token: rawToken,
-  user: {
-    user_id: user.user_id,
-    email: user.email,
-    airline_id: user.airline_id
-  }
-});
-     
+    return res.json({
+      ok: true,
+      status: "HAS_AIRLINE",
+      user: {
+        user_id: user.user_id,
+        email: user.email,
+        airline_id: user.airline_id
+      }
+    });
+
   } catch (err) {
 
-  console.error("LOGIN ERROR:", err);
+    console.error("LOGIN ERROR:", err);
 
-  res.status(500).json({
-    status: "ERROR",
-    message: err.message,
-    detail: err.detail || null
-  });
+    return res.status(500).json({
+      status: "ERROR",
+      message: err.message,
+      detail: err.detail || null
+    });
 
-}
+  }
 
 });
 
