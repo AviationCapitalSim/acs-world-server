@@ -94,6 +94,53 @@ router.post("/auth/login", async (req, res) => {
 
   const { email, passwordHash } = req.body;
 
+/* ============================================================
+   LOGIN PROTECTION — BRUTE FORCE DEFENSE
+   ============================================================ */
+
+const ip =
+  req.headers["x-forwarded-for"]?.split(",")[0] ||
+  req.socket.remoteAddress ||
+  "";
+
+const attemptsRes = await pool.query(`
+  SELECT COUNT(*) AS attempts
+  FROM security_log
+  WHERE ip_address = $1
+  AND action IN ('LOGIN_WRONG_PASSWORD', 'LOGIN_NO_USER')
+  AND date > NOW() - INTERVAL '10 minutes'
+`, [ip]);
+
+const attempts = Number(attemptsRes.rows[0].attempts);
+
+if (attempts >= 5) {
+
+  const firstRes = await pool.query(`
+    SELECT MIN(date) AS first_attempt
+    FROM security_log
+    WHERE ip_address = $1
+    AND action IN ('LOGIN_WRONG_PASSWORD', 'LOGIN_NO_USER')
+    AND date > NOW() - INTERVAL '10 minutes'
+  `, [ip]);
+
+  const firstAttempt = firstRes.rows[0].first_attempt;
+
+  let retrySeconds = 600;
+
+  if (firstAttempt) {
+    retrySeconds = Math.max(
+      0,
+      600 - Math.floor((Date.now() - new Date(firstAttempt).getTime()) / 1000)
+    );
+  }
+
+  return res.status(429).json({
+    ok: false,
+    error: "TOO_MANY_ATTEMPTS",
+    retry_in_seconds: retrySeconds
+  });
+}
+  
   try {
 
     const result = await pool.query(`
@@ -114,8 +161,10 @@ router.post("/auth/login", async (req, res) => {
     req.headers["x-forwarded-for"]?.split(",")[0] || req.socket.remoteAddress || ""
   ]);
 
-  return res.json({ status: "NO_USER" });
-}
+  return res.status(401).json({
+  ok: false,
+  error: "INVALID_CREDENTIALS"
+});
 
     const user = result.rows[0];
 
@@ -130,8 +179,12 @@ router.post("/auth/login", async (req, res) => {
     req.headers["x-forwarded-for"]?.split(",")[0] || req.socket.remoteAddress || ""
   ]);
 
-  return res.json({ status: "WRONG_PASSWORD" });
-}
+  await new Promise(r => setTimeout(r, 400));
+
+  return res.status(401).json({
+  ok: false,
+  error: "INVALID_CREDENTIALS"
+});
 
     // ============================================================
     // 🔐 CREATE SESSION (NEW CORE)
