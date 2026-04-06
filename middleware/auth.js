@@ -1,5 +1,5 @@
 /* ============================================================
-   === ACS AUTH MIDDLEWARE — COOKIE SESSION ===================
+   === ACS AUTH MIDDLEWARE — COOKIE SESSION  ===================
    ============================================================ */
 
 import crypto from "crypto";
