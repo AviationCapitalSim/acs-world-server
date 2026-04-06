@@ -50,21 +50,32 @@ if (session.ip_address && session.user_agent) {
   const ipChanged = session.ip_address !== currentIP;
   const uaChanged = session.user_agent !== currentUA;
 
-  if (ipChanged || uaChanged) {
-
 /* ============================================================
    SECURITY LOG — SUSPICIOUS SESSION
    ============================================================ */
 
-await pool.query(`
-  INSERT INTO security_log
-  (user_id, action, ip_address, date)
-  VALUES ($1, $2, $3, NOW())
-`, [
-  session.user_id,
-  "SUSPICIOUS_SESSION",
-  currentIP
-]);
+if (ipChanged || uaChanged) {
+
+  const recent = await pool.query(`
+    SELECT 1
+    FROM security_log
+    WHERE user_id = $1
+    AND action = 'SESSION_SUSPICIOUS'
+    AND date > NOW() - INTERVAL '5 minutes'
+    LIMIT 1
+  `, [session.user_id]);
+
+  if (!recent.rows.length) {
+    await pool.query(`
+      INSERT INTO security_log (user_id, action, ip_address)
+      VALUES ($1, $2, $3)
+    `, [
+      session.user_id,
+      "SESSION_SUSPICIOUS",
+      currentIP
+    ]);
+  }
+}
 
     // (FUTURO) aquí puedes registrar en DB o security_log
   }
