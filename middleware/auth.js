@@ -34,51 +34,49 @@ export async function requireAuth(req, res, next) {
     const session = result.rows[0];
 
     /* ============================================================
-   DEVICE / IP VALIDATION (SAFE MODE — NO BLOCK)
-   ============================================================ */
+       DEVICE / IP VALIDATION (SAFE MODE — NO BLOCK)
+       ============================================================ */
 
-const currentIP =
-  req.headers["x-forwarded-for"]?.split(",")[0] ||
-  req.socket.remoteAddress ||
-  "";
+    const currentIP =
+      req.headers["x-forwarded-for"]?.split(",")[0] ||
+      req.socket.remoteAddress ||
+      "";
 
-const currentUA = req.headers["user-agent"] || "";
+    const currentUA = req.headers["user-agent"] || "";
 
-// ⚠️ Comparación simple (no estricta)
-if (session.ip_address && session.user_agent) {
+    // ⚠️ Comparación simple (no estricta)
+    if (session.ip_address && session.user_agent) {
 
-  const ipChanged = session.ip_address !== currentIP;
-  const uaChanged = session.user_agent !== currentUA;
+      const ipChanged = session.ip_address !== currentIP;
+      const uaChanged = session.user_agent !== currentUA;
 
-  if (ipChanged || uaChanged) {
+      if (ipChanged || uaChanged) {
 
-    const recent = await pool.query(`
-      SELECT 1
-      FROM security_log
-      WHERE user_id = $1
-      AND action = 'SESSION_SUSPICIOUS'
-      AND date > NOW() - INTERVAL '5 minutes'
-      LIMIT 1
-    `, [session.user_id]);
+        const recent = await pool.query(`
+          SELECT 1
+          FROM security_log
+          WHERE user_id = $1
+          AND action = 'SESSION_SUSPICIOUS'
+          AND date > NOW() - INTERVAL '5 minutes'
+          LIMIT 1
+        `, [session.user_id]);
 
-    if (!recent.rows.length) {
-      await pool.query(`
-        INSERT INTO security_log (user_id, action, ip_address)
-        VALUES ($1, $2, $3)
-      `, [
-        session.user_id,
-        "SESSION_SUSPICIOUS",
-        currentIP
-      ]);
+        if (!recent.rows.length) {
+          await pool.query(`
+            INSERT INTO security_log (user_id, action, ip_address)
+            VALUES ($1, $2, $3)
+          `, [
+            session.user_id,
+            "SESSION_SUSPICIOUS",
+            currentIP
+          ]);
+        }
+
+      }
     }
 
-  }
-}
-     
     // (FUTURO) aquí puedes registrar en DB o security_log
-  }
-}
-     
+
     if (!session.active) {
       return res.status(401).json({ ok: false, error: "SESSION_INACTIVE" });
     }
