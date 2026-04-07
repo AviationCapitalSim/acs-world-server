@@ -166,11 +166,20 @@ router.post("/auth/login", async (req, res) => {
 
     const user = result.rows[0];
 
-    const passwordOk = await bcrypt.compare(passwordInput, user.password_hash);
+if (!passwordInput || !user.password_hash) {
+  console.error("LOGIN ERROR: missing password input or password_hash", {
+    email: normalizedEmail,
+    hasPasswordInput: !!passwordInput,
+    hasPasswordHash: !!user.password_hash
+  });
+  return await fail(user.user_id);
+}
 
-    if (!passwordOk) {
-      return await fail(user.user_id);
-    }
+const passwordOk = await bcrypt.compare(passwordInput, user.password_hash);
+
+if (!passwordOk) {
+  return await fail(user.user_id);
+}
 
     const rawToken = crypto.randomBytes(48).toString("hex");
 
