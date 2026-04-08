@@ -220,11 +220,11 @@ if (!passwordOk) {
       ip
     ]);
 
-    res.cookie("acs_session", rawToken, {
+ res.cookie("acs_session", rawToken, {
   httpOnly: true,
   secure: true,
   sameSite: "none",
-  domain: "api.aviationcapitalsim.com"
+  domain: "api.aviationcapitalsim.com",
   path: "/",
   maxAge: 7 * 24 * 60 * 60 * 1000
 });
