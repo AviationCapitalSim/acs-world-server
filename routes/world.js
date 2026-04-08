@@ -25,10 +25,30 @@ router.get("/world", async (req, res) => {
 
     const world = result.rows[0];
 
+    // 🧠 calcular tiempo simulado REAL
+    let simTime = world.frozen_sim_time;
+
+    if (world.status === "running" && world.real_start) {
+
+      const elapsedRealMs = Date.now() - new Date(world.real_start).getTime();
+
+      // ⏱ 1 segundo real = 1 minuto simulado
+      const simElapsed = elapsedRealMs * 60;
+
+      simTime = world.frozen_sim_time + simElapsed;
+    }
+
+    // 📅 convertir a año
+    const simDate = new Date(simTime);
+    const simYear = simDate.getUTCFullYear();
+
     res.json({
-    ...world,
-    server_now: Date.now()
-   });
+      ok: true,
+      ...world,
+      sim_time: simTime,
+      sim_year: simYear,
+      server_now: Date.now()
+    });
 
   } catch (err) {
 
@@ -79,4 +99,3 @@ router.post("/world", async (req, res) => {
   }
 
 });
-
