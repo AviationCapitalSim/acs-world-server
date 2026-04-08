@@ -1,5 +1,6 @@
 import express from "express";
 import { pool } from "../db/pool.js";
+import { requireAuth } from "../middleware/auth.js"; // 🔥 NUEVO
 
 const router = express.Router();
 
@@ -7,10 +8,12 @@ const router = express.Router();
    CREATE AIRLINE
 ============================================================ */
 
-router.post("/airlines/create", async (req, res) => {
+router.post("/airlines/create", requireAuth, async (req, res) => {
 
   const body = req.body;
-  const userUUID = body.user_id;
+
+  // 🔥 USAR SESSION (NO FRONTEND)
+  const userUUID = req.user_id;
 
   const client = await pool.connect();
 
@@ -44,7 +47,29 @@ router.post("/airlines/create", async (req, res) => {
     }
 
     /* ============================================================
-       2️⃣ Create airline
+       2️⃣ Check duplicate airline name (🔥 NUEVO)
+    ============================================================ */
+
+    const nameCheck = await client.query(
+      `
+      SELECT 1 FROM airlines WHERE airline_name = $1
+      `,
+      [body.airline_name]
+    );
+
+    if (nameCheck.rows.length > 0) {
+
+      await client.query("ROLLBACK");
+
+      return res.status(400).json({
+        ok: false,
+        error: "AIRLINE_NAME_ALREADY_EXISTS"
+      });
+
+    }
+
+    /* ============================================================
+       3️⃣ Create airline
     ============================================================ */
 
     const insertAirline = await client.query(
@@ -78,7 +103,7 @@ router.post("/airlines/create", async (req, res) => {
     const airlineId = insertAirline.rows[0].airline_id;
 
     /* ============================================================
-       3️⃣ Link airline to user
+       4️⃣ Link airline to user
     ============================================================ */
 
     await client.query(
@@ -91,7 +116,7 @@ router.post("/airlines/create", async (req, res) => {
     );
 
     /* ============================================================
-       4️⃣ Initialize HR Departments
+       5️⃣ Initialize HR Departments
     ============================================================ */
 
     await client.query(
