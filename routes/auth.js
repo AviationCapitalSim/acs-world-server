@@ -221,13 +221,14 @@ if (!passwordOk) {
     ]);
 
     res.cookie("acs_session", rawToken, {
-      httpOnly: true,
-      secure: true,
-      sameSite: "none",
-      path: "/",
-      maxAge: 7 * 24 * 60 * 60 * 1000
-    });
-
+  httpOnly: true,
+  secure: true,
+  sameSite: "none",
+  domain: ".aviationcapitalsim.com", // 🔥 CLAVE
+  path: "/",
+  maxAge: 7 * 24 * 60 * 60 * 1000
+});
+     
     return res.json({
       ok: true,
       user: {
