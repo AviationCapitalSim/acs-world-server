@@ -53,20 +53,19 @@ const allowedOrigins = [
 ];
 
 app.use(cors({
-  origin: function(origin, callback) {
+  origin: [
+    "https://aviationcapitalsim.com",
+    "https://www.aviationcapitalsim.com"
+  ],
+  credentials: true
+}));
 
-    // permitir requests sin origin (ej: curl, health checks)
-    if (!origin) return callback(null, true);
-
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    } else {
-      return callback(new Error("CORS not allowed: " + origin));
-    }
-  },
-  credentials: true,
-  methods: ["GET","POST","PATCH","PUT","DELETE","OPTIONS"],
-  allowedHeaders: ["Content-Type","Authorization"]
+app.options("*", cors({
+  origin: [
+    "https://aviationcapitalsim.com",
+    "https://www.aviationcapitalsim.com"
+  ],
+  credentials: true
 }));
 
 app.use(express.json({ limit: "1mb" }));
