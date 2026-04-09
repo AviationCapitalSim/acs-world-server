@@ -18,8 +18,13 @@ dotenv.config();
 const app = express();
 
 // 🔐 SECURITY HEADERS (HELMET)
+
 app.use(helmet({
-  contentSecurityPolicy: false // evitamos romper frontend por ahora
+  contentSecurityPolicy: false,
+  crossOriginResourcePolicy: false
+  
+}));
+  
 }));
 
 // 🚦 GLOBAL RATE LIMIT (protección general)
