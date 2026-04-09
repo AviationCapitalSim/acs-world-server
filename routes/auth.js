@@ -241,7 +241,6 @@ try {
   httpOnly: true,
   secure: true,
   sameSite: "none",
-  domain: ".aviationcapitalsim.com",
   path: "/",
   maxAge: 7 * 24 * 60 * 60 * 1000
 });
