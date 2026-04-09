@@ -192,24 +192,41 @@ if (!passwordOk) {
 
     const userAgent = req.headers["user-agent"] || "";
 
-    await pool.query(`
-      UPDATE sessions
-      SET active = false
-      WHERE user_id = $1
-    `, [user.user_id]);
+    const client = await pool.connect();
 
-    await pool.query(`
-      INSERT INTO sessions
-      (token_hash, user_id, airline_id, created_at, expires_at, ip_address, user_agent, active, last_seen_at)
-      VALUES ($1,$2,$3,NOW(),$4,$5,$6,true,NOW())
-    `, [
-      tokenHash,
-      user.user_id,
-      user.airline_id,
-      expiresAt,
-      ip,
-      userAgent
-    ]);
+try {
+  await client.query("BEGIN");
+
+  // 1. Desactivar sesiones anteriores
+  await client.query(`
+    UPDATE sessions
+    SET active = false
+    WHERE user_id = $1
+  `, [user.user_id]);
+
+  // 2. Insertar nueva sesión ACTIVA
+  await client.query(`
+    INSERT INTO sessions
+    (token_hash, user_id, airline_id, created_at, expires_at, ip_address, user_agent, active, last_seen_at)
+    VALUES ($1,$2,$3,NOW(),$4,$5,$6,true,NOW())
+  `, [
+    tokenHash,
+    user.user_id,
+    user.airline_id,
+    expiresAt,
+    ip,
+    userAgent
+  ]);
+
+  await client.query("COMMIT");
+
+} catch (err) {
+  await client.query("ROLLBACK");
+  console.error("SESSION INSERT ERROR:", err);
+  return res.status(500).json({ ok: false, error: "SESSION_CREATE_FAILED" });
+} finally {
+  client.release();
+}
 
     await pool.query(`
       INSERT INTO security_log (user_id, action, ip_address)
