@@ -20,13 +20,10 @@ const app = express();
 // 🔐 SECURITY HEADERS (HELMET)
 
 app.use(helmet({
-  contentSecurityPolicy: false,
-  crossOriginResourcePolicy: false
+  contentSecurityPolicy: false // evitamos romper frontend por ahora
   
 }));
   
-}));
-
 // 🚦 GLOBAL RATE LIMIT (protección general)
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutos
