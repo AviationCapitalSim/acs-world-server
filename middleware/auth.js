@@ -9,7 +9,17 @@ export async function requireAuth(req, res, next) {
 
   try {
 
-    const token = req.cookies?.acs_session;
+    const rawCookie = req.headers.cookie || "";
+
+const match = rawCookie.match(/acs_session=([^;]+)/g);
+
+if (!match || !match.length) {
+  return res.status(401).json({ ok: false, error: "NO_SESSION" });
+}
+
+// 👉 tomar SIEMPRE la ÚLTIMA (la más reciente)
+const lastCookie = match[match.length - 1];
+const token = lastCookie.split("=")[1];
 
     if (!token) {
       return res.status(401).json({ ok: false, error: "NO_SESSION" });
