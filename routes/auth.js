@@ -237,6 +237,14 @@ try {
       ip
     ]);
 
+// 🧹 CLEAR COOKIE ANTERIOR (CRÍTICO)
+res.clearCookie("acs_session", {
+  httpOnly: true,
+  secure: true,
+  sameSite: "none",
+  path: "/"
+});
+     
  res.cookie("acs_session", rawToken, {
   httpOnly: true,
   secure: true,
