@@ -9,15 +9,7 @@ export async function requireAuth(req, res, next) {
 
   try {
 
-/* ============================================================
-   🔐 COOKIE EXTRACTION — CLEAN (COOKIE-PARSER)
-   ============================================================ */
-
-const token = req.cookies?.acs_session;
-
-if (!token) {
-  return res.status(401).json({ ok: false, error: "NO_SESSION" });
-}
+    const token = req.cookies?.acs_session;
 
     if (!token) {
       return res.status(401).json({ ok: false, error: "NO_SESSION" });
