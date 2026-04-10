@@ -10,7 +10,8 @@ export async function requireAuth(req, res, next) {
   try {
 
     const token = req.cookies?.acs_session;
-
+    console.log("🔍 RAW TOKEN:", token);
+     
     if (!token) {
       return res.status(401).json({ ok: false, error: "NO_SESSION" });
     }
@@ -20,6 +21,8 @@ export async function requireAuth(req, res, next) {
       .update(token)
       .digest("hex");
 
+    console.log("🔍 TOKEN HASH:", tokenHash);
+     
     const result = await pool.query(`
       SELECT user_id, airline_id, expires_at, active, ip_address, user_agent
       FROM sessions
@@ -30,8 +33,10 @@ export async function requireAuth(req, res, next) {
     if (!result.rows.length) {
       return res.status(401).json({ ok: false, error: "INVALID_SESSION" });
     }
-
-    const session = result.rows[0];
+     
+     console.log("🔍 SESSION QUERY RESULT:", result.rows);
+     
+     const session = result.rows[0];
 
     /* ============================================================
        DEVICE / IP VALIDATION (SAFE MODE — NO BLOCK)
