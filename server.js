@@ -61,7 +61,13 @@ app.use(cors({
   exposedHeaders: ["set-cookie"]
 }));
 
-app.options("*", cors());
+app.options("*", cors({
+  origin: [
+    "https://aviationcapitalsim.com",
+    "https://www.aviationcapitalsim.com"
+  ],
+  credentials: true
+}));
 
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
