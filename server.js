@@ -51,20 +51,14 @@ const allowedOrigins = [
 ];
 
 app.use(cors({
-  origin: function(origin, callback) {
-
-    // permitir requests sin origin (ej: curl, health checks)
-    if (!origin) return callback(null, true);
-
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    } else {
-      return callback(new Error("CORS not allowed: " + origin));
-    }
-  },
+  origin: [
+    "https://aviationcapitalsim.com",
+    "https://www.aviationcapitalsim.com"
+  ],
   credentials: true,
   methods: ["GET","POST","PATCH","PUT","DELETE","OPTIONS"],
-  allowedHeaders: ["Content-Type","Authorization"]
+  allowedHeaders: ["Content-Type"],
+  exposedHeaders: ["set-cookie"]
 }));
 
 app.options("*", cors());
