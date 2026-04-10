@@ -46,6 +46,10 @@ app.use(globalLimiter);
 
 app.set("trust proxy", 1);
 
+/* ============================================================
+   🌐 CORS — CLEAN + SAFARI SAFE (ACS)
+   ============================================================ */
+
 const allowedOrigins = [
   "https://aviationcapitalsim.com",
   "https://www.aviationcapitalsim.com",
@@ -53,20 +57,25 @@ const allowedOrigins = [
 ];
 
 app.use(cors({
-  origin: [
-    "https://aviationcapitalsim.com",
-    "https://www.aviationcapitalsim.com"
-  ],
-  credentials: true
+  origin: function (origin, callback) {
+
+    // permitir requests sin origin (health, curl, etc.)
+    if (!origin) return callback(null, true);
+
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    } else {
+      return callback(new Error("CORS BLOCKED: " + origin));
+    }
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  optionsSuccessStatus: 204
 }));
 
-app.options("*", cors({
-  origin: [
-    "https://aviationcapitalsim.com",
-    "https://www.aviationcapitalsim.com"
-  ],
-  credentials: true
-}));
+// 🔥 CRÍTICO — responder correctamente preflight
+app.options("*", cors());
 
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
