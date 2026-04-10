@@ -192,41 +192,24 @@ if (!passwordOk) {
 
     const userAgent = req.headers["user-agent"] || "";
 
-    const client = await pool.connect();
+    await pool.query(`
+      UPDATE sessions
+      SET active = false
+      WHERE user_id = $1
+    `, [user.user_id]);
 
-try {
-  await client.query("BEGIN");
-
-  // 1. Desactivar sesiones anteriores
-  await client.query(`
-    UPDATE sessions
-    SET active = false
-    WHERE user_id = $1
-  `, [user.user_id]);
-
-  // 2. Insertar nueva sesión ACTIVA
-  await client.query(`
-    INSERT INTO sessions
-    (token_hash, user_id, airline_id, created_at, expires_at, ip_address, user_agent, active, last_seen_at)
-    VALUES ($1,$2,$3,NOW(),$4,$5,$6,true,NOW())
-  `, [
-    tokenHash,
-    user.user_id,
-    user.airline_id,
-    expiresAt,
-    ip,
-    userAgent
-  ]);
-
-  await client.query("COMMIT");
-
-} catch (err) {
-  await client.query("ROLLBACK");
-  console.error("SESSION INSERT ERROR:", err);
-  return res.status(500).json({ ok: false, error: "SESSION_CREATE_FAILED" });
-} finally {
-  client.release();
-}
+    await pool.query(`
+      INSERT INTO sessions
+      (token_hash, user_id, airline_id, created_at, expires_at, ip_address, user_agent, active, last_seen_at)
+      VALUES ($1,$2,$3,NOW(),$4,$5,$6,true,NOW())
+    `, [
+      tokenHash,
+      user.user_id,
+      user.airline_id,
+      expiresAt,
+      ip,
+      userAgent
+    ]);
 
     await pool.query(`
       INSERT INTO security_log (user_id, action, ip_address)
@@ -237,18 +220,11 @@ try {
       ip
     ]);
 
-// 🧹 CLEAR COOKIE ANTERIOR (CRÍTICO)
-res.clearCookie("acs_session", {
-  httpOnly: true,
-  secure: true,
-  sameSite: "none",
-  path: "/"
-});
-     
  res.cookie("acs_session", rawToken, {
   httpOnly: true,
   secure: true,
   sameSite: "none",
+  domain: "api.aviationcapitalsim.com",
   path: "/",
   maxAge: 7 * 24 * 60 * 60 * 1000
 });
