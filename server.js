@@ -18,12 +18,10 @@ dotenv.config();
 const app = express();
 
 // 🔐 SECURITY HEADERS (HELMET)
-
 app.use(helmet({
   contentSecurityPolicy: false // evitamos romper frontend por ahora
-  
 }));
-  
+
 // 🚦 GLOBAL RATE LIMIT (protección general)
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutos
@@ -46,10 +44,6 @@ app.use(globalLimiter);
 
 app.set("trust proxy", 1);
 
-/* ============================================================
-   🌐 CORS — CLEAN + SAFARI SAFE (ACS)
-   ============================================================ */
-
 const allowedOrigins = [
   "https://aviationcapitalsim.com",
   "https://www.aviationcapitalsim.com",
@@ -57,24 +51,22 @@ const allowedOrigins = [
 ];
 
 app.use(cors({
-  origin: function (origin, callback) {
+  origin: function(origin, callback) {
 
-    // permitir requests sin origin (health, curl, etc.)
+    // permitir requests sin origin (ej: curl, health checks)
     if (!origin) return callback(null, true);
 
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     } else {
-      return callback(new Error("CORS BLOCKED: " + origin));
+      return callback(new Error("CORS not allowed: " + origin));
     }
   },
   credentials: true,
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-  optionsSuccessStatus: 204
+  methods: ["GET","POST","PATCH","PUT","DELETE","OPTIONS"],
+  allowedHeaders: ["Content-Type","Authorization"]
 }));
 
-// 🔥 CRÍTICO — responder correctamente preflight
 app.options("*", cors());
 
 app.use(express.json({ limit: "1mb" }));
