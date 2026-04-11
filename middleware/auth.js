@@ -15,6 +15,11 @@ export async function requireAuth(req, res, next) {
 
 const token = req.cookies?.acs_session;
 
+console.log("=== COOKIE DEBUG ===");
+console.log("req.cookies:", req.cookies);
+console.log("acs_session:", token);
+console.log("====================");
+
 if (!token) {
   return res.status(401).json({ ok: false, error: "NO_SESSION" });
 }
