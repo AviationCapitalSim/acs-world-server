@@ -52,11 +52,20 @@ const allowedOrigins = [
   "https://aviationcapitalsim.github.io"
 ];
 
+const allowedOrigins = [
+  "https://aviationcapitalsim.com",
+  "https://www.aviationcapitalsim.com"
+];
+
 app.use(cors({
-  origin: [
-    "https://aviationcapitalsim.com",
-    "https://www.aviationcapitalsim.com"
-  ],
+  origin: function(origin, callback) {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    } else {
+      return callback(new Error("CORS not allowed"), false);
+    }
+  },
   credentials: true
 }));
 
