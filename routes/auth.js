@@ -223,7 +223,7 @@ if (!passwordOk) {
  res.cookie("acs_session", rawToken, {
   httpOnly: true,
   secure: true,
-  sameSite: "lax",
+  sameSite: "none",   // ✅ FIX CRÍTICO
   path: "/",
   maxAge: 7 * 24 * 60 * 60 * 1000
 });
