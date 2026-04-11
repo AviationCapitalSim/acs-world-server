@@ -9,6 +9,8 @@ export async function requireAuth(req, res, next) {
 
   try {
 
+    console.log("🍪 COOKIES:", req.cookies);
+     
     const token = req.cookies?.acs_session;
     console.log("🔍 RAW TOKEN:", token);
      
