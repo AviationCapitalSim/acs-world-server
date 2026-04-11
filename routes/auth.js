@@ -211,19 +211,23 @@ if (!passwordOk) {
       userAgent
     ]);
 
-    await pool.query(`
-      INSERT INTO security_log (user_id, action, ip_address)
-      VALUES ($1, $2, $3)
-    `, [
-      user.user_id,
-      "LOGIN_SUCCESS",
-      ip
-    ]);
+ await pool.query(`
+  INSERT INTO security_log (user_id, action, ip_address)
+  VALUES ($1, $2, $3)
+`, [
+  user.user_id,
+  "LOGIN_SUCCESS",
+  ip
+]);
 
- res.cookie("acs_session", rawToken, {
+res.clearCookie("acs_session", {
+  path: "/"
+});
+
+res.cookie("acs_session", rawToken, {
   httpOnly: true,
   secure: true,
-  sameSite: "lax",
+  sameSite: "none",
   path: "/",
   maxAge: 7 * 24 * 60 * 60 * 1000
 });
