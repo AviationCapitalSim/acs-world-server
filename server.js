@@ -12,27 +12,30 @@ import cookieParser from "cookie-parser";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 
+
 dotenv.config();
 
 const app = express();
 
-// 🔐 SECURITY HEADERS
-app.use(helmet({
-  contentSecurityPolicy: false
-}));
+// 🔐 SECURITY HEADERS (HELMET)
 
-// 🚦 GLOBAL RATE LIMIT
+app.use(helmet({
+  contentSecurityPolicy: false // evitamos romper frontend por ahora
+  
+}));
+  
+// 🚦 GLOBAL RATE LIMIT (protección general)
 const globalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 300,
+  windowMs: 15 * 60 * 1000, // 15 minutos
+  max: 300, // máximo 300 requests por IP
   standardHeaders: true,
   legacyHeaders: false
 });
 
-// 🔐 LOGIN RATE LIMIT
+// 🔐 LOGIN RATE LIMIT (anti brute force)
 const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
+  windowMs: 15 * 60 * 1000, // 15 minutos
+  max: 10, // máximo 10 intentos
   message: {
     status: "RATE_LIMIT",
     message: "Too many login attempts. Try again in 15 minutes."
@@ -43,34 +46,32 @@ app.use(globalLimiter);
 
 app.set("trust proxy", 1);
 
-// ✅ ORIGINS CENTRALIZADO
 const allowedOrigins = [
   "https://aviationcapitalsim.com",
   "https://www.aviationcapitalsim.com",
   "https://aviationcapitalsim.github.io"
 ];
 
-// ✅ CORS LIMPIO (SIN DUPLICADOS)
 app.use(cors({
-  origin: function(origin, callback) {
+  origin: [
+    "https://aviationcapitalsim.com",
+    "https://www.aviationcapitalsim.com"
+  ],
+  credentials: true
+}));
 
-    if (!origin) return callback(null, true);
-
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    } else {
-      return callback(new Error("CORS not allowed: " + origin));
-    }
-  },
-  credentials: true,
-  methods: ["GET","POST","PATCH","PUT","DELETE","OPTIONS"],
-  allowedHeaders: ["Content-Type","Authorization"]
+app.options("*", cors({
+  origin: [
+    "https://aviationcapitalsim.com",
+    "https://www.aviationcapitalsim.com"
+  ],
+  credentials: true
 }));
 
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
 
-// ✅ Health check
+// ✅ Health check (NO DB) — Railway debe recibir respuesta sí o sí
 app.get("/health", (req, res) => {
   res.status(200).json({
     ok: true,
@@ -94,12 +95,14 @@ app.use("/v1", financeRoutes);
 
 const PORT = process.env.PORT || 3000;
 
+// ✅ Logs básicos para detectar env vacíos
 console.log("[ACS] Boot env:", {
   PORT,
   has_DATABASE_URL: !!process.env.DATABASE_URL,
   node_env: process.env.NODE_ENV || "undefined"
 });
 
+// ✅ Escuchar en 0.0.0.0 (Railway-friendly)
 app.listen(PORT, "0.0.0.0", () => {
   console.log("ACS World Server running on port", PORT);
 });
