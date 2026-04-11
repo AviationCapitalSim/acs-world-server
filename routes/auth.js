@@ -223,7 +223,8 @@ if (!passwordOk) {
  res.cookie("acs_session", rawToken, {
   httpOnly: true,
   secure: true,
-  sameSite: "none",   // ✅ FIX CRÍTICO
+  sameSite: "none",
+  domain: "api.aviationcapitalsim.com",
   path: "/",
   maxAge: 7 * 24 * 60 * 60 * 1000
 });
