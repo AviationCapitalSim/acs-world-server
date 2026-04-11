@@ -231,6 +231,10 @@ res.cookie("acs_session", rawToken, {
   path: "/",
   maxAge: 7 * 24 * 60 * 60 * 1000
 });
+
+console.log("=== SET COOKIE ===");
+console.log("rawToken:", rawToken);
+console.log("==================");
      
     return res.json({
       ok: true,
