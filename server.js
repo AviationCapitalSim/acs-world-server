@@ -48,12 +48,6 @@ app.set("trust proxy", 1);
 
 const allowedOrigins = [
   "https://aviationcapitalsim.com",
-  "https://www.aviationcapitalsim.com",
-  "https://aviationcapitalsim.github.io"
-];
-
-const allowedOrigins = [
-  "https://aviationcapitalsim.com",
   "https://www.aviationcapitalsim.com"
 ];
 
