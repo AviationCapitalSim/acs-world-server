@@ -1,6 +1,7 @@
 import express from "express";
 import { pool } from "../db/pool.js";
 import crypto from "crypto";
+import bcrypt from "bcrypt";
 
 const router = express.Router();
 
@@ -16,7 +17,7 @@ router.post("/auth/register", async (req, res) => {
   country,
   dob,
   age,
-  passwordHash,
+  password,
   termsAccepted
 } = req.body;
 
@@ -59,6 +60,9 @@ await pool.query(`
   userId
 ]);
      
+    // 🔐 HASH PASSWORD (BCRYPT)
+    const hashedPassword = await bcrypt.hash(password, 10);
+
     // guardar auth
      
     await pool.query(`
@@ -66,7 +70,7 @@ await pool.query(`
       (user_id, email, password_hash)
       VALUES ($1,$2,$3)
     `,
-    [userId, email, passwordHash]
+    [userId, email, hashedPassword]
     );
 
     res.json({
