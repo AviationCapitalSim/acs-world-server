@@ -179,7 +179,6 @@ if (!user.airline_id) {
   return res.json({
     ok: true,
     status: "NO_AIRLINE",
-    token: rawToken,
     user: {
       user_id: user.user_id,
       email: user.email,
@@ -191,7 +190,6 @@ if (!user.airline_id) {
 return res.json({
   ok: true,
   status: "HAS_AIRLINE",
-  token: rawToken,
   user: {
     user_id: user.user_id,
     email: user.email,
