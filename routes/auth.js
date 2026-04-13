@@ -114,11 +114,18 @@ router.post("/auth/login", async (req, res) => {
     const user = result.rows[0];
 
     // 🔐 BCRYPT COMPARE
-    const isMatch = await bcrypt.compare(password, user.password_hash);
+     
+   if (!user.password_hash) {
+  return res.status(500).json({
+    status: "AUTH_DATA_INVALID"
+  });
+}
 
-    if (!isMatch) {
-      return res.json({ status: "WRONG_PASSWORD" });
-    }
+const isMatch = await bcrypt.compare(password, user.password_hash);
+
+if (!isMatch) {
+  return res.json({ status: "WRONG_PASSWORD" });
+}
 
     // ============================================================
     // 🔐 CREATE SESSION (NEW CORE)
