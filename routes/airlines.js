@@ -165,4 +165,52 @@ router.post("/airlines/create", requireAuth, async (req, res) => {
 
 });
 
+/* ============================================================
+   SET BASE (USER)
+============================================================ */
+
+router.post("/users/set-base", requireAuth, async (req, res) => {
+
+  const { base_icao } = req.body;
+
+  if (!base_icao) {
+    return res.status(400).json({
+      ok: false,
+      error: "MISSING_BASE_ICAO"
+    });
+  }
+
+  try {
+
+    const result = await pool.query(`
+      UPDATE users
+      SET base_icao = $1
+      WHERE user_id = $2
+      RETURNING user_id, base_icao
+    `, [base_icao, req.user_id]);
+
+    if (!result.rows.length) {
+      return res.status(404).json({
+        ok: false,
+        error: "USER_NOT_FOUND"
+      });
+    }
+
+    res.json({
+      ok: true,
+      base_icao: result.rows[0].base_icao
+    });
+
+  } catch (err) {
+
+    console.error("SET BASE ERROR:", err);
+
+    res.status(500).json({
+      ok: false,
+      error: "SET_BASE_FAILED"
+    });
+  }
+
+});
+
 export default router;
