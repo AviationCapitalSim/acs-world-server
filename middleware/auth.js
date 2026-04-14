@@ -5,11 +5,42 @@
 import crypto from "crypto";
 import { pool } from "../db/pool.js";
 
+function getCanonicalSessionToken(req) {
+  const rawHeader = req.headers?.cookie || "";
+
+  if (!rawHeader) return null;
+
+  const parts = rawHeader
+    .split(";")
+    .map(p => p.trim())
+    .filter(Boolean);
+
+  const sessionCookies = [];
+
+  for (const part of parts) {
+    const eqIndex = part.indexOf("=");
+    if (eqIndex === -1) continue;
+
+    const name = part.slice(0, eqIndex).trim();
+    const value = part.slice(eqIndex + 1).trim();
+
+    if (name === "acs_session" && value) {
+      sessionCookies.push(value);
+    }
+  }
+
+  if (!sessionCookies.length) {
+    return null;
+  }
+
+  return sessionCookies[sessionCookies.length - 1];
+}
+
 export async function requireAuth(req, res, next) {
 
   try {
 
-    const token = req.cookies?.acs_session;
+    const token = getCanonicalSessionToken(req);
 
     if (!token) {
       return res.status(401).json({ ok: false, error: "NO_SESSION" });
