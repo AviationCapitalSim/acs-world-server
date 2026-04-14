@@ -172,15 +172,43 @@ await pool.query(`
   userAgent
 ]);
      
-   /* ============================================================
-   SET SECURE SESSION COOKIE
+/* ============================================================
+   CANONICAL SESSION COOKIE — SINGLE SOURCE OF TRUTH
+   • Limpia variantes viejas
+   • Emite una sola cookie canónica para todo ACS
    ============================================================ */
 
+// 1) limpiar variantes heredadas / legacy
+res.clearCookie("acs_session", {
+  httpOnly: true,
+  secure: true,
+  sameSite: "none",
+  path: "/"
+});
+
+res.clearCookie("acs_session", {
+  httpOnly: true,
+  secure: true,
+  sameSite: "none",
+  path: "/",
+  domain: "api.aviationcapitalsim.com"
+});
+
+res.clearCookie("acs_session", {
+  httpOnly: true,
+  secure: true,
+  sameSite: "none",
+  path: "/",
+  domain: ".aviationcapitalsim.com"
+});
+
+// 2) emitir cookie canónica única
 res.cookie("acs_session", rawToken, {
   httpOnly: true,
   secure: true,
   sameSite: "none",
   path: "/",
+  domain: ".aviationcapitalsim.com",
   maxAge: 7 * 24 * 60 * 60 * 1000
 });
 
