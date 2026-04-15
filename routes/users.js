@@ -1,5 +1,5 @@
 /* ============================================================
-   === ACS USERS ROUTES — PROFILE ==============================
+   === ACS USERS PROFILE — CANONICAL (JOIN MODE) ===============
    ============================================================ */
 
 import express from "express";
@@ -7,65 +7,72 @@ import { pool } from "../db/pool.js";
 
 const router = express.Router();
 
-/* ============================================================
-   GET USER PROFILE (DASHBOARD)
-   ============================================================ */
-
 router.get("/users/profile/:userId", async (req, res) => {
 
   try {
 
     const { userId } = req.params;
 
-    console.log("[ACS PROFILE] Request for user:", userId);
+    console.log("[ACS PROFILE] Request:", userId);
 
-    /* ================= USER ================= */
+    const result = await pool.query(`
+      SELECT 
+        u.user_id,
+        u.full_name,
+        u.email,
+        u.country AS user_country,
+        u.base_icao,
+        u.airline_id,
 
-    const userResult = await pool.query(`
-      SELECT user_id, email, airline_id, base_icao, base_city, base_country
-      FROM users
-      WHERE user_id = $1
+        a.airline_name,
+        a.country AS airline_country,
+        a.iata,
+        a.icao,
+        a.region,
+        a.business_model,
+        a.operation_mode
+
+      FROM users u
+      LEFT JOIN airlines a
+        ON a.user_id = u.user_id
+
+      WHERE u.user_id = $1
       LIMIT 1
     `, [userId]);
 
-    if (!userResult.rows.length) {
+    if (!result.rows.length) {
       return res.status(404).json({
         status: "error",
         message: "USER_NOT_FOUND"
       });
     }
 
-    const user = userResult.rows[0];
-
-    /* ================= AIRLINE ================= */
-
-    let airline = {};
-
-    if (user.airline_id) {
-
-      const airlineResult = await pool.query(`
-        SELECT airline_id, airline_name, country, rank
-        FROM airlines
-        WHERE airline_id = $1
-        LIMIT 1
-      `, [user.airline_id]);
-
-      if (airlineResult.rows.length) {
-        airline = airlineResult.rows[0];
-      }
-    }
-
-    /* ================= RESPONSE ================= */
+    const row = result.rows[0];
 
     return res.json({
       status: "success",
-      user,
-      airline
+      user: {
+        user_id: row.user_id,
+        full_name: row.full_name,
+        email: row.email,
+        country: row.user_country,
+        base_icao: row.base_icao,
+        airline_id: row.airline_id
+      },
+      airline: {
+        airline_name: row.airline_name,
+        country: row.airline_country,
+        iata: row.iata,
+        icao: row.icao,
+        region: row.region,
+        business_model: row.business_model,
+        operation_mode: row.operation_mode
+      }
     });
 
   } catch (err) {
 
-    console.error("[ACS PROFILE ERROR]", err);
+    console.error("❌ PROFILE ERROR:", err);
 
     return res.status(500).json({
       status: "error",
