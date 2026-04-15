@@ -11,6 +11,7 @@ import financeRoutes from "./routes/finance.js";
 import cookieParser from "cookie-parser";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
+import usersRoutes from "./routes/users.js";
 
 
 dotenv.config();
@@ -93,6 +94,7 @@ app.use("/v1", authRoutes);
 app.use("/v1", airlineRoutes);
 app.use("/v1", hrRoutes);
 app.use("/v1", financeRoutes);
+app.use("/v1", usersRoutes);
 
 const PORT = process.env.PORT || 3000;
 
