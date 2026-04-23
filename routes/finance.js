@@ -80,7 +80,7 @@ router.patch("/finance/update", requireAuth, async (req,res)=>{
      🟦 CORE VALUES
   ============================================================ */
 
-  const capital          = toInt(req.body.capital);
+  // ⛔ CAPITAL NO VIENE DESDE FRONTEND
   const revenue          = toInt(req.body.revenue);
   const expenses         = toInt(req.body.expenses);
 
@@ -125,7 +125,6 @@ router.patch("/finance/update", requireAuth, async (req,res)=>{
       `
       INSERT INTO company_finance (
         airline_id,
-        capital,
         revenue,
         expenses,
         profit,
@@ -146,15 +145,14 @@ router.patch("/finance/update", requireAuth, async (req,res)=>{
         updated_at
       )
       VALUES(
-        $1,$2,$3,$4,$5,$6,$7,
-        $8,$9,$10,$11,
-        $12,$13,$14,$15,
-        $16,$17,$18,$19,
+        $1,$2,$3,$4,$5,$6,
+        $7,$8,$9,$10,
+        $11,$12,$13,$14,
+        $15,$16,$17,$18,
         NOW()
       )
       ON CONFLICT (airline_id)
       DO UPDATE SET
-        capital = EXCLUDED.capital,
         revenue = EXCLUDED.revenue,
         expenses = EXCLUDED.expenses,
         profit = EXCLUDED.profit,
@@ -176,7 +174,6 @@ router.patch("/finance/update", requireAuth, async (req,res)=>{
       `,
       [
         airline_id,
-        capital,
         revenue,
         expenses,
         profit,
