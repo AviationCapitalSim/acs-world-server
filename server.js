@@ -8,6 +8,7 @@ import authRoutes from "./routes/auth.js";
 import airlineRoutes from "./routes/airlines.js";
 import hrRoutes from "./routes/hr.js";
 import financeRoutes from "./routes/finance.js";
+import companySettingsRoutes from "./routes/company_settings.js";
 import cookieParser from "cookie-parser";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
@@ -93,6 +94,7 @@ app.use("/v1/auth/login", loginLimiter);
 app.use("/v1", authRoutes);
 app.use("/v1", airlineRoutes);
 app.use("/v1", hrRoutes);
+app.use("/v1", companySettingsRoutes);
 app.use("/v1", financeRoutes);
 app.use("/v1", usersRoutes);
 
