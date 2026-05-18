@@ -14,7 +14,7 @@ import cookieParser from "cookie-parser";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import usersRoutes from "./routes/users.js";
-
+import scheduleRoutes from "./routes/schedule.js";
 
 dotenv.config();
 
@@ -99,6 +99,7 @@ app.use("/v1", companySettingsRoutes);
 app.use("/v1", companyContextRoutes);
 app.use("/v1", financeRoutes);
 app.use("/v1", usersRoutes);
+app.use("/v1", scheduleRoutes);
 
 const PORT = process.env.PORT || 3000;
 
