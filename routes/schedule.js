@@ -105,34 +105,104 @@ router.get("/schedule", requireAuth, async (req, res) => {
 });
 
 /* ============================================================
-   🟦 GET /v1/schedule/items
+   🟦 ACS SCHEDULE CONTEXT — BACKEND AUTHORITY v1.0
    ------------------------------------------------------------
-   Returns all schedule items for authenticated airline.
+   Route:
+   GET /v1/schedule/context
+
+   Purpose:
+   - Provide one backend-authoritative Schedule context payload
+   - Return route_plans and schedule_items for req.airline_id
+   - No frontend authority
+   - No localStorage authority
+   - No Finance mutation
+   - No Time Engine interaction
    ============================================================ */
 
-router.get("/schedule/items", requireAuth, async (req, res) => {
+router.get("/schedule/context", requireAuth, async (req, res) => {
   try {
-    const { rows } = await pool.query(
+    const airlineId = req.airline_id;
+
+    if (!airlineId) {
+      return res.status(401).json({
+        ok: false,
+        error: "NO_AIRLINE_SESSION",
+        details: "No airline_id found in authenticated session"
+      });
+    }
+
+    const routePlansResult = await pool.query(
       `
-      SELECT *
-      FROM public.schedule_items
+      SELECT
+        id,
+        route_uid,
+        airline_id,
+        origin,
+        destination,
+        route_type,
+        selected_days,
+        departure,
+        arrival,
+        model_key,
+        aircraft,
+        aircraft_registration,
+        distance_nm,
+        status,
+        notes,
+        created_at,
+        updated_at
+      FROM route_plans
       WHERE airline_id = $1
-      ORDER BY created_at DESC
+      ORDER BY created_at DESC, id DESC
       `,
-      [req.airline_id]
+      [airlineId]
+    );
+
+    const scheduleItemsResult = await pool.query(
+      `
+      SELECT
+        id,
+        schedule_uid,
+        route_plan_id,
+        route_uid,
+        airline_id,
+        item_type,
+        service_type,
+        origin,
+        destination,
+        selected_day,
+        departure,
+        arrival,
+        model_key,
+        aircraft,
+        aircraft_registration,
+        flight_number,
+        distance_nm,
+        status,
+        notes,
+        created_at,
+        updated_at
+      FROM schedule_items
+      WHERE airline_id = $1
+      ORDER BY created_at DESC, id DESC
+      `,
+      [airlineId]
     );
 
     return res.json({
       ok: true,
-      schedule_items: rows
+      airline_id: airlineId,
+      route_plans: routePlansResult.rows,
+      schedule_items: scheduleItemsResult.rows
     });
-  } catch (error) {
-    console.error("SCHEDULE_ITEMS_GET_ERROR:", error);
+
+  } catch (err) {
+    console.error("ACS SCHEDULE CONTEXT ERROR:", err);
 
     return res.status(500).json({
       ok: false,
-      error: "SCHEDULE_ERROR",
-      details: error.message
+      error: "SCHEDULE_CONTEXT_FAILED",
+      details: err.message
     });
   }
 });
