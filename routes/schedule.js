@@ -685,4 +685,73 @@ router.post("/schedule/flight-number/allocate", requireAuth, async (req, res) =>
   }
 });
 
+
+
+/* ============================================================
+   🟦 ACS FLIGHT NUMBER ALLOCATIONS LIST — BACKEND AUTHORITY v1.0
+   ------------------------------------------------------------
+   Route:
+   GET /v1/schedule/flight-number/allocations
+
+   Purpose:
+   - Read flight number allocations for authenticated airline
+   - Use req.airline_id from requireAuth
+   - PostgreSQL is the only authority
+   - No frontend-generated flight numbers
+   - No localStorage authority
+   - No Finance mutation
+   - No Time Engine interaction
+   ============================================================ */
+
+router.get("/schedule/flight-number/allocations", requireAuth, async (req, res) => {
+  try {
+    const airlineId = req.airline_id;
+
+    if (!airlineId) {
+      return res.status(401).json({
+        ok: false,
+        error: "NO_AIRLINE_SESSION",
+        details: "No airline_id found in authenticated session"
+      });
+    }
+
+    const allocationsResult = await pool.query(
+      `
+      SELECT
+        id,
+        allocation_uid,
+        airline_id,
+        route_plan_id,
+        schedule_item_id,
+        iata_code,
+        flight_number,
+        direction,
+        origin,
+        destination,
+        created_at,
+        updated_at
+      FROM flight_number_allocations
+      WHERE airline_id = $1
+      ORDER BY created_at DESC, id DESC
+      `,
+      [airlineId]
+    );
+
+    return res.json({
+      ok: true,
+      airline_id: airlineId,
+      allocations: allocationsResult.rows
+    });
+
+  } catch (err) {
+    console.error("ACS FLIGHT NUMBER ALLOCATIONS LIST ERROR:", err);
+
+    return res.status(500).json({
+      ok: false,
+      error: "FLIGHT_NUMBER_ALLOCATIONS_LIST_FAILED",
+      details: err.message
+    });
+  }
+});
+
 export default router;
