@@ -131,7 +131,7 @@ router.get("/schedule/context", requireAuth, async (req, res) => {
       });
     }
 
-    const routePlansResult = await pool.query(
+   const routePlansResult = await pool.query(
   `
   SELECT
     id,
@@ -147,8 +147,8 @@ router.get("/schedule/context", requireAuth, async (req, res) => {
     aircraft,
     NULL AS aircraft_registration,
     distance_nm,
-    status,
-    notes,
+    NULL AS status,
+    NULL AS notes,
     created_at,
     updated_at
   FROM route_plans
