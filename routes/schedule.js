@@ -428,4 +428,261 @@ router.post("/schedule/items", requireAuth, async (req, res) => {
   }
 });
 
+/* ============================================================
+   🟦 ACS FLIGHT NUMBER ALLOCATION — BACKEND AUTHORITY v1.0
+   ------------------------------------------------------------
+   Route:
+   POST /v1/schedule/flight-number/allocate
+
+   Purpose:
+   - Allocate unique flight numbers per airline IATA code
+   - Use req.airline_id from requireAuth
+   - Use PostgreSQL as authority
+   - No frontend-generated flight numbers
+   - No localStorage authority
+   - No Finance mutation
+   - No Time Engine interaction
+   ============================================================ */
+
+router.post("/schedule/flight-number/allocate", requireAuth, async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const airlineId = req.airline_id;
+    const {
+      route_plan_id,
+      schedule_item_id = null,
+      direction = "OUTBOUND"
+    } = req.body || {};
+
+    if (!airlineId) {
+      return res.status(401).json({
+        ok: false,
+        error: "NO_AIRLINE_SESSION",
+        details: "No airline_id found in authenticated session"
+      });
+    }
+
+    if (!route_plan_id) {
+      return res.status(400).json({
+        ok: false,
+        error: "VALIDATION_ERROR",
+        details: "route_plan_id is required"
+      });
+    }
+
+    await client.query("BEGIN");
+
+    const airlineResult = await client.query(
+      `
+      SELECT
+        airline_id,
+        airline_name,
+        iata,
+        icao
+      FROM airlines
+      WHERE airline_id = $1
+      LIMIT 1
+      `,
+      [airlineId]
+    );
+
+    if (airlineResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+
+      return res.status(404).json({
+        ok: false,
+        error: "AIRLINE_NOT_FOUND",
+        details: "Authenticated airline was not found"
+      });
+    }
+
+    const airline = airlineResult.rows[0];
+    const iataCode = String(airline.iata || "").trim().toUpperCase();
+
+    if (!iataCode) {
+      await client.query("ROLLBACK");
+
+      return res.status(400).json({
+        ok: false,
+        error: "MISSING_IATA_CODE",
+        details: "Airline does not have an IATA code assigned"
+      });
+    }
+
+    const routePlanResult = await client.query(
+      `
+      SELECT
+        id,
+        route_uid,
+        airline_id,
+        origin,
+        destination
+      FROM route_plans
+      WHERE id = $1
+        AND airline_id = $2
+      LIMIT 1
+      `,
+      [route_plan_id, airlineId]
+    );
+
+    if (routePlanResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+
+      return res.status(404).json({
+        ok: false,
+        error: "ROUTE_PLAN_NOT_FOUND",
+        details: "Route plan was not found for this airline"
+      });
+    }
+
+    const routePlan = routePlanResult.rows[0];
+
+    if (schedule_item_id) {
+      const scheduleItemResult = await client.query(
+        `
+        SELECT
+          id,
+          schedule_uid,
+          airline_id,
+          route_plan_id
+        FROM schedule_items
+        WHERE id = $1
+          AND airline_id = $2
+          AND route_plan_id = $3
+        LIMIT 1
+        `,
+        [schedule_item_id, airlineId, route_plan_id]
+      );
+
+      if (scheduleItemResult.rows.length === 0) {
+        await client.query("ROLLBACK");
+
+        return res.status(404).json({
+          ok: false,
+          error: "SCHEDULE_ITEM_NOT_FOUND",
+          details: "Schedule item was not found for this route plan"
+        });
+      }
+    }
+
+    let sequenceResult = await client.query(
+      `
+      SELECT
+        id,
+        airline_id,
+        iata_code,
+        last_number
+      FROM flight_number_sequences
+      WHERE airline_id = $1
+        AND iata_code = $2
+      FOR UPDATE
+      `,
+      [airlineId, iataCode]
+    );
+
+    if (sequenceResult.rows.length === 0) {
+      sequenceResult = await client.query(
+        `
+        INSERT INTO flight_number_sequences (
+          airline_id,
+          iata_code,
+          last_number
+        )
+        VALUES ($1, $2, 0)
+        RETURNING
+          id,
+          airline_id,
+          iata_code,
+          last_number
+        `,
+        [airlineId, iataCode]
+      );
+    }
+
+    const currentLastNumber = Number(sequenceResult.rows[0].last_number || 0);
+    const nextNumber = currentLastNumber + 1;
+    const formattedNumber = String(nextNumber).padStart(3, "0");
+    const flightNumber = `${iataCode}${formattedNumber}`;
+    const allocationUid = crypto.randomUUID();
+
+    await client.query(
+      `
+      UPDATE flight_number_sequences
+      SET
+        last_number = $1,
+        updated_at = now()
+      WHERE airline_id = $2
+        AND iata_code = $3
+      `,
+      [nextNumber, airlineId, iataCode]
+    );
+
+    const allocationResult = await client.query(
+      `
+      INSERT INTO flight_number_allocations (
+        allocation_uid,
+        airline_id,
+        route_plan_id,
+        schedule_item_id,
+        iata_code,
+        flight_number,
+        direction,
+        origin,
+        destination
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      RETURNING
+        id,
+        allocation_uid,
+        airline_id,
+        route_plan_id,
+        schedule_item_id,
+        iata_code,
+        flight_number,
+        direction,
+        origin,
+        destination,
+        created_at,
+        updated_at
+      `,
+      [
+        allocationUid,
+        airlineId,
+        route_plan_id,
+        schedule_item_id,
+        iataCode,
+        flightNumber,
+        direction,
+        routePlan.origin,
+        routePlan.destination
+      ]
+    );
+
+    await client.query("COMMIT");
+
+    return res.status(201).json({
+      ok: true,
+      airline_id: airlineId,
+      iata_code: iataCode,
+      flight_number: flightNumber,
+      allocation: allocationResult.rows[0]
+    });
+
+  } catch (err) {
+    await client.query("ROLLBACK");
+
+    console.error("ACS FLIGHT NUMBER ALLOCATION ERROR:", err);
+
+    return res.status(500).json({
+      ok: false,
+      error: "FLIGHT_NUMBER_ALLOCATION_FAILED",
+      details: err.message
+    });
+
+  } finally {
+    client.release();
+  }
+});
+
 export default router;
