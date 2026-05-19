@@ -427,4 +427,68 @@ router.get("/aircraft/factory/catalog", requireAuth, async (req, res) => {
   }
 });
 
+/* ============================================================
+   🟦 ACS AIRCRAFT CATALOG — BACKEND AUTHORITY v1.0
+   ------------------------------------------------------------
+   Route:
+   GET /v1/aircraft/catalog
+
+   Purpose:
+   - Read the complete technical aircraft universe from PostgreSQL
+   - Preserve ACS aircraft DB structure for modals, images and aircraft data
+   - PostgreSQL becomes backend technical authority
+   - No localStorage authority
+   - No Finance mutation
+   - No Time Engine interaction
+   ============================================================ */
+
+router.get("/aircraft/catalog", requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        id,
+        catalog_uid,
+        model_key,
+        manufacturer,
+        model,
+        aircraft_name,
+        production_year,
+        year,
+        seats,
+        range_nm,
+        speed_kts,
+        mtow_kg,
+        fuel_burn_kgph,
+        price_acs_usd,
+        engines,
+        aircraft_category,
+        status,
+        image_filename,
+        raw_data,
+        is_active,
+        created_at,
+        updated_at
+      FROM aircraft_catalog
+      WHERE is_active = true
+      ORDER BY year ASC, manufacturer ASC, model ASC
+      `
+    );
+
+    return res.json({
+      ok: true,
+      catalog: result.rows
+    });
+
+  } catch (err) {
+    console.error("ACS AIRCRAFT CATALOG ERROR:", err);
+
+    return res.status(500).json({
+      ok: false,
+      error: "AIRCRAFT_CATALOG_FAILED",
+      details: err.message
+    });
+  }
+});
+
 export default router;
