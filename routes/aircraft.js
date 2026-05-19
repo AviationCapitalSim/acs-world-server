@@ -286,4 +286,145 @@ router.get("/aircraft/used-market", requireAuth, async (req, res) => {
   }
 });
 
+/* ============================================================
+   🟦 ACS AIRCRAFT PRODUCTION RULES — BACKEND AUTHORITY v1.0
+   ------------------------------------------------------------
+   Route:
+   GET /v1/aircraft/production-rules
+
+   Purpose:
+   - Read aircraft industrial production rules
+   - Defines factory availability by manufacturer/model/year
+   - PostgreSQL is authority
+   - No localStorage authority
+   - No Finance mutation
+   - No Time Engine interaction
+   ============================================================ */
+
+router.get("/aircraft/production-rules", requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `
+      SELECT
+        id,
+        rule_uid,
+        manufacturer,
+        model_key,
+        aircraft_name,
+        aircraft_category,
+        production_start_year,
+        production_end_year,
+        first_delivery_year,
+        last_delivery_year,
+        capacity_tier,
+        manufacturer_weight,
+        model_weight,
+        monthly_min_units,
+        monthly_max_units,
+        is_factory_available,
+        is_active_rule,
+        notes,
+        created_at,
+        updated_at
+      FROM aircraft_production_rules
+      ORDER BY production_start_year ASC, manufacturer ASC, model_key ASC
+      `
+    );
+
+    return res.json({
+      ok: true,
+      rules: result.rows
+    });
+
+  } catch (err) {
+    console.error("ACS AIRCRAFT PRODUCTION RULES ERROR:", err);
+
+    return res.status(500).json({
+      ok: false,
+      error: "AIRCRAFT_PRODUCTION_RULES_FAILED",
+      details: err.message
+    });
+  }
+});
+
+
+/* ============================================================
+   🟦 ACS FACTORY CATALOG — BACKEND AUTHORITY v1.0
+   ------------------------------------------------------------
+   Route:
+   GET /v1/aircraft/factory/catalog?year=1940
+
+   Purpose:
+   - Return aircraft models available from factory for a given year
+   - A model appears only while production is active
+   - Once production_end_year passes, it disappears from factory
+   - Used market and fleet are separate systems
+   ============================================================ */
+
+router.get("/aircraft/factory/catalog", requireAuth, async (req, res) => {
+  try {
+    const yearParam = req.query.year;
+    const selectedYear = Number(yearParam);
+
+    if (!yearParam || !Number.isInteger(selectedYear)) {
+      return res.status(400).json({
+        ok: false,
+        error: "VALIDATION_ERROR",
+        details: "year query parameter is required"
+      });
+    }
+
+    const result = await pool.query(
+      `
+      SELECT
+        id,
+        rule_uid,
+        manufacturer,
+        model_key,
+        aircraft_name,
+        aircraft_category,
+        production_start_year,
+        production_end_year,
+        first_delivery_year,
+        last_delivery_year,
+        capacity_tier,
+        manufacturer_weight,
+        model_weight,
+        monthly_min_units,
+        monthly_max_units,
+        is_factory_available,
+        is_active_rule,
+        notes,
+        created_at,
+        updated_at
+      FROM aircraft_production_rules
+      WHERE is_active_rule = true
+        AND is_factory_available = true
+        AND production_start_year <= $1
+        AND (
+          production_end_year IS NULL
+          OR production_end_year >= $1
+        )
+      ORDER BY manufacturer ASC, aircraft_category ASC, model_key ASC
+      `,
+      [selectedYear]
+    );
+
+    return res.json({
+      ok: true,
+      year: selectedYear,
+      factory_catalog: result.rows
+    });
+
+  } catch (err) {
+    console.error("ACS FACTORY CATALOG ERROR:", err);
+
+    return res.status(500).json({
+      ok: false,
+      error: "AIRCRAFT_FACTORY_CATALOG_FAILED",
+      details: err.message
+    });
+  }
+});
+
 export default router;
