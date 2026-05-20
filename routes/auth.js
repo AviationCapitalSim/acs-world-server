@@ -101,11 +101,21 @@ router.post("/auth/login", async (req, res) => {
   try {
 
     const result = await pool.query(`
-      SELECT u.user_id, u.email, u.airline_id, a.password_hash
-      FROM users u
-      JOIN users_auth a ON a.user_id = u.user_id
-      WHERE u.email = $1
-    `, [email]);
+  SELECT
+    u.user_id,
+    u.email,
+    u.airline_id AS user_airline_id,
+    al.airline_id AS linked_airline_id,
+    COALESCE(u.airline_id, al.airline_id) AS airline_id,
+    ua.password_hash
+  FROM users u
+  JOIN users_auth ua
+    ON ua.user_id = u.user_id
+  LEFT JOIN airlines al
+    ON al.user_id = u.user_id
+  WHERE LOWER(u.email) = LOWER($1)
+  LIMIT 1
+`, [email]);
 
     if (!result.rows.length) {
       return res.json({ status: "NO_USER" });
@@ -127,6 +137,27 @@ if (!isMatch) {
   return res.json({ status: "WRONG_PASSWORD" });
 }
 
+/* ============================================================
+   AUTO-REPAIR USER AIRLINE LINK
+   ------------------------------------------------------------
+   If the airline exists in airlines but users.airline_id is NULL,
+   repair the canonical user link before creating the session.
+   ============================================================ */
+
+if (!user.user_airline_id && user.linked_airline_id) {
+  await pool.query(`
+    UPDATE users
+    SET airline_id = $1
+    WHERE user_id = $2
+      AND airline_id IS NULL
+  `, [
+    user.linked_airline_id,
+    user.user_id
+  ]);
+
+  user.airline_id = user.linked_airline_id;
+}
+     
     // ============================================================
     // 🔐 CREATE SESSION (NEW CORE)
     // ============================================================
