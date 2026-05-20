@@ -35,15 +35,17 @@ const pool = new Pool({
    🔹 HELPERS
    ============================================================ */
 
-function determineCategory(row) {
+  function determineCategory(row) {
+     
   const seats = Number(row.seats || 0);
 
-  if (seats <= 12) return "general_aviation";
-  if (seats <= 50) return "regional";
-  if (seats <= 180) return "narrowbody";
-  if (seats <= 350) return "widebody";
+  if (seats <= 19) return "PISTON";
+  if (seats <= 70) return "TURBOPROP";
+  if (seats <= 110) return "REGIONAL_JET";
+  if (seats <= 240) return "NARROWBODY";
+  if (seats <= 420) return "WIDEBODY";
 
-  return "heavy";
+  return "OTHER";
 }
 
 function determineCapacityTier(category, year) {
