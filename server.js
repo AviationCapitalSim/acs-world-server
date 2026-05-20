@@ -16,6 +16,7 @@ import rateLimit from "express-rate-limit";
 import usersRoutes from "./routes/users.js";
 import scheduleRoutes from "./routes/schedule.js";
 import aircraftRoutes from "./routes/aircraft.js";
+import factoryRoutes from "./routes/factory.js";
 
 dotenv.config();
 
@@ -102,6 +103,7 @@ app.use("/v1", financeRoutes);
 app.use("/v1", usersRoutes);
 app.use("/v1", scheduleRoutes);
 app.use("/v1", aircraftRoutes);
+app.use("/v1/aircraft/factory", factoryRoutes);
 
 const PORT = process.env.PORT || 3000;
 
