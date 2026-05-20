@@ -62,12 +62,18 @@ const sandbox = {
 };
 
 vm.createContext(sandbox);
-vm.runInContext(sourceCode, sandbox);
+
+const wrappedSource = `
+  ${sourceCode}
+  global.ACS_AIRCRAFT_DB = ACS_AIRCRAFT_DB;
+`;
+
+vm.runInContext(wrappedSource, sandbox);
 
 const aircraftDB =
-  sandbox.ACS_AIRCRAFT_DB ||
+  sandbox.global.ACS_AIRCRAFT_DB ||
   sandbox.window.ACS_AIRCRAFT_DB ||
-  sandbox.global.ACS_AIRCRAFT_DB;
+  sandbox.ACS_AIRCRAFT_DB;
 
 if (!Array.isArray(aircraftDB)) {
   console.error("❌ ACS_AIRCRAFT_DB was not found or is not an array.");
