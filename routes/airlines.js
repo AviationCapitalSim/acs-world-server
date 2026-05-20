@@ -6,13 +6,20 @@ const router = express.Router();
 
 /* ============================================================
    CREATE AIRLINE
+   ------------------------------------------------------------
+   Production-grade flow:
+   - Session user is authority
+   - Prevent duplicate airline per user
+   - Repair user/session airline link if airline already exists
+   - Create airline transactionally
+   - Link users.airline_id
+   - Link active sessions.airline_id
+   - Initialize HR
 ============================================================ */
 
 router.post("/airlines/create", requireAuth, async (req, res) => {
 
   const body = req.body;
-
-  // 🔥 USAR SESSION (NO FRONTEND)
   const userUUID = req.user_id;
 
   const client = await pool.connect();
@@ -22,7 +29,36 @@ router.post("/airlines/create", requireAuth, async (req, res) => {
     await client.query("BEGIN");
 
     /* ============================================================
-       1️⃣ Check if user already has an airline
+       1️⃣ Validate required fields
+    ============================================================ */
+
+    const requiredFields = [
+      "airline_name",
+      "airline_iata",
+      "airline_icao",
+      "country",
+      "region",
+      "business_model",
+      "operation_mode"
+    ];
+
+    for (const field of requiredFields) {
+      if (!body[field]) {
+        await client.query("ROLLBACK");
+
+        return res.status(400).json({
+          ok: false,
+          error: "MISSING_REQUIRED_FIELD",
+          field
+        });
+      }
+    }
+
+    /* ============================================================
+       2️⃣ Check if user already has an airline
+       ------------------------------------------------------------
+       If airline exists but users/sessions are desynchronized,
+       repair links instead of allowing duplicate creation.
     ============================================================ */
 
     const existing = await client.query(
@@ -37,22 +73,55 @@ router.post("/airlines/create", requireAuth, async (req, res) => {
 
     if (existing.rows.length > 0) {
 
-      await client.query("ROLLBACK");
+      const existingAirlineId = existing.rows[0].airline_id;
 
-      return res.status(400).json({
-        ok: false,
-        error: "USER_ALREADY_HAS_AIRLINE"
+      await client.query(
+        `
+        UPDATE users
+        SET airline_id = $1
+        WHERE user_id = $2
+          AND (
+            airline_id IS NULL
+            OR airline_id <> $1
+          )
+        `,
+        [existingAirlineId, userUUID]
+      );
+
+      await client.query(
+        `
+        UPDATE sessions
+        SET airline_id = $1
+        WHERE user_id = $2
+          AND active = true
+          AND (
+            airline_id IS NULL
+            OR airline_id <> $1
+          )
+        `,
+        [existingAirlineId, userUUID]
+      );
+
+      await client.query("COMMIT");
+
+      return res.status(200).json({
+        ok: true,
+        status: "AIRLINE_ALREADY_EXISTS_LINK_REPAIRED",
+        airline_id: existingAirlineId
       });
 
     }
 
     /* ============================================================
-       2️⃣ Check duplicate airline name (🔥 NUEVO)
+       3️⃣ Check duplicate airline name
     ============================================================ */
 
     const nameCheck = await client.query(
       `
-      SELECT 1 FROM airlines WHERE airline_name = $1
+      SELECT 1
+      FROM airlines
+      WHERE LOWER(airline_name) = LOWER($1)
+      LIMIT 1
       `,
       [body.airline_name]
     );
@@ -69,7 +138,7 @@ router.post("/airlines/create", requireAuth, async (req, res) => {
     }
 
     /* ============================================================
-       3️⃣ Create airline
+       4️⃣ Create airline
     ============================================================ */
 
     const insertAirline = await client.query(
@@ -103,20 +172,39 @@ router.post("/airlines/create", requireAuth, async (req, res) => {
     const airlineId = insertAirline.rows[0].airline_id;
 
     /* ============================================================
-       4️⃣ Link airline to user
+       5️⃣ Link airline to user
     ============================================================ */
 
-    await client.query(
+    const userUpdate = await client.query(
       `
       UPDATE users
       SET airline_id = $1
       WHERE user_id = $2
+      RETURNING user_id, airline_id
+      `,
+      [airlineId, userUUID]
+    );
+
+    if (!userUpdate.rows.length) {
+      throw new Error("USER_LINK_FAILED");
+    }
+
+    /* ============================================================
+       6️⃣ Link active sessions to airline
+    ============================================================ */
+
+    await client.query(
+      `
+      UPDATE sessions
+      SET airline_id = $1
+      WHERE user_id = $2
+        AND active = true
       `,
       [airlineId, userUUID]
     );
 
     /* ============================================================
-       5️⃣ Initialize HR Departments
+       7️⃣ Initialize HR Departments
     ============================================================ */
 
     await client.query(
@@ -137,11 +225,12 @@ router.post("/airlines/create", requireAuth, async (req, res) => {
     console.log("DEBUG CREATE AIRLINE", {
       airlineId,
       userUUID,
-      linked: true,
+      linkedUser: true,
+      linkedSession: true,
       hrInitialized: true
     });
 
-    res.json({
+    return res.json({
       ok: true,
       airline_id: airlineId
     });
@@ -152,9 +241,10 @@ router.post("/airlines/create", requireAuth, async (req, res) => {
 
     console.error("CREATE AIRLINE ERROR:", err);
 
-    res.status(500).json({
+    return res.status(500).json({
       ok: false,
-      error: err.message
+      error: "CREATE_AIRLINE_FAILED",
+      message: err.message
     });
 
   } finally {
