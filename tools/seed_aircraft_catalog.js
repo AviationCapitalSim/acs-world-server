@@ -11,10 +11,20 @@
    - Preserve full original object in raw_data
    ============================================================ */
 
-const fs = require("fs");
-const path = require("path");
-const vm = require("vm");
-const { Pool } = require("pg");
+import fs from "fs";
+import path from "path";
+import vm from "vm";
+import pg from "pg";
+import { fileURLToPath } from "url";
+
+const { Pool } = pg;
+
+/* ============================================================
+   🔹 __dirname FIX FOR ES MODULES
+   ============================================================ */
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 /* ============================================================
    🔹 DATABASE CONNECTION
