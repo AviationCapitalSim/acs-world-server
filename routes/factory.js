@@ -11,10 +11,10 @@
    - Multiplayer-ready backend source of truth
    ============================================================ */
 
-const express = require("express");
-const router = express.Router();
+import express from "express";
+import pool from "../db.js";
 
-const pool = require("../db");
+const router = express.Router();
 
 /* ============================================================
    GET /v1/aircraft/factory/catalog?year=1940
@@ -55,18 +55,7 @@ router.get("/catalog", async (req, res) => {
         pr.production_end_year,
         pr.monthly_min,
         pr.monthly_max,
-        pr.capacity_tier,
-
-        CASE
-          WHEN pr.production_start_year IS NOT NULL
-           AND pr.production_start_year <= $1
-           AND (
-             pr.production_end_year IS NULL
-             OR pr.production_end_year >= $1
-           )
-          THEN true
-          ELSE false
-        END AS available
+        pr.capacity_tier
 
       FROM aircraft_catalog ac
       INNER JOIN aircraft_production_rules pr
@@ -104,4 +93,4 @@ router.get("/catalog", async (req, res) => {
   }
 });
 
-module.exports = router;
+export default router;
