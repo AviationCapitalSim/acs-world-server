@@ -1,5 +1,5 @@
 /* ============================================================
-   🏭 ACS FACTORY ROUTES — HISTORICAL OEM CATALOG v1.0
+   🏭 ACS FACTORY ROUTES — HISTORICAL OEM CATALOG v1.1
    ------------------------------------------------------------
    File: routes/factory.js
    Purpose:
@@ -7,8 +7,8 @@
    - PostgreSQL authority only
    - Join aircraft_catalog + aircraft_production_rules
    - Filter by simulation year
-   - Exclude future aircraft
-   - Multiplayer-ready backend source of truth
+   - Return full technical + image metadata
+   - Keep temporary factory_catalog alias for migration safety
    ============================================================ */
 
 import express from "express";
@@ -49,13 +49,21 @@ router.get("/catalog", async (req, res) => {
         ac.mtow_kg,
         ac.fuel_burn_kgph,
         ac.price_acs_usd,
+        ac.engines,
+        ac.aircraft_category,
+        ac.status,
+        ac.image_file_name,
 
-        pr.category,
+        pr.category AS production_category,
         pr.production_start_year,
         pr.production_end_year,
+        pr.first_delivery_year,
+        pr.last_delivery_year,
+        pr.capacity_tier,
+        pr.manufacturing_multiplier,
+        pr.model_weight,
         pr.monthly_min,
-        pr.monthly_max,
-        pr.capacity_tier
+        pr.monthly_max
 
       FROM aircraft_catalog ac
       INNER JOIN aircraft_production_rules pr
@@ -67,10 +75,11 @@ router.get("/catalog", async (req, res) => {
           pr.production_end_year IS NULL
           OR pr.production_end_year >= $1
         )
+        AND COALESCE(ac.is_active, true) = true
 
       ORDER BY
+        COALESCE(pr.production_start_year, ac.production_year, ac.year) ASC,
         ac.manufacturer ASC,
-        pr.category ASC,
         ac.model ASC;
       `,
       [year]
@@ -78,9 +87,16 @@ router.get("/catalog", async (req, res) => {
 
     return res.json({
       ok: true,
+      endpoint: "ACS_FACTORY_CATALOG",
+      version: "v1.1",
       year,
       count: result.rows.length,
-      aircraft: result.rows
+
+      /* Canonical new payload */
+      aircraft: result.rows,
+
+      /* Temporary migration alias — do not remove yet */
+      factory_catalog: result.rows
     });
 
   } catch (err) {
@@ -88,7 +104,8 @@ router.get("/catalog", async (req, res) => {
 
     return res.status(500).json({
       ok: false,
-      error: "FACTORY_CATALOG_FAILED"
+      error: "FACTORY_CATALOG_FAILED",
+      message: err.message
     });
   }
 });
