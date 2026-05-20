@@ -4,17 +4,17 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "seed:aircraft": "node tools/seed_aircraft_catalog.js"
   },
-  
   "dependencies": {
-  "bcrypt": "^5.1.0",
-  "cors": "^2.8.5",
-  "dotenv": "^16.4.5",
-  "express": "^4.19.2",
-  "pg": "^8.12.0",
-  "cookie-parser": "^1.4.6",
-  "helmet": "^7.0.0",
-  "express-rate-limit": "^7.0.0"
-}
+    "bcrypt": "^5.1.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "pg": "^8.12.0",
+    "cookie-parser": "^1.4.6",
+    "helmet": "^7.0.0",
+    "express-rate-limit": "^7.0.0"
+  }
 }
