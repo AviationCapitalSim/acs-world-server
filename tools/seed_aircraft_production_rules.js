@@ -50,15 +50,27 @@ const pool = new Pool({
 
 function determineCapacityTier(category, year) {
 
-  if (year <= 1945) return "limited";
-  if (year <= 1970) return "industrial";
-  if (year <= 2000) return "mass_production";
-
-  if (category === "widebody" || category === "heavy") {
-    return "strategic";
+  if (year <= 1945) {
+    return "LIMITED";
   }
 
-  return "modern";
+  if (year <= 1970) {
+    return "LOW";
+  }
+
+  if (year <= 2000) {
+    return "MEDIUM";
+  }
+
+  if (category === "NARROWBODY") {
+    return "MASS";
+  }
+
+  if (category === "WIDEBODY") {
+    return "HIGH";
+  }
+
+  return "MEDIUM";
 }
 
 function determineProductionEndYear(year, category) {
