@@ -175,6 +175,389 @@ router.get("/aircraft/orders", requireAuth, async (req, res) => {
 });
 
 /* ============================================================
+   🟦 CREATE NEW AIRCRAFT ORDER — BACKEND AUTHORITY v1.0
+   ------------------------------------------------------------
+   Route:
+   POST /v1/aircraft/orders
+
+   Purpose:
+   - Create OEM aircraft order from Buy New
+   - PostgreSQL authority only
+   - Validate aircraft from aircraft_catalog
+   - Validate factory availability from aircraft_production_rules
+   - Validate capital from company_finance
+   - Apply initial payment to company_finance
+   - Register finance_log entry
+   - Insert new_aircraft_orders record
+   - No localStorage authority
+   - No frontend finance mutation
+   ============================================================ */
+
+router.post("/aircraft/orders", requireAuth, async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const airlineId = Number(req.airline_id);
+    const userId = req.user_id || null;
+
+    const modelKey = String(req.body?.model_key || "").trim();
+    const quantity = Number(req.body?.quantity || 1);
+    const ownershipType = String(req.body?.ownership_type || "BUY").toUpperCase();
+    const initialPaymentPct = Number(req.body?.initial_payment_pct || 100);
+    const simYear = Number(req.body?.sim_year || new Date().getUTCFullYear());
+
+    if (!airlineId || !Number.isInteger(airlineId)) {
+      return res.status(401).json({
+        ok: false,
+        error: "NO_AIRLINE_SESSION"
+      });
+    }
+
+    if (!modelKey) {
+      return res.status(400).json({
+        ok: false,
+        error: "MODEL_KEY_REQUIRED"
+      });
+    }
+
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > 50) {
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_QUANTITY"
+      });
+    }
+
+    if (!["BUY", "LEASE"].includes(ownershipType)) {
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_OWNERSHIP_TYPE"
+      });
+    }
+
+    if (
+      !Number.isFinite(initialPaymentPct) ||
+      initialPaymentPct <= 0 ||
+      initialPaymentPct > 100
+    ) {
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_INITIAL_PAYMENT_PCT"
+      });
+    }
+
+    if (!Number.isInteger(simYear) || simYear < 1900 || simYear > 2100) {
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_SIM_YEAR"
+      });
+    }
+
+    await client.query("BEGIN");
+
+    /* ============================================================
+       1) ENSURE FINANCE ROW EXISTS
+       ============================================================ */
+
+    await client.query(
+      `
+      INSERT INTO company_finance (airline_id, capital)
+      VALUES ($1, 700000)
+      ON CONFLICT (airline_id)
+      DO NOTHING
+      `,
+      [airlineId]
+    );
+
+    /* ============================================================
+       2) LOAD AIRCRAFT + PRODUCTION RULE
+       ============================================================ */
+
+    const aircraftResult = await client.query(
+      `
+      SELECT
+        ac.model_key,
+        ac.manufacturer,
+        ac.model,
+        ac.aircraft_name,
+        ac.year,
+        ac.price_acs_usd,
+        ac.image_filename,
+
+        pr.production_start_year,
+        pr.production_end_year,
+        pr.first_delivery_year,
+        pr.last_delivery_year,
+        pr.monthly_min_units,
+        pr.monthly_max_units,
+        pr.is_factory_available,
+        pr.is_active_rule
+
+      FROM aircraft_catalog ac
+      INNER JOIN aircraft_production_rules pr
+        ON pr.model_key = ac.model_key
+
+      WHERE ac.model_key = $1
+        AND COALESCE(ac.is_active, true) = true
+        AND pr.is_active_rule = true
+        AND pr.is_factory_available = true
+        AND COALESCE(pr.production_start_year, ac.production_year, ac.year) <= $2
+        AND (
+          pr.production_end_year IS NULL
+          OR pr.production_end_year >= $2
+        )
+      LIMIT 1
+      `,
+      [modelKey, simYear]
+    );
+
+    if (!aircraftResult.rows.length) {
+      await client.query("ROLLBACK");
+
+      return res.status(404).json({
+        ok: false,
+        error: "AIRCRAFT_NOT_AVAILABLE_FROM_FACTORY"
+      });
+    }
+
+    const aircraft = aircraftResult.rows[0];
+
+    const unitPrice = Math.round(Number(aircraft.price_acs_usd || 0));
+    const totalPrice = unitPrice * quantity;
+
+    if (!unitPrice || unitPrice <= 0) {
+      await client.query("ROLLBACK");
+
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_AIRCRAFT_PRICE"
+      });
+    }
+
+    const initialPaymentAmount = Math.round(
+      totalPrice * (initialPaymentPct / 100)
+    );
+
+    /* ============================================================
+       3) LOCK FINANCE ROW + VALIDATE CAPITAL
+       ============================================================ */
+
+    const financeBeforeResult = await client.query(
+      `
+      SELECT *
+      FROM company_finance
+      WHERE airline_id = $1
+      FOR UPDATE
+      `,
+      [airlineId]
+    );
+
+    const financeBefore = financeBeforeResult.rows[0];
+    const currentCapital = Math.round(Number(financeBefore?.capital || 0));
+
+    if (currentCapital < initialPaymentAmount) {
+      await client.query("ROLLBACK");
+
+      return res.status(400).json({
+        ok: false,
+        error: "INSUFFICIENT_CAPITAL",
+        capital: currentCapital,
+        required: initialPaymentAmount
+      });
+    }
+
+    /* ============================================================
+       4) CALCULATE DELIVERY DATE
+       ------------------------------------------------------------
+       Conservative backend baseline:
+       - 60 days base delivery
+       - +15 days per additional aircraft
+       ============================================================ */
+
+    const baseDeliveryDays = 60;
+    const quantityBufferDays = Math.max(0, quantity - 1) * 15;
+    const totalDeliveryDays = baseDeliveryDays + quantityBufferDays;
+
+    const estimatedDeliveryDate = new Date(
+      Date.now() + totalDeliveryDays * 24 * 60 * 60 * 1000
+    );
+
+    /* ============================================================
+       5) INSERT ORDER
+       ============================================================ */
+
+    const paymentStatus =
+      initialPaymentPct >= 100
+        ? "PAID"
+        : "PARTIAL";
+
+    const orderResult = await client.query(
+      `
+      INSERT INTO new_aircraft_orders (
+        order_uid,
+        airline_id,
+        user_id,
+        source,
+        manufacturer,
+        model_key,
+        aircraft_name,
+        factory_slot_id,
+        quantity,
+        unit_price,
+        total_price,
+        currency,
+        ownership_type,
+        payment_status,
+        order_status,
+        delivery_status,
+        order_date,
+        estimated_delivery_date,
+        actual_delivery_date,
+        notes,
+        updated_at
+      )
+      VALUES (
+        gen_random_uuid(),
+        $1,
+        $2,
+        'BUY_NEW',
+        $3,
+        $4,
+        $5,
+        NULL,
+        $6,
+        $7,
+        $8,
+        'USD',
+        $9,
+        $10,
+        'ORDERED',
+        'PENDING_DELIVERY',
+        NOW(),
+        $11,
+        NULL,
+        $12,
+        NOW()
+      )
+      RETURNING *
+      `,
+      [
+        airlineId,
+        userId,
+        aircraft.manufacturer,
+        aircraft.model_key,
+        aircraft.aircraft_name || `${aircraft.manufacturer} ${aircraft.model}`,
+        quantity,
+        unitPrice,
+        totalPrice,
+        ownershipType,
+        paymentStatus,
+        estimatedDeliveryDate,
+        JSON.stringify({
+          initial_payment_pct: initialPaymentPct,
+          initial_payment_amount: initialPaymentAmount,
+          sim_year: simYear,
+          source: "ACS_BUY_NEW_BACKEND_ORDER_V1"
+        })
+      ]
+    );
+
+    const order = orderResult.rows[0];
+
+    /* ============================================================
+       6) APPLY FINANCE IMPACT
+       ============================================================ */
+
+    const costColumn =
+      ownershipType === "LEASE"
+        ? "cost_leasing"
+        : "cost_other";
+
+    await client.query(
+      `
+      UPDATE company_finance
+      SET
+        capital = COALESCE(capital,0) - $2,
+        expenses = COALESCE(expenses,0) + $2,
+        profit = COALESCE(profit,0) - $2,
+        ${costColumn} = COALESCE(${costColumn},0) + $2,
+        updated_at = NOW()
+      WHERE airline_id = $1
+      `,
+      [airlineId, initialPaymentAmount]
+    );
+
+    /* ============================================================
+       7) FINANCE LOG
+       ============================================================ */
+
+    await client.query(
+      `
+      INSERT INTO finance_log (
+        airline_id,
+        type,
+        source,
+        amount,
+        timestamp
+      )
+      VALUES ($1, 'EXPENSE', $2, $3, $4)
+      `,
+      [
+        airlineId,
+        ownershipType === "LEASE"
+          ? `OEM_LEASE_INITIAL_${order.order_uid}`
+          : `OEM_PURCHASE_INITIAL_${order.order_uid}`,
+        initialPaymentAmount,
+        Date.now()
+      ]
+    );
+
+    /* ============================================================
+       8) RETURN FINANCE SNAPSHOT
+       ============================================================ */
+
+    const financeAfterResult = await client.query(
+      `
+      SELECT *
+      FROM company_finance
+      WHERE airline_id = $1
+      `,
+      [airlineId]
+    );
+
+    await client.query("COMMIT");
+
+    return res.status(201).json({
+      ok: true,
+      endpoint: "ACS_CREATE_NEW_AIRCRAFT_ORDER",
+      version: "v1.0",
+      order,
+      finance: financeAfterResult.rows[0],
+      payment: {
+        ownership_type: ownershipType,
+        initial_payment_pct: initialPaymentPct,
+        initial_payment_amount: initialPaymentAmount,
+        total_price: totalPrice,
+        currency: "USD"
+      }
+    });
+
+  } catch (err) {
+    await client.query("ROLLBACK");
+
+    console.error("ACS CREATE NEW AIRCRAFT ORDER ERROR:", err);
+
+    return res.status(500).json({
+      ok: false,
+      error: "CREATE_NEW_AIRCRAFT_ORDER_FAILED",
+      details: err.message
+    });
+
+  } finally {
+    client.release();
+  }
+});
+
+/* ============================================================
    🟦 GET AIRCRAFT FACTORY SLOTS
    ------------------------------------------------------------
    Route:
