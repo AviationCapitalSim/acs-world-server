@@ -473,28 +473,47 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
        6) APPLY FINANCE IMPACT
        ============================================================ */
 
-    const costColumn =
-      ownershipType === "LEASE"
-        ? "cost_leasing"
-        : "cost_other";
-
-    await client.query(
-      `
-      UPDATE company_finance
-      SET
-        capital = COALESCE(capital,0) - $2,
-        expenses = COALESCE(expenses,0) + $2,
-        profit = COALESCE(profit,0) - $2,
-        ${costColumn} = COALESCE(${costColumn},0) + $2,
-        updated_at = NOW()
-      WHERE airline_id = $1
-      `,
-      [airlineId, initialPaymentAmount]
-    );
-
+        if (ownershipType === "LEASE") {
+      await client.query(
+        `
+        UPDATE company_finance
+        SET
+          capital = COALESCE(capital,0) - $2,
+          expenses = COALESCE(expenses,0) + $2,
+          profit = COALESCE(profit,0) - $2,
+          cost_leasing = COALESCE(cost_leasing,0) + $2,
+          updated_at = NOW()
+        WHERE airline_id = $1
+        `,
+        [airlineId, initialPaymentAmount]
+      );
+    } else {
+      await client.query(
+        `
+        UPDATE company_finance
+        SET
+          capital = COALESCE(capital,0) - $2,
+          expenses = COALESCE(expenses,0) + $2,
+          profit = COALESCE(profit,0) - $2,
+          updated_at = NOW()
+        WHERE airline_id = $1
+        `,
+        [airlineId, initialPaymentAmount]
+      );
+    }
+     
     /* ============================================================
        7) FINANCE LOG
        ============================================================ */
+     
+    const aircraftLabel =
+      aircraft.aircraft_name ||
+      `${aircraft.manufacturer} ${aircraft.model}`;
+
+    const financeSource =
+      ownershipType === "LEASE"
+        ? `OEM LEASE INITIAL — ${aircraftLabel}`
+        : `OEM PURCHASE INITIAL — ${aircraftLabel}`;
 
     await client.query(
       `
@@ -509,9 +528,7 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
       `,
       [
         airlineId,
-        ownershipType === "LEASE"
-          ? `OEM_LEASE_INITIAL_${order.order_uid}`
-          : `OEM_PURCHASE_INITIAL_${order.order_uid}`,
+        financeSource,
         initialPaymentAmount,
         Date.now()
       ]
