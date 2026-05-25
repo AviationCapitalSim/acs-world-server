@@ -54,7 +54,7 @@ router.get("/catalog", async (req, res) => {
         ac.status,
         ac.image_filename AS image_file_name,
 
-        pr.category AS production_category,
+        pr.aircraft_category AS production_category,
         pr.production_start_year,
         pr.production_end_year,
         pr.first_delivery_year,
