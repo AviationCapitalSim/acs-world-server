@@ -349,16 +349,21 @@ router.get("/aircraft/production-rules", requireAuth, async (req, res) => {
 
 
 /* ============================================================
-   🟦 ACS FACTORY CATALOG — BACKEND AUTHORITY v1.0
+   🟦 ACS FACTORY CATALOG — BACKEND AUTHORITY v1.1
    ------------------------------------------------------------
    Route:
    GET /v1/aircraft/factory/catalog?year=1940
 
    Purpose:
    - Return aircraft models available from factory for a given year
-   - A model appears only while production is active
-   - Once production_end_year passes, it disappears from factory
-   - Used market and fleet are separate systems
+   - PostgreSQL authority only
+   - Join aircraft_catalog + aircraft_production_rules
+   - aircraft_catalog provides technical/commercial specs
+   - aircraft_production_rules provides historical OEM availability
+   - Used Market and Fleet remain separate systems
+   - No localStorage authority
+   - No Finance mutation
+   - No Time Engine interaction
    ============================================================ */
 
 router.get("/aircraft/factory/catalog", requireAuth, async (req, res) => {
@@ -366,53 +371,86 @@ router.get("/aircraft/factory/catalog", requireAuth, async (req, res) => {
     const yearParam = req.query.year;
     const selectedYear = Number(yearParam);
 
-    if (!yearParam || !Number.isInteger(selectedYear)) {
+    if (!yearParam || !Number.isInteger(selectedYear) || selectedYear < 1900 || selectedYear > 2100) {
       return res.status(400).json({
         ok: false,
         error: "VALIDATION_ERROR",
-        details: "year query parameter is required"
+        details: "Valid year query parameter is required"
       });
     }
 
     const result = await pool.query(
       `
       SELECT
-        id,
-        rule_uid,
-        manufacturer,
-        model_key,
-        aircraft_name,
-        aircraft_category,
-        production_start_year,
-        production_end_year,
-        first_delivery_year,
-        last_delivery_year,
-        capacity_tier,
-        manufacturer_weight,
-        model_weight,
-        monthly_min_units,
-        monthly_max_units,
-        is_factory_available,
-        is_active_rule,
-        notes,
-        created_at,
-        updated_at
-      FROM aircraft_production_rules
-      WHERE is_active_rule = true
-        AND is_factory_available = true
-        AND production_start_year <= $1
+        ac.id,
+        ac.catalog_uid,
+        ac.model_key,
+        ac.manufacturer,
+        ac.model,
+        ac.aircraft_name,
+        ac.production_year,
+        ac.year,
+        ac.seats,
+        ac.range_nm,
+        ac.speed_kts,
+        ac.mtow_kg,
+        ac.fuel_burn_kgph,
+        ac.price_acs_usd,
+        ac.engines,
+        ac.aircraft_category,
+        ac.status,
+        ac.image_filename,
+        ac.image_filename AS image_file_name,
+
+        pr.id AS production_rule_id,
+        pr.rule_uid,
+        pr.aircraft_category AS production_category,
+        pr.production_start_year,
+        pr.production_end_year,
+        pr.first_delivery_year,
+        pr.last_delivery_year,
+        pr.capacity_tier,
+        pr.manufacturer_weight,
+        pr.model_weight,
+        pr.monthly_min_units,
+        pr.monthly_max_units,
+        pr.monthly_min_units AS monthly_min,
+        pr.monthly_max_units AS monthly_max,
+        pr.is_factory_available,
+        pr.is_active_rule
+
+      FROM aircraft_catalog ac
+      INNER JOIN aircraft_production_rules pr
+        ON pr.model_key = ac.model_key
+
+      WHERE
+        COALESCE(ac.is_active, true) = true
+        AND pr.is_active_rule = true
+        AND pr.is_factory_available = true
+        AND COALESCE(pr.production_start_year, ac.production_year, ac.year) <= $1
         AND (
-          production_end_year IS NULL
-          OR production_end_year >= $1
+          pr.production_end_year IS NULL
+          OR pr.production_end_year >= $1
         )
-      ORDER BY manufacturer ASC, aircraft_category ASC, model_key ASC
+
+      ORDER BY
+        COALESCE(pr.production_start_year, ac.production_year, ac.year) ASC,
+        ac.manufacturer ASC,
+        ac.model ASC
       `,
       [selectedYear]
     );
 
     return res.json({
       ok: true,
+      endpoint: "ACS_FACTORY_CATALOG",
+      version: "v1.1",
       year: selectedYear,
+      count: result.rows.length,
+
+      aircraft: result.rows,
+
+      /* Temporary migration alias — keep until Buy New fully migrates */
       factory_catalog: result.rows
     });
 
