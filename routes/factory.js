@@ -60,8 +60,6 @@ router.get("/catalog", async (req, res) => {
         pr.first_delivery_year,
         pr.last_delivery_year,
         pr.capacity_tier,
-        pr.manufacturer_multiplier,
-        pr.model_weight,
         pr.monthly_min,
         pr.monthly_max
 
