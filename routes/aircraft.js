@@ -469,11 +469,14 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
 
     const order = orderResult.rows[0];
 
-    /* ============================================================
+        /* ============================================================
        6) APPLY FINANCE IMPACT
+       ------------------------------------------------------------
+       BUY   → cost_new_aircraft_purchase
+       LEASE → cost_leasing
        ============================================================ */
 
-        if (ownershipType === "LEASE") {
+    if (ownershipType === "LEASE") {
       await client.query(
         `
         UPDATE company_finance
@@ -495,6 +498,7 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
           capital = COALESCE(capital,0) - $2,
           expenses = COALESCE(expenses,0) + $2,
           profit = COALESCE(profit,0) - $2,
+          cost_new_aircraft_purchase = COALESCE(cost_new_aircraft_purchase,0) + $2,
           updated_at = NOW()
         WHERE airline_id = $1
         `,
