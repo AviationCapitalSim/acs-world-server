@@ -203,6 +203,10 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
     const modelKey = String(req.body?.model_key || "").trim();
     const quantity = Number(req.body?.quantity || 1);
     const ownershipType = String(req.body?.ownership_type || "BUY").toUpperCase();
+    const dbOwnershipType =
+    ownershipType === "LEASE"
+    ? "LEASED"
+    : "OWNED";  
     const initialPaymentPct = Number(req.body?.initial_payment_pct || 100);
     const simYear = Number(req.body?.sim_year || new Date().getUTCFullYear());
 
@@ -420,7 +424,7 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
         gen_random_uuid(),
         $1,
         $2,
-        'BUY_NEW',
+        'FACTORY',
         $3,
         $4,
         $5,
@@ -451,7 +455,7 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
         quantity,
         unitPrice,
         totalPrice,
-        ownershipType,
+        dbOwnershipType,
         paymentStatus,
         estimatedDeliveryDate,
         JSON.stringify({
