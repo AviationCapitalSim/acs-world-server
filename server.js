@@ -102,8 +102,9 @@ app.use("/v1", companyContextRoutes);
 app.use("/v1", financeRoutes);
 app.use("/v1", usersRoutes);
 app.use("/v1", scheduleRoutes);
-app.use("/v1", aircraftRoutes);
 app.use("/v1/aircraft/factory", factoryRoutes);
+app.use("/v1", aircraftRoutes);
+
 
 const PORT = process.env.PORT || 3000;
 
