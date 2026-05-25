@@ -413,6 +413,7 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
         estimated_delivery_date,
         actual_delivery_date,
         notes,
+        created_at,
         updated_at
       )
       VALUES (
@@ -436,6 +437,7 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
         $11,
         NULL,
         $12,
+        NOW(),
         NOW()
       )
       RETURNING *
