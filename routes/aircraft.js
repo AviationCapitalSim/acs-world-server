@@ -585,6 +585,248 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
 });
 
 /* ============================================================
+   🟦 ACS FACTORY SLOT AVAILABILITY — OEM BOARD v1.0
+   ------------------------------------------------------------
+   Route:
+   GET /v1/aircraft/factory/slots/availability?model_key=lockheed_l_049_constellation&year=1951&month=9
+
+   Purpose:
+   - Read OEM slot availability for one aircraft model/month
+   - Feed Buy New Factory Slots modal
+   - Shows capacity, reserved, available, utilization
+   - Shows next available delivery window
+   - PostgreSQL authority only
+   - No reservation
+   - No Finance mutation
+   - No localStorage authority
+   ============================================================ */
+
+router.get("/aircraft/factory/slots/availability", requireAuth, async (req, res) => {
+  try {
+    const modelKey = String(req.query.model_key || "").trim();
+    const year = Number(req.query.year);
+    const month = Number(req.query.month);
+
+    if (!modelKey) {
+      return res.status(400).json({
+        ok: false,
+        error: "MODEL_KEY_REQUIRED"
+      });
+    }
+
+    if (!Number.isInteger(year) || year < 1900 || year > 2100) {
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_YEAR"
+      });
+    }
+
+    if (!Number.isInteger(month) || month < 1 || month > 12) {
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_MONTH"
+      });
+    }
+
+    const previousMonthDate = new Date(Date.UTC(year, month - 2, 1));
+    const nextMonthDate = new Date(Date.UTC(year, month, 1));
+
+    const currentSlotResult = await pool.query(
+      `
+      SELECT
+        id,
+        slot_uid,
+        manufacturer,
+        model_key,
+        aircraft_name,
+        production_year,
+        slot_year,
+        slot_month,
+
+        COALESCE(
+          max_quantity,
+          COALESCE(available_quantity, 0)
+          + COALESCE(reserved_quantity, 0)
+          + COALESCE(delivered_quantity, 0)
+        ) AS capacity,
+
+        COALESCE(reserved_quantity, 0) AS reserved,
+        COALESCE(available_quantity, 0) AS available,
+        COALESCE(delivered_quantity, 0) AS delivered,
+
+        CASE
+          WHEN COALESCE(
+            max_quantity,
+            COALESCE(available_quantity, 0)
+            + COALESCE(reserved_quantity, 0)
+            + COALESCE(delivered_quantity, 0)
+          ) > 0
+          THEN ROUND(
+            (
+              COALESCE(reserved_quantity, 0)::NUMERIC
+              /
+              COALESCE(
+                max_quantity,
+                COALESCE(available_quantity, 0)
+                + COALESCE(reserved_quantity, 0)
+                + COALESCE(delivered_quantity, 0)
+              )::NUMERIC
+            ) * 100,
+            2
+          )
+          ELSE 0
+        END AS utilization_pct,
+
+        slot_units_per_aircraft,
+        capacity_tier,
+        aircraft_size_class,
+        base_delivery_days,
+        slot_status,
+        created_at,
+        updated_at
+      FROM aircraft_factory_slots
+      WHERE model_key = $1
+        AND slot_year = $2
+        AND slot_month = $3
+      LIMIT 1
+      `,
+      [modelKey, year, month]
+    );
+
+    const nextAvailableResult = await pool.query(
+      `
+      SELECT
+        id,
+        slot_uid,
+        manufacturer,
+        model_key,
+        aircraft_name,
+        production_year,
+        slot_year,
+        slot_month,
+
+        COALESCE(
+          max_quantity,
+          COALESCE(available_quantity, 0)
+          + COALESCE(reserved_quantity, 0)
+          + COALESCE(delivered_quantity, 0)
+        ) AS capacity,
+
+        COALESCE(reserved_quantity, 0) AS reserved,
+        COALESCE(available_quantity, 0) AS available,
+        COALESCE(delivered_quantity, 0) AS delivered,
+
+        CASE
+          WHEN COALESCE(
+            max_quantity,
+            COALESCE(available_quantity, 0)
+            + COALESCE(reserved_quantity, 0)
+            + COALESCE(delivered_quantity, 0)
+          ) > 0
+          THEN ROUND(
+            (
+              COALESCE(reserved_quantity, 0)::NUMERIC
+              /
+              COALESCE(
+                max_quantity,
+                COALESCE(available_quantity, 0)
+                + COALESCE(reserved_quantity, 0)
+                + COALESCE(delivered_quantity, 0)
+              )::NUMERIC
+            ) * 100,
+            2
+          )
+          ELSE 0
+        END AS utilization_pct,
+
+        slot_units_per_aircraft,
+        capacity_tier,
+        aircraft_size_class,
+        base_delivery_days,
+        slot_status
+      FROM aircraft_factory_slots
+      WHERE model_key = $1
+        AND available_quantity > 0
+        AND ((slot_year * 12) + slot_month) >= (($2::INTEGER * 12) + $3::INTEGER)
+      ORDER BY slot_year ASC, slot_month ASC
+      LIMIT 1
+      `,
+      [modelKey, year, month]
+    );
+
+    const currentSlot = currentSlotResult.rows[0] || null;
+    const nextAvailable = nextAvailableResult.rows[0] || null;
+
+    let estimatedDeliveryPreview = null;
+
+    if (nextAvailable) {
+      const slotBaseDate = new Date(Date.UTC(
+        Number(nextAvailable.slot_year),
+        Number(nextAvailable.slot_month) - 1,
+        1
+      ));
+
+      estimatedDeliveryPreview = new Date(
+        slotBaseDate.getTime() +
+        Number(nextAvailable.base_delivery_days || 0) * 24 * 60 * 60 * 1000
+      ).toISOString();
+    }
+
+    return res.json({
+      ok: true,
+      endpoint: "ACS_FACTORY_SLOT_AVAILABILITY",
+      version: "v1.0",
+
+      query: {
+        model_key: modelKey,
+        year,
+        month
+      },
+
+      navigation: {
+        previous: {
+          year: previousMonthDate.getUTCFullYear(),
+          month: previousMonthDate.getUTCMonth() + 1
+        },
+        current: {
+          year,
+          month
+        },
+        next: {
+          year: nextMonthDate.getUTCFullYear(),
+          month: nextMonthDate.getUTCMonth() + 1
+        }
+      },
+
+      slot: currentSlot,
+
+      next_available_delivery_window: nextAvailable
+        ? {
+            slot_id: nextAvailable.id,
+            slot_year: nextAvailable.slot_year,
+            slot_month: nextAvailable.slot_month,
+            capacity: Number(nextAvailable.capacity || 0),
+            reserved: Number(nextAvailable.reserved || 0),
+            available: Number(nextAvailable.available || 0),
+            utilization_pct: Number(nextAvailable.utilization_pct || 0),
+            base_delivery_days: Number(nextAvailable.base_delivery_days || 0),
+            estimated_delivery_preview: estimatedDeliveryPreview
+          }
+        : null
+    });
+
+  } catch (err) {
+    console.error("ACS FACTORY SLOT AVAILABILITY ERROR:", err);
+
+    return res.status(500).json({
+      ok: false,
+      error: "FACTORY_SLOT_AVAILABILITY_FAILED",
+      details: err.message
+    });
+  }
+});
+
+/* ============================================================
    🟦 GET AIRCRAFT FACTORY SLOTS
    ------------------------------------------------------------
    Route:
