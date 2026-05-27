@@ -369,20 +369,172 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
       });
     }
 
-    /* ============================================================
-       4) CALCULATE DELIVERY DATE
+      /* ============================================================
+       4) RESERVE FACTORY SLOT + CALCULATE REAL DELIVERY DATE
        ------------------------------------------------------------
-       Conservative backend baseline:
-       - 60 days base delivery
-       - +15 days per additional aircraft
+       Backend authority:
+       - Lock available factory slots with FOR UPDATE
+       - Reserve required quantity across one or more months
+       - Preserve slot concurrency for 700+ players
+       - Calculate delivery date from reserved slot position
+       - Does NOT use Date.now() as delivery authority
        ============================================================ */
 
-    const baseDeliveryDays = 60;
-    const quantityBufferDays = Math.max(0, quantity - 1) * 15;
-    const totalDeliveryDays = baseDeliveryDays + quantityBufferDays;
+    const simMonth = Number(req.body?.sim_month || 1);
+
+    if (!Number.isInteger(simMonth) || simMonth < 1 || simMonth > 12) {
+      await client.query("ROLLBACK");
+
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_SIM_MONTH"
+      });
+    }
+
+    const availableSlotsResult = await client.query(
+      `
+      SELECT
+        id,
+        model_key,
+        aircraft_name,
+        slot_year,
+        slot_month,
+        COALESCE(max_quantity, 0) AS max_quantity,
+        COALESCE(available_quantity, 0) AS available_quantity,
+        COALESCE(reserved_quantity, 0) AS reserved_quantity,
+        COALESCE(delivered_quantity, 0) AS delivered_quantity,
+        COALESCE(base_delivery_days, 0) AS base_delivery_days
+      FROM aircraft_factory_slots
+      WHERE model_key = $1
+        AND available_quantity > 0
+        AND ((slot_year * 12) + slot_month) >= (($2::INTEGER * 12) + $3::INTEGER)
+      ORDER BY slot_year ASC, slot_month ASC
+      FOR UPDATE
+      `,
+      [modelKey, simYear, simMonth]
+    );
+
+    let remainingQuantityToReserve = quantity;
+    const reservedFactorySlots = [];
+
+    function ACS_getDaysInMonthUTC(year, month) {
+      return new Date(Date.UTC(Number(year), Number(month), 0)).getUTCDate();
+    }
+
+    function ACS_calculateFactoryDeliveryDate(slotYear, slotMonth, capacity, slotIndex) {
+      const daysInMonth = ACS_getDaysInMonthUTC(slotYear, slotMonth);
+
+      const deliveryDay = Math.max(
+        1,
+        Math.min(
+          daysInMonth,
+          Math.round((Number(slotIndex) / (Number(capacity) + 1)) * daysInMonth)
+        )
+      );
+
+      return new Date(Date.UTC(
+        Number(slotYear),
+        Number(slotMonth) - 1,
+        deliveryDay,
+        12,
+        0,
+        0
+      ));
+    }
+
+    for (const slot of availableSlotsResult.rows) {
+      if (remainingQuantityToReserve <= 0) break;
+
+      const slotAvailable = Number(slot.available_quantity || 0);
+      const slotCapacity = Math.max(
+        Number(slot.max_quantity || 0),
+        slotAvailable + Number(slot.reserved_quantity || 0) + Number(slot.delivered_quantity || 0),
+        1
+      );
+
+      if (slotAvailable <= 0) continue;
+
+      const reserveQty = Math.min(remainingQuantityToReserve, slotAvailable);
+
+      const reservedBefore = Number(slot.reserved_quantity || 0);
+      const deliveredBefore = Number(slot.delivered_quantity || 0);
+      const reservedAfter = reservedBefore + reserveQty;
+      const availableAfter = Math.max(0, slotAvailable - reserveQty);
+
+      const deliverySlotIndex = reservedAfter;
+
+      const slotDeliveryDate = ACS_calculateFactoryDeliveryDate(
+        Number(slot.slot_year),
+        Number(slot.slot_month),
+        slotCapacity,
+        deliverySlotIndex
+      );
+
+      await client.query(
+        `
+        UPDATE aircraft_factory_slots
+        SET
+          reserved_quantity = reserved_quantity + $2,
+          available_quantity = GREATEST(0, available_quantity - $2),
+          slot_status = CASE
+            WHEN GREATEST(0, available_quantity - $2) <= 0
+            THEN 'FULL'
+            ELSE 'OPEN'
+          END,
+          utilization_pct = ROUND(
+            (
+              (
+                COALESCE(reserved_quantity, 0)
+                + $2
+                + COALESCE(delivered_quantity, 0)
+              )::NUMERIC
+              /
+              GREATEST(COALESCE(max_quantity, 0), 1)::NUMERIC
+            ) * 100,
+            2
+          ),
+          updated_at = NOW()
+        WHERE id = $1
+        `,
+        [slot.id, reserveQty]
+      );
+
+      reservedFactorySlots.push({
+        slot_id: slot.id,
+        slot_year: Number(slot.slot_year),
+        slot_month: Number(slot.slot_month),
+        reserved_quantity: reserveQty,
+        capacity: slotCapacity,
+        reserved_before: reservedBefore,
+        reserved_after: reservedAfter,
+        available_after: availableAfter,
+        delivered_before: deliveredBefore,
+        base_delivery_days: Number(slot.base_delivery_days || 0),
+        estimated_delivery_date: slotDeliveryDate.toISOString()
+      });
+
+      remainingQuantityToReserve -= reserveQty;
+    }
+
+    if (remainingQuantityToReserve > 0) {
+      await client.query("ROLLBACK");
+
+      return res.status(409).json({
+        ok: false,
+        error: "FACTORY_SLOTS_UNAVAILABLE",
+        model_key: modelKey,
+        requested_quantity: quantity,
+        reserved_quantity: quantity - remainingQuantityToReserve,
+        missing_quantity: remainingQuantityToReserve,
+        sim_year: simYear,
+        sim_month: simMonth
+      });
+    }
+
+    const factorySlotId = reservedFactorySlots[0]?.slot_id || null;
 
     const estimatedDeliveryDate = new Date(
-      Date.now() + totalDeliveryDays * 24 * 60 * 60 * 1000
+      reservedFactorySlots[reservedFactorySlots.length - 1].estimated_delivery_date
     );
 
     /* ============================================================
@@ -428,7 +580,7 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
         $3,
         $4,
         $5,
-        NULL,
+        $13,
         $6,
         $7,
         $8,
