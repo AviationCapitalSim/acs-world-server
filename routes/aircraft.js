@@ -954,17 +954,48 @@ router.get("/aircraft/factory/slots/availability", requireAuth, async (req, res)
     const currentSlot = currentSlotResult.rows[0] || null;
     const nextAvailable = nextAvailableResult.rows[0] || null;
 
-    let estimatedDeliveryPreview = null;
+        let estimatedDeliveryPreview = null;
+    let projectedSlotDatePreview = null;
+
+    function ACS_getDaysInMonthUTC(year, month) {
+      return new Date(Date.UTC(Number(year), Number(month), 0)).getUTCDate();
+    }
+
+    function ACS_getProjectedFactorySlotDate(slotYear, slotMonth, capacity, reserved) {
+      const daysInMonth = ACS_getDaysInMonthUTC(slotYear, slotMonth);
+
+      const nextSlotIndex = Number(reserved || 0) + 1;
+
+      const projectedSlotDay = Math.max(
+        1,
+        Math.min(
+          daysInMonth,
+          Math.round((nextSlotIndex / (Number(capacity || 1) + 1)) * daysInMonth)
+        )
+      );
+
+      return new Date(Date.UTC(
+        Number(slotYear),
+        Number(slotMonth) - 1,
+        projectedSlotDay,
+        12,
+        0,
+        0
+      ));
+    }
 
     if (nextAvailable) {
-      const slotBaseDate = new Date(Date.UTC(
+      const projectedSlotDate = ACS_getProjectedFactorySlotDate(
         Number(nextAvailable.slot_year),
-        Number(nextAvailable.slot_month) - 1,
-        1
-      ));
+        Number(nextAvailable.slot_month),
+        Number(nextAvailable.capacity || 1),
+        Number(nextAvailable.reserved || 0)
+      );
+
+      projectedSlotDatePreview = projectedSlotDate.toISOString();
 
       estimatedDeliveryPreview = new Date(
-        slotBaseDate.getTime() +
+        projectedSlotDate.getTime() +
         Number(nextAvailable.base_delivery_days || 0) * 24 * 60 * 60 * 1000
       ).toISOString();
     }
@@ -1007,6 +1038,7 @@ router.get("/aircraft/factory/slots/availability", requireAuth, async (req, res)
             available: Number(nextAvailable.available || 0),
             utilization_pct: Number(nextAvailable.utilization_pct || 0),
             base_delivery_days: Number(nextAvailable.base_delivery_days || 0),
+            projected_slot_date_preview: projectedSlotDatePreview,
             estimated_delivery_preview: estimatedDeliveryPreview
           }
         : null
