@@ -380,7 +380,8 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
        - Does NOT use Date.now() as delivery authority
        ============================================================ */
 
-    const simMonth = Number(req.body?.sim_month || 1);
+        const simMonth = Number(req.body?.sim_month || 1);
+    const simDay = Number(req.body?.sim_day || 1);
 
     if (!Number.isInteger(simMonth) || simMonth < 1 || simMonth > 12) {
       await client.query("ROLLBACK");
@@ -389,6 +390,25 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
         ok: false,
         error: "INVALID_SIM_MONTH"
       });
+    }
+
+    if (!Number.isInteger(simDay) || simDay < 1 || simDay > 31) {
+      await client.query("ROLLBACK");
+
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_SIM_DAY"
+      });
+    }
+
+    const currentSimDate = new Date(Date.UTC(
+      simYear,
+      simMonth - 1,
+      simDay,
+      12,
+      0,
+      0
+    ));
     }
 
     const availableSlotsResult = await client.query(
@@ -421,10 +441,18 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
       return new Date(Date.UTC(Number(year), Number(month), 0)).getUTCDate();
     }
 
-    function ACS_calculateFactoryDeliveryDate(slotYear, slotMonth, capacity, slotIndex) {
+    function ACS_calculateFactoryDeliveryDate(
+       
+      slotYear,
+      slotMonth,
+      capacity,
+      slotIndex,
+      baseDeliveryDays,
+      currentSimDate
+    ) {
       const daysInMonth = ACS_getDaysInMonthUTC(slotYear, slotMonth);
 
-      const deliveryDay = Math.max(
+      const projectedSlotDay = Math.max(
         1,
         Math.min(
           daysInMonth,
@@ -432,14 +460,24 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
         )
       );
 
-      return new Date(Date.UTC(
+      const projectedSlotDate = new Date(Date.UTC(
         Number(slotYear),
         Number(slotMonth) - 1,
-        deliveryDay,
+        projectedSlotDay,
         12,
         0,
         0
       ));
+
+      const deliveryBaseDate =
+        projectedSlotDate.getTime() < currentSimDate.getTime()
+          ? currentSimDate
+          : projectedSlotDate;
+
+      return new Date(
+        deliveryBaseDate.getTime() +
+        Number(baseDeliveryDays || 0) * 24 * 60 * 60 * 1000
+      );
     }
 
     for (const slot of availableSlotsResult.rows) {
@@ -464,10 +502,13 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
       const deliverySlotIndex = reservedAfter;
 
       const slotDeliveryDate = ACS_calculateFactoryDeliveryDate(
+         
         Number(slot.slot_year),
         Number(slot.slot_month),
         slotCapacity,
-        deliverySlotIndex
+        deliverySlotIndex,
+        Number(slot.base_delivery_days || 0),
+        currentSimDate
       );
 
       await client.query(
