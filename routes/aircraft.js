@@ -409,6 +409,24 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
       0,
       0
     ));
+
+    if (!Number.isInteger(simDay) || simDay < 1 || simDay > 31) {
+      await client.query("ROLLBACK");
+
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_SIM_DAY"
+      });
+    }
+
+    const currentSimDate = new Date(Date.UTC(
+      simYear,
+      simMonth - 1,
+      simDay,
+      12,
+      0,
+      0
+    ));
     
     const availableSlotsResult = await client.query(
       `
