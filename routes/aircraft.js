@@ -369,7 +369,7 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
       });
     }
 
-      /* ============================================================
+       /* ============================================================
        4) RESERVE FACTORY SLOT + CALCULATE REAL DELIVERY DATE
        ------------------------------------------------------------
        Backend authority:
@@ -377,10 +377,12 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
        - Reserve required quantity across one or more months
        - Preserve slot concurrency for 700+ players
        - Calculate delivery date from reserved slot position
+       - Delivery date = max(projected slot date, current sim date)
+         + base_delivery_days
        - Does NOT use Date.now() as delivery authority
        ============================================================ */
 
-        const simMonth = Number(req.body?.sim_month || 1);
+    const simMonth = Number(req.body?.sim_month || 1);
     const simDay = Number(req.body?.sim_day || 1);
 
     if (!Number.isInteger(simMonth) || simMonth < 1 || simMonth > 12) {
@@ -410,24 +412,6 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
       0
     ));
 
-    if (!Number.isInteger(simDay) || simDay < 1 || simDay > 31) {
-      await client.query("ROLLBACK");
-
-      return res.status(400).json({
-        ok: false,
-        error: "INVALID_SIM_DAY"
-      });
-    }
-
-    const currentSimDate = new Date(Date.UTC(
-      simYear,
-      simMonth - 1,
-      simDay,
-      12,
-      0,
-      0
-    ));
-    
     const availableSlotsResult = await client.query(
       `
       SELECT
@@ -458,15 +442,7 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
       return new Date(Date.UTC(Number(year), Number(month), 0)).getUTCDate();
     }
 
-    function ACS_calculateFactoryDeliveryDate(
-       
-      slotYear,
-      slotMonth,
-      capacity,
-      slotIndex,
-      baseDeliveryDays,
-      currentSimDate
-    ) {
+    function ACS_getProjectedFactorySlotDate(slotYear, slotMonth, capacity, slotIndex) {
       const daysInMonth = ACS_getDaysInMonthUTC(slotYear, slotMonth);
 
       const projectedSlotDay = Math.max(
@@ -477,7 +453,7 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
         )
       );
 
-      const projectedSlotDate = new Date(Date.UTC(
+      return new Date(Date.UTC(
         Number(slotYear),
         Number(slotMonth) - 1,
         projectedSlotDay,
@@ -485,7 +461,9 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
         0,
         0
       ));
+    }
 
+    function ACS_getEstimatedDeliveryDate(projectedSlotDate, currentSimDate, baseDeliveryDays) {
       const deliveryBaseDate =
         projectedSlotDate.getTime() < currentSimDate.getTime()
           ? currentSimDate
@@ -518,14 +496,17 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
 
       const deliverySlotIndex = reservedAfter;
 
-      const slotDeliveryDate = ACS_calculateFactoryDeliveryDate(
-         
+      const projectedSlotDate = ACS_getProjectedFactorySlotDate(
         Number(slot.slot_year),
         Number(slot.slot_month),
         slotCapacity,
-        deliverySlotIndex,
-        Number(slot.base_delivery_days || 0),
-        currentSimDate
+        deliverySlotIndex
+      );
+
+      const slotDeliveryDate = ACS_getEstimatedDeliveryDate(
+        projectedSlotDate,
+        currentSimDate,
+        Number(slot.base_delivery_days || 0)
       );
 
       await client.query(
@@ -568,6 +549,7 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
         available_after: availableAfter,
         delivered_before: deliveredBefore,
         base_delivery_days: Number(slot.base_delivery_days || 0),
+        projected_slot_date: projectedSlotDate.toISOString(),
         estimated_delivery_date: slotDeliveryDate.toISOString()
       });
 
@@ -585,7 +567,8 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
         reserved_quantity: quantity - remainingQuantityToReserve,
         missing_quantity: remainingQuantityToReserve,
         sim_year: simYear,
-        sim_month: simMonth
+        sim_month: simMonth,
+        sim_day: simDay
       });
     }
 
