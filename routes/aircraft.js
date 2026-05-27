@@ -614,8 +614,12 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
           initial_payment_pct: initialPaymentPct,
           initial_payment_amount: initialPaymentAmount,
           sim_year: simYear,
-          source: "ACS_BUY_NEW_BACKEND_ORDER_V1"
-        })
+          sim_month: simMonth,
+          factory_slot_id: factorySlotId,
+          factory_slots_reserved: reservedFactorySlots,
+          source: "ACS_BUY_NEW_BACKEND_ORDER_V2_FACTORY_SLOT_RESERVED"
+        }),
+        factorySlotId
       ]
     );
 
