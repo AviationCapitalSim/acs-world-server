@@ -409,8 +409,7 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
       0,
       0
     ));
-    }
-
+    
     const availableSlotsResult = await client.query(
       `
       SELECT
