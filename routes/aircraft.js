@@ -541,10 +541,10 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
        5) INSERT ORDER
        ============================================================ */
 
-    const paymentStatus =
+        const paymentStatus =
       initialPaymentPct >= 100
         ? "PAID"
-        : "PARTIAL";
+        : "FINANCED";
 
     const orderResult = await client.query(
       `
