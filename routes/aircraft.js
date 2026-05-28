@@ -1410,4 +1410,148 @@ router.get("/aircraft/catalog", requireAuth, async (req, res) => {
   }
 });
 
+/* ============================================================
+   🟦 ACS BUY NEW DELIVERY RESOLVER — DRY RUN v1.0
+   ------------------------------------------------------------
+   Route:
+   POST /v1/aircraft/orders/delivery-resolver/dry-run
+
+   Purpose:
+   - Preview due Buy New aircraft orders
+   - No Finance mutation
+   - No aircraft_fleet insert
+   - No factory slot update
+   - No Time Engine mutation
+   - Multiplayer-safe design preview
+   ============================================================ */
+
+router.post("/aircraft/orders/delivery-resolver/dry-run", requireAuth, async (req, res) => {
+  try {
+    const simYear = Number(req.body?.sim_year);
+    const simMonth = Number(req.body?.sim_month);
+    const simDay = Number(req.body?.sim_day);
+
+    if (!Number.isInteger(simYear) || simYear < 1900 || simYear > 2100) {
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_SIM_YEAR"
+      });
+    }
+
+    if (!Number.isInteger(simMonth) || simMonth < 1 || simMonth > 12) {
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_SIM_MONTH"
+      });
+    }
+
+    if (!Number.isInteger(simDay) || simDay < 1 || simDay > 31) {
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_SIM_DAY"
+      });
+    }
+
+    const resolverDate = new Date(Date.UTC(
+      simYear,
+      simMonth - 1,
+      simDay,
+      12,
+      0,
+      0
+    ));
+
+    const dueOrdersResult = await pool.query(
+      `
+      SELECT
+        o.id,
+        o.order_uid,
+        o.airline_id,
+        o.user_id,
+        o.manufacturer,
+        o.model_key,
+        o.aircraft_name,
+        o.factory_slot_id,
+        o.quantity,
+        o.unit_price,
+        o.total_price,
+        o.initial_payment_amount,
+        o.final_payment_amount,
+        o.payment_status,
+        o.final_payment_status,
+        o.order_status,
+        o.delivery_status,
+        o.estimated_delivery_date,
+        o.payment_hold_started_at,
+        o.payment_hold_until,
+        o.delivery_resolved_at,
+        f.capital AS current_capital
+      FROM new_aircraft_orders o
+      LEFT JOIN company_finance f
+        ON f.airline_id = o.airline_id
+      WHERE o.source = 'FACTORY'
+        AND o.order_status = 'ORDERED'
+        AND o.delivery_status IN ('PENDING_DELIVERY', 'PAYMENT_HOLD')
+        AND o.payment_status IN ('PAID', 'FINANCED')
+        AND o.estimated_delivery_date IS NOT NULL
+        AND o.estimated_delivery_date <= $1
+      ORDER BY o.estimated_delivery_date ASC, o.id ASC
+      `,
+      [resolverDate]
+    );
+
+    const preview = dueOrdersResult.rows.map(order => {
+      const paymentStatus = String(order.payment_status || "");
+      const deliveryStatus = String(order.delivery_status || "");
+      const capital = Math.round(Number(order.current_capital || 0));
+      const finalPayment = Math.round(Number(order.final_payment_amount || 0));
+
+      let resolver_action = "NO_ACTION";
+
+      if (deliveryStatus === "PENDING_DELIVERY" && paymentStatus === "PAID") {
+        resolver_action = "DELIVER_PAID_ORDER";
+      }
+
+      if (deliveryStatus === "PENDING_DELIVERY" && paymentStatus === "FINANCED") {
+        resolver_action =
+          capital >= finalPayment
+            ? "CHARGE_FINAL_PAYMENT_AND_DELIVER"
+            : "MOVE_TO_PAYMENT_HOLD";
+      }
+
+      if (deliveryStatus === "PAYMENT_HOLD") {
+        resolver_action = "CHECK_PAYMENT_HOLD_GRACE_PERIOD";
+      }
+
+      return {
+        ...order,
+        resolver_action,
+        resolver_date: resolverDate.toISOString(),
+        capital_available: capital,
+        final_payment_required: finalPayment,
+        capital_sufficient_for_final_payment: capital >= finalPayment
+      };
+    });
+
+    return res.json({
+      ok: true,
+      endpoint: "ACS_BUY_NEW_DELIVERY_RESOLVER_DRY_RUN",
+      version: "v1.0",
+      mode: "DRY_RUN_NO_MUTATION",
+      resolver_date: resolverDate.toISOString(),
+      due_count: preview.length,
+      due_orders: preview
+    });
+
+  } catch (err) {
+    console.error("ACS BUY NEW DELIVERY RESOLVER DRY RUN ERROR:", err);
+
+    return res.status(500).json({
+      ok: false,
+      error: "BUY_NEW_DELIVERY_RESOLVER_DRY_RUN_FAILED",
+      details: err.message
+    });
+  }
+});
+
 export default router;
