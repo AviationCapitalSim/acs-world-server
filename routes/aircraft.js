@@ -1892,48 +1892,48 @@ router.post("/aircraft/orders/delivery-resolver", requireAuth, async (req, res) 
         );
       }
 
-      /* ============================================================
-         2E) MARK ORDER AS DELIVERED
-         ============================================================ */
+     /* ============================================================
+   2E) MARK ORDER AS DELIVERED
+   ============================================================ */
 
-      const orderUpdateResult = await client.query(
-        `
-        UPDATE new_aircraft_orders
-        SET
-          payment_status = 'PAID',
-          final_payment_status = 'PAID',
-          order_status = 'COMPLETED',
-          delivery_status = 'DELIVERED',
-          actual_delivery_date = $2,
-          delivery_resolved_at = NOW(),
-          notes = (
-            COALESCE(NULLIF(notes, ''), '{}')::jsonb
-            || jsonb_build_object(
-              'delivery_resolver', 'ACS_BUY_NEW_DELIVERY_RESOLVER_LIVE_V1',
-              'delivery_resolved', true,
-              'delivery_resolver_date', $2,
-              'aircraft_created_count', $3
-            )
-          )::text,
-          updated_at = NOW()
-        WHERE id = $1
-        RETURNING *
-        `,
-        [orderId, resolverDate, insertedAircraft.length]
-      );
+const orderUpdateResult = await client.query(
+  `
+  UPDATE new_aircraft_orders
+  SET
+    payment_status = 'PAID',
+    final_payment_status = 'PAID',
+    order_status = 'COMPLETED',
+    delivery_status = 'DELIVERED',
+    actual_delivery_date = $2::timestamp,
+    delivery_resolved_at = NOW(),
+    notes = (
+      COALESCE(NULLIF(notes, ''), '{}')::jsonb
+      || jsonb_build_object(
+        'delivery_resolver', 'ACS_BUY_NEW_DELIVERY_RESOLVER_LIVE_V1',
+        'delivery_resolved', true,
+        'delivery_resolver_date', ($2::timestamp)::text,
+        'aircraft_created_count', $3::integer
+      )
+    )::text,
+    updated_at = NOW()
+  WHERE id = $1
+  RETURNING *
+  `,
+  [orderId, resolverDate, insertedAircraft.length]
+);
 
-      processed.push({
-        order_id: orderId,
-        airline_id: airlineId,
-        aircraft_name: aircraftLabel,
-        action: shouldChargeFinalPayment
-          ? "FINAL_PAYMENT_CHARGED_AND_DELIVERED"
-          : "PAID_ORDER_DELIVERED",
-        final_payment_charged: shouldChargeFinalPayment ? finalPaymentAmount : 0,
-        aircraft_created_count: insertedAircraft.length,
-        aircraft: insertedAircraft,
-        order: orderUpdateResult.rows[0]
-      });
+processed.push({
+  order_id: orderId,
+  airline_id: airlineId,
+  aircraft_name: aircraftLabel,
+  action: shouldChargeFinalPayment
+    ? "FINAL_PAYMENT_CHARGED_AND_DELIVERED"
+    : "PAID_ORDER_DELIVERED",
+  final_payment_charged: shouldChargeFinalPayment ? finalPaymentAmount : 0,
+  aircraft_created_count: insertedAircraft.length,
+  aircraft: insertedAircraft,
+  order: orderUpdateResult.rows[0]
+});
     }
 
     await client.query("COMMIT");
