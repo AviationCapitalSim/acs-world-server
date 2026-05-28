@@ -1697,17 +1697,57 @@ router.post("/aircraft/orders/delivery-resolver", requireAuth, async (req, res) 
         finalPaymentAmount > 0;
 
       if (shouldChargeFinalPayment && currentCapital < finalPaymentAmount) {
-        skipped.push({
-          order_id: orderId,
-          airline_id: airlineId,
-          aircraft_name: aircraftLabel,
-          action: "NEEDS_PAYMENT_HOLD",
-          capital_available: currentCapital,
-          final_payment_required: finalPaymentAmount
-        });
+  const paymentHoldUntil = new Date(
+    resolverDate.getTime() + (30 * 24 * 60 * 60 * 1000)
+  );
 
-        continue;
-      }
+  const holdResult = await client.query(
+    `
+    UPDATE new_aircraft_orders
+    SET
+      delivery_status = 'PAYMENT_HOLD',
+      final_payment_status = 'PAYMENT_HOLD',
+      payment_hold_started_at = $2::timestamp,
+      payment_hold_until = $3::timestamp,
+      notes = (
+        COALESCE(NULLIF(notes, ''), '{}')::jsonb
+        || jsonb_build_object(
+          'delivery_resolver', 'ACS_BUY_NEW_DELIVERY_RESOLVER_LIVE_V1_1_PAYMENT_HOLD',
+          'payment_hold_triggered', true,
+          'payment_hold_reason', 'INSUFFICIENT_CAPITAL_FOR_FINAL_PAYMENT',
+          'payment_hold_started_at', ($2::timestamp)::text,
+          'payment_hold_until', ($3::timestamp)::text,
+          'capital_available_at_delivery', $4::numeric,
+          'final_payment_required', $5::numeric
+        )
+      )::text,
+      updated_at = NOW()
+    WHERE id = $1
+    RETURNING *
+    `,
+    [
+      orderId,
+      resolverDate,
+      paymentHoldUntil,
+      currentCapital,
+      finalPaymentAmount
+    ]
+  );
+
+  processed.push({
+    order_id: orderId,
+    airline_id: airlineId,
+    aircraft_name: aircraftLabel,
+    action: "MOVED_TO_PAYMENT_HOLD",
+    capital_available: currentCapital,
+    final_payment_required: finalPaymentAmount,
+    payment_hold_started_at: resolverDate.toISOString(),
+    payment_hold_until: paymentHoldUntil.toISOString(),
+    order: holdResult.rows[0]
+  });
+
+  continue;
+}
 
       /* ============================================================
          2A) LOCK FINANCE ROW
