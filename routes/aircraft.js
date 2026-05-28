@@ -1728,10 +1728,10 @@ router.post("/aircraft/orders/delivery-resolver", requireAuth, async (req, res) 
           VALUES ($1, 'EXPENSE', $2, $3, $4, NOW())
           `,
           [
-            airlineId,
-            `OEM PURCHASE FINAL — ${aircraftLabel}`,
-            finalPaymentAmount,
-            FLOOR(EXTRACT(EPOCH FROM NOW()) * 1000)::bigint
+          airlineId,
+         `OEM PURCHASE FINAL — ${aircraftLabel}`,
+          finalPaymentAmount,
+          Date.now()
           ]
         );
       }
