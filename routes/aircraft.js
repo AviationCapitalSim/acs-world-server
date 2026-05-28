@@ -1690,7 +1690,7 @@ router.post("/aircraft/orders/delivery-resolver/dry-run", requireAuth, async (re
 });
 
 /* ============================================================
-   🟦 ACS BUY NEW DELIVERY RESOLVER — LIVE v1.0
+   🟦 ACS BUY NEW DELIVERY RESOLVER — LIVE v1.2
    ------------------------------------------------------------
    Route:
    POST /v1/aircraft/orders/delivery-resolver
@@ -1700,15 +1700,20 @@ router.post("/aircraft/orders/delivery-resolver/dry-run", requireAuth, async (re
    - Multiplayer-safe backend authority
    - Charges final payment when capital is sufficient
    - Delivers aircraft into aircraft_fleet
-   - Updates factory slot from reserved → delivered
-   - Registers finance_log
+   - Moves financed orders to PAYMENT_HOLD when capital is insufficient
+   - Defaults PAYMENT_HOLD orders after 30 simulated days
+   - Releases factory slot on payment default
+   - Registers finance_log entries
    - Does NOT mutate Time Engine
    - Does NOT use localStorage
+   - Does NOT touch Lease New
 
-   v1.0 Scope:
+   v1.2 Scope:
    - PAID + PENDING_DELIVERY → deliver
    - FINANCED + sufficient capital → charge final payment + deliver
-   - FINANCED + insufficient capital → report NEEDS_PAYMENT_HOLD only
+   - FINANCED + insufficient capital → PAYMENT_HOLD
+   - PAYMENT_HOLD + resolverDate < payment_hold_until → keep active
+   - PAYMENT_HOLD + resolverDate >= payment_hold_until → DEFAULT
    ============================================================ */
 
 router.post("/aircraft/orders/delivery-resolver", requireAuth, async (req, res) => {
@@ -1718,6 +1723,16 @@ router.post("/aircraft/orders/delivery-resolver", requireAuth, async (req, res) 
     const simYear = Number(req.body?.sim_year);
     const simMonth = Number(req.body?.sim_month);
     const simDay = Number(req.body?.sim_day);
+
+    /*
+      Optional OCC test guard:
+      - If order_id is provided, LIVE resolver processes only that order.
+      - This protects production tests when due_count contains more than one order.
+    */
+    const requestedOrderId =
+      req.body?.order_id === undefined || req.body?.order_id === null || req.body?.order_id === ""
+        ? null
+        : Number(req.body.order_id);
 
     if (!Number.isInteger(simYear) || simYear < 1900 || simYear > 2100) {
       return res.status(400).json({
@@ -1740,6 +1755,16 @@ router.post("/aircraft/orders/delivery-resolver", requireAuth, async (req, res) 
       });
     }
 
+    if (
+      requestedOrderId !== null &&
+      (!Number.isInteger(requestedOrderId) || requestedOrderId <= 0)
+    ) {
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_ORDER_ID"
+      });
+    }
+
     const resolverDate = new Date(Date.UTC(
       simYear,
       simMonth - 1,
@@ -1753,6 +1778,13 @@ router.post("/aircraft/orders/delivery-resolver", requireAuth, async (req, res) 
 
     /* ============================================================
        1) LOAD DUE ORDERS — MULTIPLAYER SAFE
+       ------------------------------------------------------------
+       Includes:
+       - PENDING_DELIVERY due orders
+       - PAYMENT_HOLD due orders for grace/default review
+
+       Optional:
+       - requestedOrderId limits LIVE mutation to one order.
        ============================================================ */
 
     const dueOrdersResult = await client.query(
@@ -1768,14 +1800,15 @@ router.post("/aircraft/orders/delivery-resolver", requireAuth, async (req, res) 
         ON u.user_id = o.user_id
       WHERE o.source = 'FACTORY'
         AND o.order_status = 'ORDERED'
-        AND o.delivery_status = 'PENDING_DELIVERY'
+        AND o.delivery_status IN ('PENDING_DELIVERY', 'PAYMENT_HOLD')
         AND o.payment_status IN ('PAID', 'FINANCED')
         AND o.estimated_delivery_date IS NOT NULL
         AND o.estimated_delivery_date <= $1
+        AND ($2::BIGINT IS NULL OR o.id = $2::BIGINT)
       ORDER BY o.estimated_delivery_date ASC, o.id ASC
       FOR UPDATE OF o SKIP LOCKED
       `,
-      [resolverDate]
+      [resolverDate, requestedOrderId]
     );
 
     const processed = [];
@@ -1789,6 +1822,11 @@ router.post("/aircraft/orders/delivery-resolver", requireAuth, async (req, res) 
       const orderId = Number(order.id);
       const airlineId = Number(order.airline_id);
       const quantity = Math.max(1, Number(order.quantity || 1));
+
+      const paymentStatus = String(order.payment_status || "");
+      const deliveryStatus = String(order.delivery_status || "");
+
+      const initialPaymentAmount = Math.round(Number(order.initial_payment_amount || 0));
       const finalPaymentAmount = Math.round(Number(order.final_payment_amount || 0));
       const currentCapital = Math.round(Number(order.current_capital || 0));
 
@@ -1800,65 +1838,351 @@ router.post("/aircraft/orders/delivery-resolver", requireAuth, async (req, res) 
         order.user_base_icao ||
         null;
 
+      /* ============================================================
+         2A) PAYMENT HOLD DEFAULT REVIEW — v1.2
+         ------------------------------------------------------------
+         Rule:
+         If resolverDate >= payment_hold_until and order remains
+         PAYMENT_HOLD:
+         - Cancel order
+         - final_payment_status = DEFAULTED
+         - delivery_status = CANCELLED_PAYMENT_DEFAULT
+         - Retain 25% initial payment as penalty
+         - Refund 75% initial payment to capital
+         - Release factory slot
+         - Do NOT create aircraft_fleet
+         ============================================================ */
+
+      if (deliveryStatus === "PAYMENT_HOLD") {
+        const paymentHoldUntil = order.payment_hold_until
+          ? new Date(order.payment_hold_until)
+          : null;
+
+        if (!paymentHoldUntil || Number.isNaN(paymentHoldUntil.getTime())) {
+          skipped.push({
+            order_id: orderId,
+            airline_id: airlineId,
+            aircraft_name: aircraftLabel,
+            action: "PAYMENT_HOLD_REVIEW_BLOCKED",
+            reason: "PAYMENT_HOLD_UNTIL_MISSING_OR_INVALID"
+          });
+
+          continue;
+        }
+
+        if (resolverDate.getTime() < paymentHoldUntil.getTime()) {
+          processed.push({
+            order_id: orderId,
+            airline_id: airlineId,
+            aircraft_name: aircraftLabel,
+            action: "PAYMENT_HOLD_ACTIVE",
+            reason: "GRACE_PERIOD_STILL_ACTIVE",
+            payment_hold_until: paymentHoldUntil.toISOString(),
+            mutation: "NO_DEFAULT_APPLIED"
+          });
+
+          continue;
+        }
+
+        const defaultPenaltyAmount = Math.round(initialPaymentAmount * 0.25);
+        const refundAmount = Math.round(initialPaymentAmount * 0.75);
+
+        /* ============================================================
+           2A.1) LOCK FINANCE ROW
+           ============================================================ */
+
+        await client.query(
+          `
+          SELECT airline_id
+          FROM company_finance
+          WHERE airline_id = $1
+          FOR UPDATE
+          `,
+          [airlineId]
+        );
+
+        /* ============================================================
+           2A.2) APPLY REFUND TO COMPANY CAPITAL
+           ------------------------------------------------------------
+           Penalty is retained by OEM.
+           Since the original initial payment was already recorded as an
+           expense when the order was created, LIVE default only returns
+           the refundable 75% to capital and logs both audit lines.
+           ============================================================ */
+
+        const financeBeforeDefaultResult = await client.query(
+          `
+          SELECT *
+          FROM company_finance
+          WHERE airline_id = $1
+          `,
+          [airlineId]
+        );
+
+        const financeBeforeDefault = financeBeforeDefaultResult.rows[0] || null;
+        const capitalBeforeRefund = Math.round(Number(financeBeforeDefault?.capital || 0));
+
+        await client.query(
+          `
+          UPDATE company_finance
+          SET
+            capital = COALESCE(capital, 0) + $2,
+            revenue = COALESCE(revenue, 0) + $2,
+            profit = COALESCE(profit, 0) + $2,
+            updated_at = NOW()
+          WHERE airline_id = $1
+          `,
+          [airlineId, refundAmount]
+        );
+
+        const financeAfterDefaultResult = await client.query(
+          `
+          SELECT *
+          FROM company_finance
+          WHERE airline_id = $1
+          `,
+          [airlineId]
+        );
+
+        const financeAfterDefault = financeAfterDefaultResult.rows[0] || null;
+        const capitalAfterRefund = Math.round(Number(financeAfterDefault?.capital || 0));
+
+        /* ============================================================
+           2A.3) FINANCE LOG — REFUND + PENALTY
+           ============================================================ */
+
+        await client.query(
+          `
+          INSERT INTO finance_log (
+            airline_id,
+            type,
+            source,
+            amount,
+            timestamp,
+            created_at
+          )
+          VALUES
+            ($1, 'INCOME', $2, $3, $5, NOW()),
+            ($1, 'EXPENSE', $4, $6, $5, NOW())
+          `,
+          [
+            airlineId,
+            `OEM PURCHASE DEFAULT REFUND — ${aircraftLabel}`,
+            refundAmount,
+            `OEM PURCHASE DEFAULT PENALTY — ${aircraftLabel}`,
+            Date.now(),
+            defaultPenaltyAmount
+          ]
+        );
+
+        /* ============================================================
+           2A.4) RELEASE FACTORY SLOT(S)
+           ------------------------------------------------------------
+           Uses notes.factory_slots_reserved when available.
+           Fallback: factory_slot_id + order quantity.
+           ============================================================ */
+
+        let reservedSlots = [];
+
+        try {
+          const parsedNotes =
+            order.notes && String(order.notes).trim()
+              ? JSON.parse(order.notes)
+              : {};
+
+          if (Array.isArray(parsedNotes.factory_slots_reserved)) {
+            reservedSlots = parsedNotes.factory_slots_reserved;
+          }
+        } catch (notesError) {
+          reservedSlots = [];
+        }
+
+        if (!reservedSlots.length && order.factory_slot_id) {
+          reservedSlots = [{
+            slot_id: order.factory_slot_id,
+            reserved_quantity: quantity
+          }];
+        }
+
+        const releasedSlots = [];
+
+        for (const slot of reservedSlots) {
+          const slotId = Number(slot.slot_id);
+          const reservedQty = Math.max(1, Number(slot.reserved_quantity || 1));
+
+          if (!slotId) continue;
+
+          const slotUpdateResult = await client.query(
+            `
+            UPDATE aircraft_factory_slots
+            SET
+              reserved_quantity = GREATEST(COALESCE(reserved_quantity, 0) - $2, 0),
+              available_quantity = COALESCE(available_quantity, 0) + $2,
+              slot_status = CASE
+                WHEN COALESCE(available_quantity, 0) + $2 > 0
+                THEN 'OPEN'
+                ELSE slot_status
+              END,
+              utilization_pct = ROUND(
+                (
+                  (
+                    GREATEST(COALESCE(reserved_quantity, 0) - $2, 0)
+                    + COALESCE(delivered_quantity, 0)
+                  )::NUMERIC
+                  /
+                  GREATEST(COALESCE(max_quantity, 0), 1)::NUMERIC
+                ) * 100,
+                2
+              ),
+              updated_at = NOW()
+            WHERE id = $1
+            RETURNING
+              id,
+              available_quantity,
+              reserved_quantity,
+              delivered_quantity,
+              slot_status,
+              utilization_pct
+            `,
+            [slotId, reservedQty]
+          );
+
+          if (slotUpdateResult.rows[0]) {
+            releasedSlots.push(slotUpdateResult.rows[0]);
+          }
+        }
+
+        /* ============================================================
+           2A.5) MARK ORDER AS CANCELLED PAYMENT DEFAULT
+           ============================================================ */
+
+        const defaultOrderResult = await client.query(
+          `
+          UPDATE new_aircraft_orders
+          SET
+            payment_status = 'CANCELLED',
+            final_payment_status = 'DEFAULTED',
+            order_status = 'CANCELLED',
+            delivery_status = 'CANCELLED_PAYMENT_DEFAULT',
+            default_penalty_amount = $2,
+            refund_amount = $3,
+            delivery_resolved_at = NOW(),
+            notes = (
+              COALESCE(NULLIF(notes, ''), '{}')::jsonb
+              || jsonb_build_object(
+                'delivery_resolver', 'ACS_BUY_NEW_DELIVERY_RESOLVER_LIVE_V1_2_DEFAULT',
+                'payment_default_applied', true,
+                'delivery_resolver_date', ($4::timestamp)::text,
+                'payment_hold_until', ($5::timestamp)::text,
+                'default_penalty_amount', $2::numeric,
+                'refund_amount', $3::numeric,
+                'capital_before_refund', $6::numeric,
+                'capital_after_refund', $7::numeric,
+                'aircraft_fleet_created', false,
+                'factory_slots_released', $8::jsonb
+              )
+            )::text,
+            updated_at = NOW()
+          WHERE id = $1
+          RETURNING *
+          `,
+          [
+            orderId,
+            defaultPenaltyAmount,
+            refundAmount,
+            resolverDate,
+            paymentHoldUntil,
+            capitalBeforeRefund,
+            capitalAfterRefund,
+            JSON.stringify(releasedSlots)
+          ]
+        );
+
+        processed.push({
+          order_id: orderId,
+          airline_id: airlineId,
+          aircraft_name: aircraftLabel,
+          action: "DEFAULT_AFTER_PAYMENT_HOLD_APPLIED",
+          reason: "PAYMENT_HOLD_GRACE_PERIOD_EXPIRED",
+          payment_status: "CANCELLED",
+          final_payment_status: "DEFAULTED",
+          delivery_status: "CANCELLED_PAYMENT_DEFAULT",
+          default_penalty_amount: defaultPenaltyAmount,
+          refund_amount: refundAmount,
+          capital_before_refund: capitalBeforeRefund,
+          capital_after_refund: capitalAfterRefund,
+          aircraft_fleet_created: false,
+          released_slots: releasedSlots,
+          order: defaultOrderResult.rows[0],
+          finance: financeAfterDefault
+        });
+
+        continue;
+      }
+
+      /* ============================================================
+         2B) PENDING DELIVERY RULES
+         ============================================================ */
+
       const shouldChargeFinalPayment =
-        String(order.payment_status) === "FINANCED" &&
+        paymentStatus === "FINANCED" &&
         finalPaymentAmount > 0;
 
       if (shouldChargeFinalPayment && currentCapital < finalPaymentAmount) {
-  const paymentHoldUntil = new Date(
-    resolverDate.getTime() + (30 * 24 * 60 * 60 * 1000)
-  );
+        const paymentHoldUntil = new Date(
+          resolverDate.getTime() + (30 * 24 * 60 * 60 * 1000)
+        );
 
-  const holdResult = await client.query(
-    `
-    UPDATE new_aircraft_orders
-    SET
-      delivery_status = 'PAYMENT_HOLD',
-      final_payment_status = 'PAYMENT_HOLD',
-      payment_hold_started_at = $2::timestamp,
-      payment_hold_until = $3::timestamp,
-      notes = (
-        COALESCE(NULLIF(notes, ''), '{}')::jsonb
-        || jsonb_build_object(
-          'delivery_resolver', 'ACS_BUY_NEW_DELIVERY_RESOLVER_LIVE_V1_1_PAYMENT_HOLD',
-          'payment_hold_triggered', true,
-          'payment_hold_reason', 'INSUFFICIENT_CAPITAL_FOR_FINAL_PAYMENT',
-          'payment_hold_started_at', ($2::timestamp)::text,
-          'payment_hold_until', ($3::timestamp)::text,
-          'capital_available_at_delivery', $4::numeric,
-          'final_payment_required', $5::numeric
-        )
-      )::text,
-      updated_at = NOW()
-    WHERE id = $1
-    RETURNING *
-    `,
-    [
-      orderId,
-      resolverDate,
-      paymentHoldUntil,
-      currentCapital,
-      finalPaymentAmount
-    ]
-  );
+        const holdResult = await client.query(
+          `
+          UPDATE new_aircraft_orders
+          SET
+            delivery_status = 'PAYMENT_HOLD',
+            final_payment_status = 'PAYMENT_HOLD',
+            payment_hold_started_at = $2::timestamp,
+            payment_hold_until = $3::timestamp,
+            notes = (
+              COALESCE(NULLIF(notes, ''), '{}')::jsonb
+              || jsonb_build_object(
+                'delivery_resolver', 'ACS_BUY_NEW_DELIVERY_RESOLVER_LIVE_V1_2_PAYMENT_HOLD',
+                'payment_hold_triggered', true,
+                'payment_hold_reason', 'INSUFFICIENT_CAPITAL_FOR_FINAL_PAYMENT',
+                'payment_hold_started_at', ($2::timestamp)::text,
+                'payment_hold_until', ($3::timestamp)::text,
+                'capital_available_at_delivery', $4::numeric,
+                'final_payment_required', $5::numeric
+              )
+            )::text,
+            updated_at = NOW()
+          WHERE id = $1
+          RETURNING *
+          `,
+          [
+            orderId,
+            resolverDate,
+            paymentHoldUntil,
+            currentCapital,
+            finalPaymentAmount
+          ]
+        );
 
-  processed.push({
-    order_id: orderId,
-    airline_id: airlineId,
-    aircraft_name: aircraftLabel,
-    action: "MOVED_TO_PAYMENT_HOLD",
-    capital_available: currentCapital,
-    final_payment_required: finalPaymentAmount,
-    payment_hold_started_at: resolverDate.toISOString(),
-    payment_hold_until: paymentHoldUntil.toISOString(),
-    order: holdResult.rows[0]
-  });
+        processed.push({
+          order_id: orderId,
+          airline_id: airlineId,
+          aircraft_name: aircraftLabel,
+          action: "MOVED_TO_PAYMENT_HOLD",
+          capital_available: currentCapital,
+          final_payment_required: finalPaymentAmount,
+          payment_hold_started_at: resolverDate.toISOString(),
+          payment_hold_until: paymentHoldUntil.toISOString(),
+          order: holdResult.rows[0]
+        });
 
-  continue;
-}
+        continue;
+      }
 
       /* ============================================================
-         2A) LOCK FINANCE ROW
+         2C) LOCK FINANCE ROW
          ============================================================ */
 
       await client.query(
@@ -1872,7 +2196,7 @@ router.post("/aircraft/orders/delivery-resolver", requireAuth, async (req, res) 
       );
 
       /* ============================================================
-         2B) CHARGE FINAL PAYMENT IF FINANCED
+         2D) CHARGE FINAL PAYMENT IF FINANCED
          ============================================================ */
 
       if (shouldChargeFinalPayment) {
@@ -1903,16 +2227,16 @@ router.post("/aircraft/orders/delivery-resolver", requireAuth, async (req, res) 
           VALUES ($1, 'EXPENSE', $2, $3, $4, NOW())
           `,
           [
-          airlineId,
-         `OEM PURCHASE FINAL — ${aircraftLabel}`,
-          finalPaymentAmount,
-          Date.now()
+            airlineId,
+            `OEM PURCHASE FINAL — ${aircraftLabel}`,
+            finalPaymentAmount,
+            Date.now()
           ]
         );
       }
 
       /* ============================================================
-         2C) INSERT AIRCRAFT INTO FLEET
+         2E) INSERT AIRCRAFT INTO FLEET
          ============================================================ */
 
       const insertedAircraft = [];
@@ -2003,10 +2327,7 @@ router.post("/aircraft/orders/delivery-resolver", requireAuth, async (req, res) 
       }
 
       /* ============================================================
-         2D) UPDATE FACTORY SLOT(S)
-         ------------------------------------------------------------
-         Uses notes.factory_slots_reserved when available.
-         Fallback: factory_slot_id + order quantity.
+         2F) UPDATE FACTORY SLOT(S) FROM RESERVED TO DELIVERED
          ============================================================ */
 
       let reservedSlots = [];
@@ -2067,48 +2388,48 @@ router.post("/aircraft/orders/delivery-resolver", requireAuth, async (req, res) 
         );
       }
 
-     /* ============================================================
-   2E) MARK ORDER AS DELIVERED
-   ============================================================ */
+      /* ============================================================
+         2G) MARK ORDER AS DELIVERED
+         ============================================================ */
 
-const orderUpdateResult = await client.query(
-  `
-  UPDATE new_aircraft_orders
-  SET
-    payment_status = 'PAID',
-    final_payment_status = 'PAID',
-    order_status = 'COMPLETED',
-    delivery_status = 'DELIVERED',
-    actual_delivery_date = $2::timestamp,
-    delivery_resolved_at = NOW(),
-    notes = (
-      COALESCE(NULLIF(notes, ''), '{}')::jsonb
-      || jsonb_build_object(
-        'delivery_resolver', 'ACS_BUY_NEW_DELIVERY_RESOLVER_LIVE_V1',
-        'delivery_resolved', true,
-        'delivery_resolver_date', ($2::timestamp)::text,
-        'aircraft_created_count', $3::integer
-      )
-    )::text,
-    updated_at = NOW()
-  WHERE id = $1
-  RETURNING *
-  `,
-  [orderId, resolverDate, insertedAircraft.length]
-);
+      const orderUpdateResult = await client.query(
+        `
+        UPDATE new_aircraft_orders
+        SET
+          payment_status = 'PAID',
+          final_payment_status = 'PAID',
+          order_status = 'COMPLETED',
+          delivery_status = 'DELIVERED',
+          actual_delivery_date = $2::timestamp,
+          delivery_resolved_at = NOW(),
+          notes = (
+            COALESCE(NULLIF(notes, ''), '{}')::jsonb
+            || jsonb_build_object(
+              'delivery_resolver', 'ACS_BUY_NEW_DELIVERY_RESOLVER_LIVE_V1_2',
+              'delivery_resolved', true,
+              'delivery_resolver_date', ($2::timestamp)::text,
+              'aircraft_created_count', $3::integer
+            )
+          )::text,
+          updated_at = NOW()
+        WHERE id = $1
+        RETURNING *
+        `,
+        [orderId, resolverDate, insertedAircraft.length]
+      );
 
-processed.push({
-  order_id: orderId,
-  airline_id: airlineId,
-  aircraft_name: aircraftLabel,
-  action: shouldChargeFinalPayment
-    ? "FINAL_PAYMENT_CHARGED_AND_DELIVERED"
-    : "PAID_ORDER_DELIVERED",
-  final_payment_charged: shouldChargeFinalPayment ? finalPaymentAmount : 0,
-  aircraft_created_count: insertedAircraft.length,
-  aircraft: insertedAircraft,
-  order: orderUpdateResult.rows[0]
-});
+      processed.push({
+        order_id: orderId,
+        airline_id: airlineId,
+        aircraft_name: aircraftLabel,
+        action: shouldChargeFinalPayment
+          ? "FINAL_PAYMENT_CHARGED_AND_DELIVERED"
+          : "PAID_ORDER_DELIVERED",
+        final_payment_charged: shouldChargeFinalPayment ? finalPaymentAmount : 0,
+        aircraft_created_count: insertedAircraft.length,
+        aircraft: insertedAircraft,
+        order: orderUpdateResult.rows[0]
+      });
     }
 
     await client.query("COMMIT");
@@ -2116,9 +2437,10 @@ processed.push({
     return res.json({
       ok: true,
       endpoint: "ACS_BUY_NEW_DELIVERY_RESOLVER",
-      version: "v1.0",
+      version: "v1.2",
       mode: "LIVE_MUTATION",
       resolver_date: resolverDate.toISOString(),
+      requested_order_id: requestedOrderId,
       processed_count: processed.length,
       skipped_count: skipped.length,
       processed,
