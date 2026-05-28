@@ -1735,10 +1735,36 @@ router.post("/aircraft/orders/delivery-resolver/dry-run", requireAuth, async (re
          2A) STANDARD PENDING DELIVERY RULES
          ============================================================ */
 
-      if (deliveryStatus === "PENDING_DELIVERY" && paymentStatus === "PAID") {
-        resolver_action = "DELIVER_PAID_ORDER";
-        resolver_reason = "ORDER_FULLY_PAID_AND_DUE_FOR_DELIVERY";
-      }
+     /* ============================================================
+   🟦 LEASED ORDER DELIVERY PREVIEW — OCC v1.0
+   ------------------------------------------------------------
+   LEASED aircraft are not financed purchases.
+   If lease commitment was paid, delivery proceeds normally.
+   No final payment.
+   No payment hold.
+   ============================================================ */
+
+if (
+  deliveryStatus === "PENDING_DELIVERY" &&
+  paymentStatus === "PAID" &&
+  String(order.ownership_type || "") === "LEASED"
+) {
+  resolver_action = "LEASED_ORDER_DELIVER_READY";
+  resolver_reason = "LEASE_COMMITMENT_PAID_NO_FINAL_PAYMENT_REQUIRED";
+}
+
+/* ============================================================
+   🟩 PAID OWNED ORDER DELIVERY PREVIEW
+   ============================================================ */
+
+if (
+  deliveryStatus === "PENDING_DELIVERY" &&
+  paymentStatus === "PAID" &&
+  String(order.ownership_type || "") !== "LEASED"
+) {
+  resolver_action = "DELIVER_PAID_ORDER";
+  resolver_reason = "ORDER_FULLY_PAID_AND_DUE_FOR_DELIVERY";
+}
 
       if (deliveryStatus === "PENDING_DELIVERY" && paymentStatus === "FINANCED") {
         if (capital >= finalPayment) {
