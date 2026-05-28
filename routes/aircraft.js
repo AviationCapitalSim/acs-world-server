@@ -1678,6 +1678,7 @@ router.post("/aircraft/orders/delivery-resolver/dry-run", requireAuth, async (re
         o.quantity,
         o.unit_price,
         o.total_price,
+        o.ownership_type,
         o.initial_payment_amount,
         o.final_payment_amount,
         o.payment_status,
