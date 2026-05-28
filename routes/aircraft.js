@@ -1446,7 +1446,7 @@ router.get("/aircraft/catalog", requireAuth, async (req, res) => {
 });
 
 /* ============================================================
-   🟦 ACS BUY NEW DELIVERY RESOLVER — DRY RUN v1.0
+   🟦 ACS BUY NEW DELIVERY RESOLVER — DRY RUN v1.2
    ------------------------------------------------------------
    Route:
    POST /v1/aircraft/orders/delivery-resolver/dry-run
@@ -1458,6 +1458,16 @@ router.get("/aircraft/catalog", requireAuth, async (req, res) => {
    - No factory slot update
    - No Time Engine mutation
    - Multiplayer-safe design preview
+
+   v1.2 Scope:
+   - PAID + PENDING_DELIVERY → deliver preview
+   - FINANCED + sufficient capital → charge final payment + deliver preview
+   - FINANCED + insufficient capital → move to PAYMENT_HOLD preview
+   - PAYMENT_HOLD before grace limit → PAYMENT_HOLD_ACTIVE
+   - PAYMENT_HOLD at/after grace limit → DEFAULT_AFTER_PAYMENT_HOLD
+   - Default math:
+     penalty = 25% initial_payment_amount
+     refund  = 75% initial_payment_amount
    ============================================================ */
 
 router.post("/aircraft/orders/delivery-resolver/dry-run", requireAuth, async (req, res) => {
@@ -1496,6 +1506,14 @@ router.post("/aircraft/orders/delivery-resolver/dry-run", requireAuth, async (re
       0
     ));
 
+    /* ============================================================
+       1) LOAD DUE ORDERS — DRY RUN ONLY
+       ------------------------------------------------------------
+       Includes:
+       - PENDING_DELIVERY orders due by estimated_delivery_date
+       - PAYMENT_HOLD orders due for grace-period review
+       ============================================================ */
+
     const dueOrdersResult = await pool.query(
       `
       SELECT
@@ -1517,8 +1535,11 @@ router.post("/aircraft/orders/delivery-resolver/dry-run", requireAuth, async (re
         o.order_status,
         o.delivery_status,
         o.estimated_delivery_date,
+        o.actual_delivery_date,
         o.payment_hold_started_at,
         o.payment_hold_until,
+        o.default_penalty_amount,
+        o.refund_amount,
         o.delivery_resolved_at,
         f.capital AS current_capital
       FROM new_aircraft_orders o
@@ -1535,43 +1556,122 @@ router.post("/aircraft/orders/delivery-resolver/dry-run", requireAuth, async (re
       [resolverDate]
     );
 
+    /* ============================================================
+       2) BUILD PREVIEW ACTIONS
+       ============================================================ */
+
     const preview = dueOrdersResult.rows.map(order => {
       const paymentStatus = String(order.payment_status || "");
       const deliveryStatus = String(order.delivery_status || "");
+      const finalPaymentStatus = String(order.final_payment_status || "");
+
       const capital = Math.round(Number(order.current_capital || 0));
+      const initialPayment = Math.round(Number(order.initial_payment_amount || 0));
       const finalPayment = Math.round(Number(order.final_payment_amount || 0));
 
+      const paymentHoldUntil = order.payment_hold_until
+        ? new Date(order.payment_hold_until)
+        : null;
+
+      const defaultPenaltyAmount = Math.round(initialPayment * 0.25);
+      const refundAmount = Math.round(initialPayment * 0.75);
+
       let resolver_action = "NO_ACTION";
+      let resolver_reason = "NO_MATCHING_RULE";
+      let payment_hold_status = null;
+      let default_preview = null;
+
+      /* ============================================================
+         2A) STANDARD PENDING DELIVERY RULES
+         ============================================================ */
 
       if (deliveryStatus === "PENDING_DELIVERY" && paymentStatus === "PAID") {
         resolver_action = "DELIVER_PAID_ORDER";
+        resolver_reason = "ORDER_FULLY_PAID_AND_DUE_FOR_DELIVERY";
       }
 
       if (deliveryStatus === "PENDING_DELIVERY" && paymentStatus === "FINANCED") {
-        resolver_action =
-          capital >= finalPayment
-            ? "CHARGE_FINAL_PAYMENT_AND_DELIVER"
-            : "MOVE_TO_PAYMENT_HOLD";
+        if (capital >= finalPayment) {
+          resolver_action = "CHARGE_FINAL_PAYMENT_AND_DELIVER";
+          resolver_reason = "CAPITAL_SUFFICIENT_FOR_FINAL_PAYMENT";
+        } else {
+          resolver_action = "MOVE_TO_PAYMENT_HOLD";
+          resolver_reason = "INSUFFICIENT_CAPITAL_FOR_FINAL_PAYMENT";
+        }
       }
 
+      /* ============================================================
+         2B) PAYMENT HOLD GRACE PERIOD RULES — v1.2
+         ------------------------------------------------------------
+         If resolverDate < payment_hold_until:
+         - Order remains in PAYMENT_HOLD
+
+         If resolverDate >= payment_hold_until:
+         - Order defaults
+         - 25% of initial payment retained as penalty
+         - 75% refunded to company capital
+         - No aircraft created
+         - Factory slot must be released in LIVE
+         ============================================================ */
+
       if (deliveryStatus === "PAYMENT_HOLD") {
-        resolver_action = "CHECK_PAYMENT_HOLD_GRACE_PERIOD";
+        if (!paymentHoldUntil || Number.isNaN(paymentHoldUntil.getTime())) {
+          resolver_action = "PAYMENT_HOLD_REVIEW_BLOCKED";
+          resolver_reason = "PAYMENT_HOLD_UNTIL_MISSING_OR_INVALID";
+          payment_hold_status = "INVALID_PAYMENT_HOLD_DATE";
+        } else if (resolverDate.getTime() < paymentHoldUntil.getTime()) {
+          resolver_action = "PAYMENT_HOLD_ACTIVE";
+          resolver_reason = "GRACE_PERIOD_STILL_ACTIVE";
+          payment_hold_status = "ACTIVE";
+        } else {
+          resolver_action = "DEFAULT_AFTER_PAYMENT_HOLD";
+          resolver_reason = "PAYMENT_HOLD_GRACE_PERIOD_EXPIRED";
+          payment_hold_status = "EXPIRED";
+
+          default_preview = {
+            payment_status_after_default: "CANCELLED",
+            final_payment_status_after_default: "DEFAULTED",
+            delivery_status_after_default: "CANCELLED_PAYMENT_DEFAULT",
+            default_penalty_amount: defaultPenaltyAmount,
+            refund_amount: refundAmount,
+            capital_before_refund: capital,
+            capital_after_refund_preview: capital + refundAmount,
+            aircraft_fleet_created: false,
+            factory_slot_release_required: true,
+            factory_slot_id: order.factory_slot_id || null
+          };
+        }
       }
 
       return {
         ...order,
         resolver_action,
+        resolver_reason,
         resolver_date: resolverDate.toISOString(),
+
+        payment_hold_status,
+        payment_hold_until_iso: paymentHoldUntil
+          ? paymentHoldUntil.toISOString()
+          : null,
+
         capital_available: capital,
+        initial_payment_amount_numeric: initialPayment,
         final_payment_required: finalPayment,
-        capital_sufficient_for_final_payment: capital >= finalPayment
+        capital_sufficient_for_final_payment: capital >= finalPayment,
+
+        default_penalty_preview: defaultPenaltyAmount,
+        refund_preview: refundAmount,
+        default_preview,
+
+        dry_run_only: true,
+        mutation_performed: false
       };
     });
 
     return res.json({
       ok: true,
       endpoint: "ACS_BUY_NEW_DELIVERY_RESOLVER_DRY_RUN",
-      version: "v1.0",
+      version: "v1.2",
       mode: "DRY_RUN_NO_MUTATION",
       resolver_date: resolverDate.toISOString(),
       due_count: preview.length,
