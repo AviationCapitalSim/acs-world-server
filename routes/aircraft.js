@@ -2297,6 +2297,226 @@ router.post("/aircraft/orders/delivery-resolver", requireAuth, async (req, res) 
         continue;
       }
 
+  /* ============================================================
+   🟦 LEASED ORDER DELIVERY — OCC v1.0
+   ------------------------------------------------------------
+   LEASED aircraft are operational lease assets.
+   Rules:
+   - No final purchase payment
+   - No PAYMENT_HOLD
+   - Create aircraft_fleet as LEASED
+   - Factory slot moves reserved → delivered
+   - Leasing contract will be created in a later module
+   ============================================================ */
+
+if (
+  deliveryStatus === "PENDING_DELIVERY" &&
+  paymentStatus === "PAID" &&
+  String(order.ownership_type || "") === "LEASED"
+) {
+  /* ============================================================
+     2B.1) INSERT LEASED AIRCRAFT INTO FLEET
+     ============================================================ */
+
+  const insertedAircraft = [];
+
+  for (let i = 0; i < quantity; i += 1) {
+    const fleetResult = await client.query(
+      `
+      INSERT INTO aircraft_fleet (
+        aircraft_uid,
+        airline_id,
+        user_id,
+        source,
+        ownership_type,
+        manufacturer,
+        model_key,
+        aircraft_name,
+        registration,
+        serial_number,
+        line_number,
+        new_aircraft_order_id,
+        used_listing_id,
+        status,
+        operational_status,
+        base_icao,
+        current_airport,
+        year_built,
+        delivery_date,
+        entry_into_service_date,
+        total_hours,
+        total_cycles,
+        condition_pct,
+        maintenance_status,
+        purchase_price,
+        current_value,
+        currency,
+        created_at,
+        updated_at
+      )
+      VALUES (
+        gen_random_uuid(),
+        $1,
+        $2,
+        'FACTORY',
+        'LEASED',
+        $3,
+        $4,
+        $5,
+        NULL,
+        NULL,
+        NULL,
+        $6,
+        NULL,
+        'ACTIVE',
+        'AVAILABLE',
+        $7,
+        $7,
+        $8,
+        $9,
+        $9,
+        0,
+        0,
+        100,
+        'SERVICEABLE',
+        0,
+        $10,
+        'USD',
+        NOW(),
+        NOW()
+      )
+      RETURNING id, aircraft_uid, airline_id, model_key, aircraft_name, ownership_type, status, operational_status
+      `,
+      [
+        airlineId,
+        order.user_id || null,
+        order.manufacturer,
+        order.model_key,
+        aircraftLabel,
+        orderId,
+        baseIcao,
+        simYear,
+        resolverDate,
+        Math.round(Number(order.unit_price || 0))
+      ]
+    );
+
+    insertedAircraft.push(fleetResult.rows[0]);
+  }
+
+  /* ============================================================
+     2B.2) UPDATE FACTORY SLOT(S) FROM RESERVED TO DELIVERED
+     ============================================================ */
+
+  let reservedSlots = [];
+
+  try {
+    const parsedNotes =
+      order.notes && String(order.notes).trim()
+        ? JSON.parse(order.notes)
+        : {};
+
+    if (Array.isArray(parsedNotes.factory_slots_reserved)) {
+      reservedSlots = parsedNotes.factory_slots_reserved;
+    }
+  } catch (notesError) {
+    reservedSlots = [];
+  }
+
+  if (!reservedSlots.length && order.factory_slot_id) {
+    reservedSlots = [{
+      slot_id: order.factory_slot_id,
+      reserved_quantity: quantity
+    }];
+  }
+
+  for (const slot of reservedSlots) {
+    const slotId = Number(slot.slot_id);
+    const reservedQty = Math.max(1, Number(slot.reserved_quantity || 1));
+
+    if (!slotId) continue;
+
+    await client.query(
+      `
+      UPDATE aircraft_factory_slots
+      SET
+        reserved_quantity = GREATEST(COALESCE(reserved_quantity, 0) - $2, 0),
+        delivered_quantity = COALESCE(delivered_quantity, 0) + $2,
+        slot_status = CASE
+          WHEN COALESCE(available_quantity, 0) <= 0
+          THEN 'FULL'
+          ELSE 'OPEN'
+        END,
+        utilization_pct = ROUND(
+          (
+            (
+              GREATEST(COALESCE(reserved_quantity, 0) - $2, 0)
+              + COALESCE(delivered_quantity, 0)
+              + $2
+            )::NUMERIC
+            /
+            GREATEST(COALESCE(max_quantity, 0), 1)::NUMERIC
+          ) * 100,
+          2
+        ),
+        updated_at = NOW()
+      WHERE id = $1
+      `,
+      [slotId, reservedQty]
+    );
+  }
+
+  /* ============================================================
+     2B.3) MARK LEASE ORDER AS DELIVERED
+     ============================================================ */
+
+  const orderUpdateResult = await client.query(
+    `
+    UPDATE new_aircraft_orders
+    SET
+      payment_status = 'PAID',
+      final_payment_status = 'PAID',
+      order_status = 'COMPLETED',
+      delivery_status = 'DELIVERED',
+      actual_delivery_date = $2::timestamp,
+      delivery_resolved_at = NOW(),
+      notes = (
+        COALESCE(NULLIF(notes, ''), '{}')::jsonb
+        || jsonb_build_object(
+          'delivery_resolver', 'ACS_BUY_NEW_DELIVERY_RESOLVER_LIVE_V1_2_LEASED',
+          'leased_delivery_resolved', true,
+          'delivery_resolver_date', ($2::timestamp)::text,
+          'aircraft_created_count', $3::integer,
+          'ownership_type', 'LEASED',
+          'final_payment_charged', 0,
+          'payment_hold_applied', false,
+          'lease_contract_pending', true
+        )
+      )::text,
+      updated_at = NOW()
+    WHERE id = $1
+    RETURNING *
+    `,
+    [orderId, resolverDate, insertedAircraft.length]
+  );
+
+  processed.push({
+    order_id: orderId,
+    airline_id: airlineId,
+    aircraft_name: aircraftLabel,
+    action: "LEASED_ORDER_DELIVERED",
+    reason: "LEASE_COMMITMENT_PAID_NO_FINAL_PAYMENT_REQUIRED",
+    ownership_type: "LEASED",
+    final_payment_charged: 0,
+    payment_hold_applied: false,
+    aircraft_created_count: insertedAircraft.length,
+    aircraft: insertedAircraft,
+    order: orderUpdateResult.rows[0]
+  });
+
+  continue;
+}
+       
       /* ============================================================
          2B) PENDING DELIVERY RULES
          ============================================================ */
