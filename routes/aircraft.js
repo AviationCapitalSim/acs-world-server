@@ -124,38 +124,46 @@ router.get("/aircraft/orders", requireAuth, async (req, res) => {
       });
     }
 
-    const result = await pool.query(
-      `
-      SELECT
-        id,
-        order_uid,
-        airline_id,
-        user_id,
-        source,
-        manufacturer,
-        model_key,
-        aircraft_name,
-        factory_slot_id,
-        quantity,
-        unit_price,
-        total_price,
-        currency,
-        ownership_type,
-        payment_status,
-        order_status,
-        delivery_status,
-        order_date,
-        estimated_delivery_date,
-        actual_delivery_date,
-        notes,
-        created_at,
-        updated_at
-      FROM new_aircraft_orders
-      WHERE airline_id = $1
-      ORDER BY created_at DESC, id DESC
-      `,
-      [airlineId]
-    );
+ const result = await pool.query(
+  `
+  SELECT
+    id,
+    order_uid,
+    airline_id,
+    user_id,
+    source,
+    manufacturer,
+    model_key,
+    aircraft_name,
+    factory_slot_id,
+    quantity,
+    unit_price,
+    total_price,
+    initial_payment_amount,
+    final_payment_amount,
+    currency,
+    ownership_type,
+    payment_status,
+    final_payment_status,
+    order_status,
+    delivery_status,
+    order_date,
+    estimated_delivery_date,
+    actual_delivery_date,
+    payment_hold_started_at,
+    payment_hold_until,
+    default_penalty_amount,
+    refund_amount,
+    delivery_resolved_at,
+    notes,
+    created_at,
+    updated_at
+  FROM new_aircraft_orders
+  WHERE airline_id = $1
+  ORDER BY created_at DESC, id DESC
+  `,
+  [airlineId]
+);
 
     return res.json({
       ok: true,
