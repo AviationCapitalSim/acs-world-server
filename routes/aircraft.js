@@ -209,15 +209,79 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
     const userId = req.user_id || null;
 
     const modelKey = String(req.body?.model_key || "").trim();
-    const quantity = Number(req.body?.quantity || 1);
-    const ownershipType = String(req.body?.ownership_type || "BUY").toUpperCase();
-    const dbOwnershipType =
-    ownershipType === "LEASE"
-    ? "LEASED"
-    : "OWNED";  
-    const initialPaymentPct = Number(req.body?.initial_payment_pct || 100);
-    const simYear = Number(req.body?.sim_year || new Date().getUTCFullYear());
+const quantity = Number(req.body?.quantity || 1);
 
+const ownershipType = String(req.body?.ownership_type || "BUY").toUpperCase();
+
+const dbOwnershipType =
+  ownershipType === "LEASE"
+    ? "LEASED"
+    : "OWNED";
+
+/* ============================================================
+   🟦 ACS LEASE NEW OCC POLICY — SERVER AUTHORITY v1.0
+   ------------------------------------------------------------
+   The frontend may send lease metadata, but backend remains the
+   authority for:
+   - lease initial commitment
+   - lease duration
+   - monthly lease rate
+   - lessor / broker naming
+   ============================================================ */
+
+const requestedInitialPaymentPct =
+  Number(req.body?.initial_payment_pct || 100);
+
+const requestedLeaseYears =
+  Number(req.body?.lease_years || 10);
+
+const leaseYears =
+  ownershipType === "LEASE"
+    ? requestedLeaseYears
+    : null;
+
+const leaseTermMonths =
+  ownershipType === "LEASE"
+    ? leaseYears * 12
+    : null;
+
+const leaseRatePctMonthly =
+  ownershipType === "LEASE"
+    ? leaseYears === 5
+      ? 0.0125
+      : leaseYears === 10
+        ? 0.0095
+        : leaseYears === 15
+          ? 0.0075
+          : 0.0095
+    : null;
+
+const lessorName =
+  ownershipType === "LEASE"
+    ? "Eagle Aviation Capital"
+    : null;
+
+const remarketingAgent =
+  ownershipType === "LEASE"
+    ? "Eagle Broker"
+    : null;
+
+const leasePolicyVersion =
+  ownershipType === "LEASE"
+    ? "ACS_LEASE_NEW_OCC_V1"
+    : null;
+
+/*
+  BUY uses selected initial payment.
+  LEASE always uses 15% initial lease commitment.
+*/
+const initialPaymentPct =
+  ownershipType === "LEASE"
+    ? 15
+    : requestedInitialPaymentPct;
+
+const simYear = Number(req.body?.sim_year || new Date().getUTCFullYear());
+     
     if (!airlineId || !Number.isInteger(airlineId)) {
       return res.status(401).json({
         ok: false,
@@ -245,19 +309,30 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
         error: "INVALID_OWNERSHIP_TYPE"
       });
     }
+if (
+  !Number.isFinite(initialPaymentPct) ||
+  initialPaymentPct <= 0 ||
+  initialPaymentPct > 100
+) {
+  return res.status(400).json({
+    ok: false,
+    error: "INVALID_INITIAL_PAYMENT_PCT"
+  });
+}
 
-    if (
-      !Number.isFinite(initialPaymentPct) ||
-      initialPaymentPct <= 0 ||
-      initialPaymentPct > 100
-    ) {
-      return res.status(400).json({
-        ok: false,
-        error: "INVALID_INITIAL_PAYMENT_PCT"
-      });
-    }
+if (
+  ownershipType === "LEASE" &&
+  ![5, 10, 15].includes(Number(leaseYears))
+) {
+  return res.status(400).json({
+    ok: false,
+    error: "INVALID_LEASE_YEARS",
+    allowed_values: [5, 10, 15]
+  });
+}
 
-    if (!Number.isInteger(simYear) || simYear < 1900 || simYear > 2100) {
+if (!Number.isInteger(simYear) || simYear < 1900 || simYear > 2100) {
+   
       return res.status(400).json({
         ok: false,
         error: "INVALID_SIM_YEAR"
@@ -345,14 +420,37 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
       });
     }
 
-    const initialPaymentAmount = Math.round(
-      totalPrice * (initialPaymentPct / 100)
-    );
+    /* ============================================================
+   🟦 ACS BUY / LEASE PAYMENT SPLIT — BACKEND AUTHORITY v1.1
+   ------------------------------------------------------------
+   BUY:
+   - initial_payment_pct defines upfront payment
+   - remaining balance becomes final_payment_amount
 
-    const finalPaymentAmount = Math.max(
-     totalPrice - initialPaymentAmount,
-     0
-    );     
+   LEASE:
+   - initial_payment_pct is forced to 15%
+   - final_payment_amount must be 0
+   - lease monthly payment is calculated from aircraft value
+   ============================================================ */
+
+const initialPaymentAmount = Math.round(
+  totalPrice * (initialPaymentPct / 100)
+);
+
+const finalPaymentAmount =
+  ownershipType === "LEASE"
+    ? 0
+    : Math.max(totalPrice - initialPaymentAmount, 0);
+
+const monthlyLeasePayment =
+  ownershipType === "LEASE"
+    ? Math.round(totalPrice * Number(leaseRatePctMonthly || 0))
+    : null;
+
+const leaseInitialCommitmentAmount =
+  ownershipType === "LEASE"
+    ? initialPaymentAmount
+    : null;
      
     /* ============================================================
        3) LOCK FINANCE ROW + VALIDATE CAPITAL
@@ -600,15 +698,28 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
    - Resolver must never depend only on notes JSON
    ============================================================ */
 
+/* ============================================================
+   🟦 ACS BUY / LEASE PAYMENT STATUS RULE — v1.1
+   ------------------------------------------------------------
+   LEASE:
+   - Treated as paid for delivery purposes after lease commitment.
+   - No final purchase balance exists.
+   - Must never enter PAYMENT_HOLD due to final payment.
+   ============================================================ */
+
 const paymentStatus =
-  initialPaymentPct >= 100
+  ownershipType === "LEASE"
     ? "PAID"
-    : "FINANCED";
+    : initialPaymentPct >= 100
+      ? "PAID"
+      : "FINANCED";
 
 const finalPaymentStatus =
-  paymentStatus === "PAID"
+  ownershipType === "LEASE"
     ? "PAID"
-    : "NOT_DUE";
+    : paymentStatus === "PAID"
+      ? "PAID"
+      : "NOT_DUE";
 
 const orderResult = await client.query(
   `
@@ -694,7 +805,25 @@ const orderResult = await client.query(
       sim_day: simDay,
       factory_slot_id: factorySlotId,
       factory_slots_reserved: reservedFactorySlots,
-      source: "ACS_BUY_NEW_BACKEND_ORDER_V3_REAL_PAYMENT_COLUMNS"
+
+/* Lease New OCC metadata */
+lease_years: ownershipType === "LEASE" ? leaseYears : null,
+lease_term_months: ownershipType === "LEASE" ? leaseTermMonths : null,
+monthly_lease_payment: ownershipType === "LEASE" ? monthlyLeasePayment : null,
+lease_initial_commitment_pct: ownershipType === "LEASE" ? 15 : null,
+lease_initial_commitment_amount: ownershipType === "LEASE" ? leaseInitialCommitmentAmount : null,
+lease_rate_pct_monthly: ownershipType === "LEASE" ? leaseRatePctMonthly : null,
+lessor_name: ownershipType === "LEASE" ? lessorName : null,
+remarketing_agent: ownershipType === "LEASE" ? remarketingAgent : null,
+lease_policy_version: ownershipType === "LEASE" ? leasePolicyVersion : null,
+contract_lock: ownershipType === "LEASE" ? "NO_FREE_RETURN_BEFORE_CONTRACT_END" : null,
+end_of_lease_options: ownershipType === "LEASE"
+  ? ["EXTEND", "BUYOUT", "RETURN_AT_CONTRACT_END"]
+  : null,
+
+source: ownershipType === "LEASE"
+  ? "ACS_LEASE_NEW_BACKEND_ORDER_OCC_V1"
+  : "ACS_BUY_NEW_BACKEND_ORDER_V3_REAL_PAYMENT_COLUMNS"
     })
   ]
 );
@@ -792,12 +921,33 @@ const order = orderResult.rows[0];
       order,
       finance: financeAfterResult.rows[0],
       payment: {
-        ownership_type: ownershipType,
-        initial_payment_pct: initialPaymentPct,
-        initial_payment_amount: initialPaymentAmount,
-        total_price: totalPrice,
-        currency: "USD"
+  ownership_type: ownershipType,
+  db_ownership_type: dbOwnershipType,
+  initial_payment_pct: initialPaymentPct,
+  initial_payment_amount: initialPaymentAmount,
+  final_payment_amount: finalPaymentAmount,
+  total_price: totalPrice,
+  payment_status: paymentStatus,
+  final_payment_status: finalPaymentStatus,
+
+  lease: ownershipType === "LEASE"
+    ? {
+        lease_years: leaseYears,
+        lease_term_months: leaseTermMonths,
+        monthly_lease_payment: monthlyLeasePayment,
+        lease_initial_commitment_pct: 15,
+        lease_initial_commitment_amount: leaseInitialCommitmentAmount,
+        lease_rate_pct_monthly: leaseRatePctMonthly,
+        lessor_name: lessorName,
+        remarketing_agent: remarketingAgent,
+        lease_policy_version: leasePolicyVersion,
+        contract_lock: "NO_FREE_RETURN_BEFORE_CONTRACT_END",
+        end_of_lease_options: ["EXTEND", "BUYOUT", "RETURN_AT_CONTRACT_END"]
       }
+    : null,
+
+  currency: "USD"
+}
     });
 
   } catch (err) {
