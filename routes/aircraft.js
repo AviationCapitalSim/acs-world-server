@@ -1554,4 +1554,416 @@ router.post("/aircraft/orders/delivery-resolver/dry-run", requireAuth, async (re
   }
 });
 
+/* ============================================================
+   🟦 ACS BUY NEW DELIVERY RESOLVER — LIVE v1.0
+   ------------------------------------------------------------
+   Route:
+   POST /v1/aircraft/orders/delivery-resolver
+
+   Purpose:
+   - Resolve due Buy New aircraft orders
+   - Multiplayer-safe backend authority
+   - Charges final payment when capital is sufficient
+   - Delivers aircraft into aircraft_fleet
+   - Updates factory slot from reserved → delivered
+   - Registers finance_log
+   - Does NOT mutate Time Engine
+   - Does NOT use localStorage
+
+   v1.0 Scope:
+   - PAID + PENDING_DELIVERY → deliver
+   - FINANCED + sufficient capital → charge final payment + deliver
+   - FINANCED + insufficient capital → report NEEDS_PAYMENT_HOLD only
+   ============================================================ */
+
+router.post("/aircraft/orders/delivery-resolver", requireAuth, async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const simYear = Number(req.body?.sim_year);
+    const simMonth = Number(req.body?.sim_month);
+    const simDay = Number(req.body?.sim_day);
+
+    if (!Number.isInteger(simYear) || simYear < 1900 || simYear > 2100) {
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_SIM_YEAR"
+      });
+    }
+
+    if (!Number.isInteger(simMonth) || simMonth < 1 || simMonth > 12) {
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_SIM_MONTH"
+      });
+    }
+
+    if (!Number.isInteger(simDay) || simDay < 1 || simDay > 31) {
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_SIM_DAY"
+      });
+    }
+
+    const resolverDate = new Date(Date.UTC(
+      simYear,
+      simMonth - 1,
+      simDay,
+      12,
+      0,
+      0
+    ));
+
+    await client.query("BEGIN");
+
+    /* ============================================================
+       1) LOAD DUE ORDERS — MULTIPLAYER SAFE
+       ============================================================ */
+
+    const dueOrdersResult = await client.query(
+      `
+      SELECT
+        o.*,
+        f.capital AS current_capital,
+        u.base_icao AS user_base_icao
+      FROM new_aircraft_orders o
+      LEFT JOIN company_finance f
+        ON f.airline_id = o.airline_id
+      LEFT JOIN users u
+        ON u.user_id = o.user_id
+      WHERE o.source = 'FACTORY'
+        AND o.order_status = 'ORDERED'
+        AND o.delivery_status = 'PENDING_DELIVERY'
+        AND o.payment_status IN ('PAID', 'FINANCED')
+        AND o.estimated_delivery_date IS NOT NULL
+        AND o.estimated_delivery_date <= $1
+      ORDER BY o.estimated_delivery_date ASC, o.id ASC
+      FOR UPDATE OF o SKIP LOCKED
+      `,
+      [resolverDate]
+    );
+
+    const processed = [];
+    const skipped = [];
+
+    /* ============================================================
+       2) PROCESS EACH DUE ORDER
+       ============================================================ */
+
+    for (const order of dueOrdersResult.rows) {
+      const orderId = Number(order.id);
+      const airlineId = Number(order.airline_id);
+      const quantity = Math.max(1, Number(order.quantity || 1));
+      const finalPaymentAmount = Math.round(Number(order.final_payment_amount || 0));
+      const currentCapital = Math.round(Number(order.current_capital || 0));
+
+      const aircraftLabel =
+        order.aircraft_name ||
+        `${order.manufacturer || ""} ${order.model_key || ""}`.trim();
+
+      const baseIcao =
+        order.user_base_icao ||
+        null;
+
+      const shouldChargeFinalPayment =
+        String(order.payment_status) === "FINANCED" &&
+        finalPaymentAmount > 0;
+
+      if (shouldChargeFinalPayment && currentCapital < finalPaymentAmount) {
+        skipped.push({
+          order_id: orderId,
+          airline_id: airlineId,
+          aircraft_name: aircraftLabel,
+          action: "NEEDS_PAYMENT_HOLD",
+          capital_available: currentCapital,
+          final_payment_required: finalPaymentAmount
+        });
+
+        continue;
+      }
+
+      /* ============================================================
+         2A) LOCK FINANCE ROW
+         ============================================================ */
+
+      await client.query(
+        `
+        SELECT airline_id
+        FROM company_finance
+        WHERE airline_id = $1
+        FOR UPDATE
+        `,
+        [airlineId]
+      );
+
+      /* ============================================================
+         2B) CHARGE FINAL PAYMENT IF FINANCED
+         ============================================================ */
+
+      if (shouldChargeFinalPayment) {
+        await client.query(
+          `
+          UPDATE company_finance
+          SET
+            capital = COALESCE(capital, 0) - $2,
+            expenses = COALESCE(expenses, 0) + $2,
+            profit = COALESCE(profit, 0) - $2,
+            cost_new_aircraft_purchase = COALESCE(cost_new_aircraft_purchase, 0) + $2,
+            updated_at = NOW()
+          WHERE airline_id = $1
+          `,
+          [airlineId, finalPaymentAmount]
+        );
+
+        await client.query(
+          `
+          INSERT INTO finance_log (
+            airline_id,
+            type,
+            source,
+            amount,
+            timestamp,
+            created_at
+          )
+          VALUES ($1, 'EXPENSE', $2, $3, $4, NOW())
+          `,
+          [
+            airlineId,
+            `OEM PURCHASE FINAL — ${aircraftLabel}`,
+            finalPaymentAmount,
+            FLOOR(EXTRACT(EPOCH FROM NOW()) * 1000)::bigint
+          ]
+        );
+      }
+
+      /* ============================================================
+         2C) INSERT AIRCRAFT INTO FLEET
+         ============================================================ */
+
+      const insertedAircraft = [];
+
+      for (let i = 0; i < quantity; i += 1) {
+        const fleetResult = await client.query(
+          `
+          INSERT INTO aircraft_fleet (
+            aircraft_uid,
+            airline_id,
+            user_id,
+            source,
+            ownership_type,
+            manufacturer,
+            model_key,
+            aircraft_name,
+            registration,
+            serial_number,
+            line_number,
+            new_aircraft_order_id,
+            used_listing_id,
+            status,
+            operational_status,
+            base_icao,
+            current_airport,
+            year_built,
+            delivery_date,
+            entry_into_service_date,
+            total_hours,
+            total_cycles,
+            condition_pct,
+            maintenance_status,
+            purchase_price,
+            current_value,
+            currency,
+            created_at,
+            updated_at
+          )
+          VALUES (
+            gen_random_uuid(),
+            $1,
+            $2,
+            'FACTORY',
+            $3,
+            $4,
+            $5,
+            $6,
+            NULL,
+            NULL,
+            NULL,
+            $7,
+            NULL,
+            'ACTIVE',
+            'AVAILABLE',
+            $8,
+            $8,
+            $9,
+            $10,
+            $10,
+            0,
+            0,
+            100,
+            'SERVICEABLE',
+            $11,
+            $11,
+            'USD',
+            NOW(),
+            NOW()
+          )
+          RETURNING id, aircraft_uid, airline_id, model_key, aircraft_name, status, operational_status
+          `,
+          [
+            airlineId,
+            order.user_id || null,
+            order.ownership_type || "OWNED",
+            order.manufacturer,
+            order.model_key,
+            aircraftLabel,
+            orderId,
+            baseIcao,
+            simYear,
+            resolverDate,
+            Math.round(Number(order.unit_price || 0))
+          ]
+        );
+
+        insertedAircraft.push(fleetResult.rows[0]);
+      }
+
+      /* ============================================================
+         2D) UPDATE FACTORY SLOT(S)
+         ------------------------------------------------------------
+         Uses notes.factory_slots_reserved when available.
+         Fallback: factory_slot_id + order quantity.
+         ============================================================ */
+
+      let reservedSlots = [];
+
+      try {
+        const parsedNotes =
+          order.notes && String(order.notes).trim()
+            ? JSON.parse(order.notes)
+            : {};
+
+        if (Array.isArray(parsedNotes.factory_slots_reserved)) {
+          reservedSlots = parsedNotes.factory_slots_reserved;
+        }
+      } catch (notesError) {
+        reservedSlots = [];
+      }
+
+      if (!reservedSlots.length && order.factory_slot_id) {
+        reservedSlots = [{
+          slot_id: order.factory_slot_id,
+          reserved_quantity: quantity
+        }];
+      }
+
+      for (const slot of reservedSlots) {
+        const slotId = Number(slot.slot_id);
+        const reservedQty = Math.max(1, Number(slot.reserved_quantity || 1));
+
+        if (!slotId) continue;
+
+        await client.query(
+          `
+          UPDATE aircraft_factory_slots
+          SET
+            reserved_quantity = GREATEST(COALESCE(reserved_quantity, 0) - $2, 0),
+            delivered_quantity = COALESCE(delivered_quantity, 0) + $2,
+            slot_status = CASE
+              WHEN COALESCE(available_quantity, 0) <= 0
+              THEN 'FULL'
+              ELSE 'OPEN'
+            END,
+            utilization_pct = ROUND(
+              (
+                (
+                  GREATEST(COALESCE(reserved_quantity, 0) - $2, 0)
+                  + COALESCE(delivered_quantity, 0)
+                  + $2
+                )::NUMERIC
+                /
+                GREATEST(COALESCE(max_quantity, 0), 1)::NUMERIC
+              ) * 100,
+              2
+            ),
+            updated_at = NOW()
+          WHERE id = $1
+          `,
+          [slotId, reservedQty]
+        );
+      }
+
+      /* ============================================================
+         2E) MARK ORDER AS DELIVERED
+         ============================================================ */
+
+      const orderUpdateResult = await client.query(
+        `
+        UPDATE new_aircraft_orders
+        SET
+          payment_status = 'PAID',
+          final_payment_status = 'PAID',
+          order_status = 'COMPLETED',
+          delivery_status = 'DELIVERED',
+          actual_delivery_date = $2,
+          delivery_resolved_at = NOW(),
+          notes = (
+            COALESCE(NULLIF(notes, ''), '{}')::jsonb
+            || jsonb_build_object(
+              'delivery_resolver', 'ACS_BUY_NEW_DELIVERY_RESOLVER_LIVE_V1',
+              'delivery_resolved', true,
+              'delivery_resolver_date', $2,
+              'aircraft_created_count', $3
+            )
+          )::text,
+          updated_at = NOW()
+        WHERE id = $1
+        RETURNING *
+        `,
+        [orderId, resolverDate, insertedAircraft.length]
+      );
+
+      processed.push({
+        order_id: orderId,
+        airline_id: airlineId,
+        aircraft_name: aircraftLabel,
+        action: shouldChargeFinalPayment
+          ? "FINAL_PAYMENT_CHARGED_AND_DELIVERED"
+          : "PAID_ORDER_DELIVERED",
+        final_payment_charged: shouldChargeFinalPayment ? finalPaymentAmount : 0,
+        aircraft_created_count: insertedAircraft.length,
+        aircraft: insertedAircraft,
+        order: orderUpdateResult.rows[0]
+      });
+    }
+
+    await client.query("COMMIT");
+
+    return res.json({
+      ok: true,
+      endpoint: "ACS_BUY_NEW_DELIVERY_RESOLVER",
+      version: "v1.0",
+      mode: "LIVE_MUTATION",
+      resolver_date: resolverDate.toISOString(),
+      processed_count: processed.length,
+      skipped_count: skipped.length,
+      processed,
+      skipped
+    });
+
+  } catch (err) {
+    await client.query("ROLLBACK");
+
+    console.error("ACS BUY NEW DELIVERY RESOLVER LIVE ERROR:", err);
+
+    return res.status(500).json({
+      ok: false,
+      error: "BUY_NEW_DELIVERY_RESOLVER_LIVE_FAILED",
+      details: err.message
+    });
+
+  } finally {
+    client.release();
+  }
+});
+
 export default router;
