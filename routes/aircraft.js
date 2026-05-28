@@ -341,6 +341,11 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
       totalPrice * (initialPaymentPct / 100)
     );
 
+    const finalPaymentAmount = Math.max(
+     totalPrice - initialPaymentAmount,
+     0
+    );     
+     
     /* ============================================================
        3) LOCK FINANCE ROW + VALIDATE CAPITAL
        ============================================================ */
@@ -579,92 +584,114 @@ router.post("/aircraft/orders", requireAuth, async (req, res) => {
     );
 
     /* ============================================================
-       5) INSERT ORDER
-       ============================================================ */
+   5) INSERT ORDER
+   ------------------------------------------------------------
+   ACS OCC Rule:
+   - Store Buy New financial state in real DB columns
+   - notes remains secondary audit metadata only
+   - Resolver must never depend only on notes JSON
+   ============================================================ */
 
-        const paymentStatus =
-      initialPaymentPct >= 100
-        ? "PAID"
-        : "FINANCED";
+const paymentStatus =
+  initialPaymentPct >= 100
+    ? "PAID"
+    : "FINANCED";
 
-    const orderResult = await client.query(
-      `
-      INSERT INTO new_aircraft_orders (
-        order_uid,
-        airline_id,
-        user_id,
-        source,
-        manufacturer,
-        model_key,
-        aircraft_name,
-        factory_slot_id,
-        quantity,
-        unit_price,
-        total_price,
-        currency,
-        ownership_type,
-        payment_status,
-        order_status,
-        delivery_status,
-        order_date,
-        estimated_delivery_date,
-        actual_delivery_date,
-        notes,
-        created_at,
-        updated_at
-      )
-      VALUES (
-        gen_random_uuid(),
-        $1,
-        $2,
-        'FACTORY',
-        $3,
-        $4,
-        $5,
-        $13,
-        $6,
-        $7,
-        $8,
-        'USD',
-        $9,
-        $10,
-        'ORDERED',
-        'PENDING_DELIVERY',
-        NOW(),
-        $11,
-        NULL,
-        $12,
-        NOW(),
-        NOW()
-      )
-      RETURNING *
-      `,
-      [
-        airlineId,
-        userId,
-        aircraft.manufacturer,
-        aircraft.model_key,
-        aircraft.aircraft_name || `${aircraft.manufacturer} ${aircraft.model}`,
-        quantity,
-        unitPrice,
-        totalPrice,
-        dbOwnershipType,
-        paymentStatus,
-        estimatedDeliveryDate,
-        JSON.stringify({
-          initial_payment_pct: initialPaymentPct,
-          initial_payment_amount: initialPaymentAmount,
-          sim_year: simYear,
-          sim_month: simMonth,
-          factory_slot_id: factorySlotId,
-          factory_slots_reserved: reservedFactorySlots,
-          source: "ACS_BUY_NEW_BACKEND_ORDER_V2_FACTORY_SLOT_RESERVED"
-        }),
-        factorySlotId
-      ]
-    );
+const finalPaymentStatus =
+  paymentStatus === "PAID"
+    ? "PAID"
+    : "NOT_DUE";
 
-    const order = orderResult.rows[0];
+const orderResult = await client.query(
+  `
+  INSERT INTO new_aircraft_orders (
+    order_uid,
+    airline_id,
+    user_id,
+    source,
+    manufacturer,
+    model_key,
+    aircraft_name,
+    factory_slot_id,
+    quantity,
+    unit_price,
+    total_price,
+    initial_payment_amount,
+    final_payment_amount,
+    currency,
+    ownership_type,
+    payment_status,
+    final_payment_status,
+    order_status,
+    delivery_status,
+    order_date,
+    estimated_delivery_date,
+    actual_delivery_date,
+    notes,
+    created_at,
+    updated_at
+  )
+  VALUES (
+    gen_random_uuid(),
+    $1,
+    $2,
+    'FACTORY',
+    $3,
+    $4,
+    $5,
+    $15,
+    $6,
+    $7,
+    $8,
+    $9,
+    $10,
+    'USD',
+    $11,
+    $12,
+    $13,
+    'ORDERED',
+    'PENDING_DELIVERY',
+    NOW(),
+    $14,
+    NULL,
+    $16,
+    NOW(),
+    NOW()
+  )
+  RETURNING *
+  `,
+  [
+    airlineId,
+    userId,
+    aircraft.manufacturer,
+    aircraft.model_key,
+    aircraft.aircraft_name || `${aircraft.manufacturer} ${aircraft.model}`,
+    quantity,
+    unitPrice,
+    totalPrice,
+    initialPaymentAmount,
+    finalPaymentAmount,
+    dbOwnershipType,
+    paymentStatus,
+    finalPaymentStatus,
+    estimatedDeliveryDate,
+    factorySlotId,
+    JSON.stringify({
+      initial_payment_pct: initialPaymentPct,
+      initial_payment_amount: initialPaymentAmount,
+      final_payment_amount: finalPaymentAmount,
+      final_payment_status: finalPaymentStatus,
+      sim_year: simYear,
+      sim_month: simMonth,
+      sim_day: simDay,
+      factory_slot_id: factorySlotId,
+      factory_slots_reserved: reservedFactorySlots,
+      source: "ACS_BUY_NEW_BACKEND_ORDER_V3_REAL_PAYMENT_COLUMNS"
+    })
+  ]
+);
+
+const order = orderResult.rows[0];
 
         /* ============================================================
        6) APPLY FINANCE IMPACT
