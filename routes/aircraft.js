@@ -1739,6 +1739,11 @@ router.get("/aircraft/used-market", requireAuth, async (req, res) => {
     uam.aircraft_name,
 
     ac.model AS model,
+    ac.seats AS seats,
+    ac.range_nm AS range_nm,
+    ac.speed_kts AS speed_kts,
+    ac.engines AS engines,
+    ac.aircraft_category AS aircraft_category,
     ac.image_filename AS image_filename,
     ac.image_filename AS image_file_name,
 
