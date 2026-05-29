@@ -1289,18 +1289,325 @@ router.get("/aircraft/factory/slots", requireAuth, async (req, res) => {
 });
 
 /* ============================================================
-   🟦 GET USED AIRCRAFT MARKET
+   🟦 ACS USED AIRCRAFT MARKET — FINITE SEED ENGINE v1.0
    ------------------------------------------------------------
    Route:
    GET /v1/aircraft/used-market
+
+   ACS Policy:
+   - Backend authority only
+   - No localStorage
+   - Used Market seed exists only to start the world
+   - System-generated seed allowed only from 1940 to 1950
+   - From 1951 onward, ACS does not create artificial used aircraft
+   - Purchased listings are NOT replaced automatically
+   - Future supply must come from player sales, defaults,
+     bankruptcies, lease returns, repossessions and remarketing
    ============================================================ */
 
-router.get("/aircraft/used-market", requireAuth, async (req, res) => {
-  try {
-    const result = await pool.query(
+const ACS_USED_MARKET_POLICY = Object.freeze({
+  bootstrapStartYear: 1940,
+  bootstrapEndYear: 1950,
+  bootstrapSeedTotal: 300,
+  policyVersion: "ACS_USED_MARKET_FINITE_SEED_V1",
+  defaultBroker: "Eagle Broker",
+  defaultLessor: "Eagle Aviation Capital"
+});
+
+function ACS_randomInt(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function ACS_pickRandom(list) {
+  if (!Array.isArray(list) || !list.length) return null;
+  return list[Math.floor(Math.random() * list.length)];
+}
+
+function ACS_clampNumber(value, min, max) {
+  return Math.max(min, Math.min(max, Number(value || 0)));
+}
+
+function ACS_resolveAircraftTier(aircraft) {
+  const seats = Number(aircraft.seats || 0);
+  const price = Number(aircraft.price_acs_usd || 0);
+
+  if (seats <= 30 || price <= 250000) return "COMMON";
+  if (seats <= 60 || price <= 750000) return "STANDARD";
+  if (seats <= 100 || price <= 1500000) return "PREMIUM";
+  return "RARE";
+}
+
+function ACS_weightedAircraftPool(aircraftRows) {
+  const weighted = [];
+
+  for (const aircraft of aircraftRows) {
+    const tier = ACS_resolveAircraftTier(aircraft);
+
+    let weight = 1;
+
+    if (tier === "COMMON") weight = 12;
+    if (tier === "STANDARD") weight = 6;
+    if (tier === "PREMIUM") weight = 3;
+    if (tier === "RARE") weight = 1;
+
+    for (let i = 0; i < weight; i++) {
+      weighted.push(aircraft);
+    }
+  }
+
+  return weighted;
+}
+
+function ACS_buildUsedSerialNumber(modelKey, index) {
+  const prefix = String(modelKey || "ACS")
+    .replace(/[^A-Z0-9]/gi, "")
+    .toUpperCase()
+    .slice(0, 4)
+    .padEnd(4, "X");
+
+  return `${prefix}-${String(Date.now()).slice(-5)}-${String(index).padStart(4, "0")}`;
+}
+
+function ACS_buildPreviousRegistration(index) {
+  const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const a = letters[ACS_randomInt(0, letters.length - 1)];
+  const b = letters[ACS_randomInt(0, letters.length - 1)];
+  const c = letters[ACS_randomInt(0, letters.length - 1)];
+
+  return `N${ACS_randomInt(100, 999)}${a}${b}${c}`.slice(0, 6);
+}
+
+function ACS_buildUsedAircraftCondition(ageYears) {
+  const age = Number(ageYears || 1);
+
+  const base =
+    age <= 3 ? ACS_randomInt(82, 96) :
+    age <= 8 ? ACS_randomInt(74, 91) :
+    age <= 15 ? ACS_randomInt(65, 85) :
+    age <= 25 ? ACS_randomInt(55, 78) :
+    ACS_randomInt(45, 70);
+
+  return ACS_clampNumber(base, 35, 98);
+}
+
+function ACS_buildUsedAircraftHours(ageYears, tier) {
+  const age = Math.max(1, Number(ageYears || 1));
+
+  const yearlyHours =
+    tier === "COMMON" ? ACS_randomInt(450, 900) :
+    tier === "STANDARD" ? ACS_randomInt(650, 1200) :
+    tier === "PREMIUM" ? ACS_randomInt(850, 1500) :
+    ACS_randomInt(700, 1300);
+
+  return Math.max(250, Math.round(age * yearlyHours + ACS_randomInt(100, 900)));
+}
+
+function ACS_buildUsedAircraftCycles(ageYears, tier) {
+  const age = Math.max(1, Number(ageYears || 1));
+
+  const yearlyCycles =
+    tier === "COMMON" ? ACS_randomInt(250, 650) :
+    tier === "STANDARD" ? ACS_randomInt(220, 520) :
+    tier === "PREMIUM" ? ACS_randomInt(160, 420) :
+    ACS_randomInt(120, 350);
+
+  return Math.max(100, Math.round(age * yearlyCycles + ACS_randomInt(40, 300)));
+}
+
+function ACS_buildUsedMarketPrice(basePrice, ageYears, conditionPct, tier) {
+  const price = Number(basePrice || 0);
+  const age = Math.max(1, Number(ageYears || 1));
+  const condition = Number(conditionPct || 70);
+
+  const ageFactor = ACS_clampNumber(1 - (age * 0.035), 0.22, 0.82);
+  const conditionFactor = ACS_clampNumber(condition / 100, 0.35, 0.98);
+
+  const scarcityFactor =
+    tier === "COMMON" ? 0.92 :
+    tier === "STANDARD" ? 1.0 :
+    tier === "PREMIUM" ? 1.08 :
+    1.18;
+
+  const marketPrice = price * ageFactor * conditionFactor * scarcityFactor;
+
+  return Math.max(10000, Math.round(marketPrice));
+}
+
+async function ACS_getWorldSimYear(client) {
+  const worldResult = await client.query(
+    `
+    SELECT
+      sim_start,
+      frozen_sim_time,
+      real_start
+    FROM acs_world
+    WHERE id = 1
+    LIMIT 1
+    `
+  );
+
+  if (!worldResult.rows.length) {
+    throw new Error("ACS_WORLD_NOT_FOUND");
+  }
+
+  const world = worldResult.rows[0];
+
+  const authoritativeTime =
+    world.frozen_sim_time ||
+    world.sim_start;
+
+  if (!authoritativeTime) {
+    throw new Error("ACS_WORLD_TIME_NOT_AVAILABLE");
+  }
+
+  return new Date(authoritativeTime).getUTCFullYear();
+}
+
+async function ACS_seedUsedAircraftMarketIfNeeded(client) {
+  const simYear = await ACS_getWorldSimYear(client);
+
+  const existingSeedResult = await client.query(
+    `
+    SELECT COUNT(*)::INTEGER AS seed_count
+    FROM used_aircraft_market
+    WHERE system_generated = true
+      AND market_source = 'SYSTEM_GENERATED'
+      AND generated_for_sim_year BETWEEN $1 AND $2
+    `,
+    [
+      ACS_USED_MARKET_POLICY.bootstrapStartYear,
+      ACS_USED_MARKET_POLICY.bootstrapEndYear
+    ]
+  );
+
+  const existingSeedCount = Number(existingSeedResult.rows[0]?.seed_count || 0);
+
+  if (existingSeedCount > 0) {
+    return {
+      sim_year: simYear,
+      seed_created: false,
+      reason: "SEED_ALREADY_EXISTS",
+      existing_seed_count: existingSeedCount
+    };
+  }
+
+  if (
+    simYear < ACS_USED_MARKET_POLICY.bootstrapStartYear ||
+    simYear > ACS_USED_MARKET_POLICY.bootstrapEndYear
+  ) {
+    return {
+      sim_year: simYear,
+      seed_created: false,
+      reason: "OUTSIDE_BOOTSTRAP_WINDOW",
+      existing_seed_count: existingSeedCount
+    };
+  }
+
+  const eligibleAircraftResult = await client.query(
+    `
+    SELECT
+      id,
+      model_key,
+      manufacturer,
+      model,
+      aircraft_name,
+      year,
+      production_year,
+      seats,
+      range_nm,
+      price_acs_usd,
+      aircraft_category
+    FROM aircraft_catalog
+    WHERE COALESCE(is_active, true) = true
+      AND COALESCE(year, production_year, 1900) <= $1
+      AND COALESCE(price_acs_usd, 0) > 0
+    ORDER BY
+      COALESCE(year, production_year, 1900) ASC,
+      manufacturer ASC,
+      model ASC
+    `,
+    [simYear]
+  );
+
+  const eligibleAircraft = eligibleAircraftResult.rows;
+
+  if (!eligibleAircraft.length) {
+    return {
+      sim_year: simYear,
+      seed_created: false,
+      reason: "NO_ELIGIBLE_AIRCRAFT_IN_CATALOG",
+      existing_seed_count: existingSeedCount
+    };
+  }
+
+  const generationBatchIdResult = await client.query(
+    `SELECT gen_random_uuid() AS batch_id`
+  );
+
+  const generationBatchId = generationBatchIdResult.rows[0].batch_id;
+  const weightedPool = ACS_weightedAircraftPool(eligibleAircraft);
+
+  const previousOperators = [
+    "Bank Inventory",
+    "Stored Aircraft Pool",
+    "Regional Operator",
+    "Charter Operator",
+    "Cargo Operator",
+    "Broker Remarketing Stock"
+  ];
+
+  let insertedCount = 0;
+
+  for (let i = 0; i < ACS_USED_MARKET_POLICY.bootstrapSeedTotal; i++) {
+    const selectedAircraft = ACS_pickRandom(weightedPool);
+    if (!selectedAircraft) continue;
+
+    const aircraftIntroYear = Number(
+      selectedAircraft.year ||
+      selectedAircraft.production_year ||
+      simYear
+    );
+
+    const minimumBuildYear = Math.max(1900, aircraftIntroYear);
+    const maximumBuildYear = Math.max(minimumBuildYear, simYear - 1);
+
+    const yearBuilt =
+      maximumBuildYear >= minimumBuildYear
+        ? ACS_randomInt(minimumBuildYear, maximumBuildYear)
+        : aircraftIntroYear;
+
+    const ageYears = Math.max(1, simYear - yearBuilt);
+    const tier = ACS_resolveAircraftTier(selectedAircraft);
+
+    const totalHours = ACS_buildUsedAircraftHours(ageYears, tier);
+    const totalCycles = ACS_buildUsedAircraftCycles(ageYears, tier);
+    const conditionPct = ACS_buildUsedAircraftCondition(ageYears);
+
+    const basePrice = Math.round(Number(selectedAircraft.price_acs_usd || 0));
+    const marketPrice = ACS_buildUsedMarketPrice(
+      basePrice,
+      ageYears,
+      conditionPct,
+      tier
+    );
+
+    const cCheckDueHours = Math.max(100, Math.round(totalHours + ACS_randomInt(300, 1200)));
+    const cCheckDueCycles = Math.max(50, Math.round(totalCycles + ACS_randomInt(150, 700)));
+
+    const dCheckDueDate = new Date(Date.UTC(
+      simYear + ACS_randomInt(1, 6),
+      ACS_randomInt(0, 11),
+      ACS_randomInt(1, 28),
+      12,
+      0,
+      0
+    ));
+
+    const previousOperator = ACS_pickRandom(previousOperators);
+
+    await client.query(
       `
-      SELECT
-        id,
+      INSERT INTO used_aircraft_market (
         listing_uid,
         manufacturer,
         model_key,
@@ -1323,11 +1630,148 @@ router.get("/aircraft/used-market", requireAuth, async (req, res) => {
         c_check_due_cycles,
         d_check_due_date,
         listing_status,
+        listed_at,
+        market_source,
+        system_generated,
+        generation_batch_id,
+        generated_for_sim_year,
+        expires_sim_year,
+        previous_operator_name,
+        remarketing_agent,
+        lessor_name,
+        available_for_purchase,
+        available_for_lease,
+        ownership_offer_type,
+        created_at,
+        updated_at
+      )
+      VALUES (
+        gen_random_uuid(),
+        $1,
+        $2,
+        $3,
+        $4,
+        $5,
+        $6,
+        $7,
+        $8,
+        $9,
+        $10,
+        $11,
+        'BANK / BROKER INVENTORY',
+        NULL,
+        $12,
+        $13,
+        'USD',
+        'SERVICEABLE',
+        $14,
+        $15,
+        $16,
+        'AVAILABLE',
+        NOW(),
+        'SYSTEM_GENERATED',
+        true,
+        $17,
+        $18,
+        NULL,
+        $19,
+        $20,
+        NULL,
+        true,
+        false,
+        'PURCHASE_ONLY',
+        NOW(),
+        NOW()
+      )
+      `,
+      [
+        selectedAircraft.manufacturer,
+        selectedAircraft.model_key,
+        selectedAircraft.aircraft_name ||
+          `${selectedAircraft.manufacturer} ${selectedAircraft.model}`,
+        ACS_buildUsedSerialNumber(selectedAircraft.model_key, i + 1),
+        ACS_buildPreviousRegistration(i + 1),
+        previousOperator,
+        yearBuilt,
+        ageYears,
+        totalHours,
+        totalCycles,
+        conditionPct,
+        basePrice,
+        marketPrice,
+        cCheckDueHours,
+        cCheckDueCycles,
+        dCheckDueDate,
+        generationBatchId,
+        simYear,
+        previousOperator,
+        ACS_USED_MARKET_POLICY.defaultBroker
+      ]
+    );
+
+    insertedCount++;
+  }
+
+  return {
+    sim_year: simYear,
+    seed_created: insertedCount > 0,
+    reason: insertedCount > 0 ? "BOOTSTRAP_SEED_CREATED" : "SEED_INSERT_FAILED",
+    inserted_count: insertedCount,
+    generation_batch_id: generationBatchId
+  };
+}
+
+router.get("/aircraft/used-market", requireAuth, async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const seedStatus = await ACS_seedUsedAircraftMarketIfNeeded(client);
+
+    const result = await client.query(
+      `
+      SELECT
+        id,
+        listing_uid,
+        manufacturer,
+        model_key,
+        aircraft_name,
+        serial_number,
+        previous_registration,
+        previous_operator,
+        previous_operator_name,
+        year_built,
+        age_years,
+        total_hours,
+        total_cycles,
+        condition_pct,
+        current_location,
+        current_airport,
+        base_price,
+        market_price,
+        currency,
+        maintenance_status,
+        c_check_due_hours,
+        c_check_due_cycles,
+        d_check_due_date,
+        listing_status,
         reserved_by_airline_id,
         sold_to_airline_id,
         listed_at,
         reserved_at,
         sold_at,
+        market_source,
+        system_generated,
+        generation_batch_id,
+        generated_for_sim_year,
+        expires_sim_year,
+        previous_airline_id,
+        lessor_name,
+        remarketing_agent,
+        available_for_purchase,
+        available_for_lease,
+        ownership_offer_type,
         created_at,
         updated_at
       FROM used_aircraft_market
@@ -1336,12 +1780,28 @@ router.get("/aircraft/used-market", requireAuth, async (req, res) => {
       `
     );
 
+    await client.query("COMMIT");
+
     return res.json({
       ok: true,
+      endpoint: "ACS_USED_AIRCRAFT_MARKET",
+      version: "v1.0",
+      policy: {
+        bootstrap_start_year: ACS_USED_MARKET_POLICY.bootstrapStartYear,
+        bootstrap_end_year: ACS_USED_MARKET_POLICY.bootstrapEndYear,
+        bootstrap_seed_total: ACS_USED_MARKET_POLICY.bootstrapSeedTotal,
+        replacement_after_purchase: false,
+        post_bootstrap_system_generation: false,
+        policy_version: ACS_USED_MARKET_POLICY.policyVersion
+      },
+      seed_status: seedStatus,
+      count: result.rows.length,
       used_market: result.rows
     });
 
   } catch (err) {
+    await client.query("ROLLBACK");
+
     console.error("ACS USED AIRCRAFT MARKET ERROR:", err);
 
     return res.status(500).json({
@@ -1349,6 +1809,9 @@ router.get("/aircraft/used-market", requireAuth, async (req, res) => {
       error: "USED_AIRCRAFT_MARKET_FAILED",
       details: err.message
     });
+
+  } finally {
+    client.release();
   }
 });
 
