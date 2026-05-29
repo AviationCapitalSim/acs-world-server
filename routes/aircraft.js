@@ -1823,6 +1823,434 @@ router.get("/aircraft/used-market", requireAuth, async (req, res) => {
 });
 
 /* ============================================================
+   🟦 ACS USED AIRCRAFT PURCHASE — BACKEND AUTHORITY v1.0
+   ------------------------------------------------------------
+   Route:
+   POST /v1/aircraft/used-market/:id/buy
+
+   ACS Policy:
+   - Backend authority only
+   - No localStorage
+   - No frontend finance mutation
+   - No frontend fleet creation
+   - Purchased listings are NOT replaced automatically
+   - Listing moves AVAILABLE → SOLD
+   ============================================================ */
+
+router.post("/aircraft/used-market/:id/buy", requireAuth, async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const airlineId = Number(req.airline_id);
+    const userId = req.user_id || null;
+    const listingId = Number(req.params.id);
+
+    if (!airlineId || !Number.isInteger(airlineId)) {
+      return res.status(401).json({
+        ok: false,
+        error: "NO_AIRLINE_SESSION"
+      });
+    }
+
+    if (!listingId || !Number.isInteger(listingId)) {
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_USED_LISTING_ID"
+      });
+    }
+
+    await client.query("BEGIN");
+
+    /* ============================================================
+       1) LOCK USED MARKET LISTING
+       ============================================================ */
+
+    const listingResult = await client.query(
+      `
+      SELECT
+        uam.id,
+        uam.listing_uid,
+        uam.manufacturer,
+        uam.model_key,
+        uam.aircraft_name,
+        uam.serial_number,
+        uam.previous_registration,
+        uam.previous_operator,
+        uam.previous_operator_name,
+        uam.year_built,
+        uam.age_years,
+        uam.total_hours,
+        uam.total_cycles,
+        uam.condition_pct,
+        uam.current_location,
+        uam.current_airport,
+        uam.base_price,
+        uam.market_price,
+        uam.currency,
+        uam.maintenance_status,
+        uam.c_check_due_hours,
+        uam.c_check_due_cycles,
+        uam.d_check_due_date,
+        uam.listing_status,
+        uam.available_for_purchase,
+        uam.available_for_lease,
+        uam.ownership_offer_type,
+        uam.market_source,
+        uam.remarketing_agent,
+
+        ac.model AS catalog_model,
+        ac.price_acs_usd AS catalog_price,
+        ac.aircraft_category,
+        ac.image_filename
+
+      FROM used_aircraft_market uam
+      LEFT JOIN aircraft_catalog ac
+        ON ac.model_key = uam.model_key
+      WHERE uam.id = $1
+      FOR UPDATE OF uam
+      `,
+      [listingId]
+    );
+
+    if (!listingResult.rows.length) {
+      await client.query("ROLLBACK");
+
+      return res.status(404).json({
+        ok: false,
+        error: "USED_LISTING_NOT_FOUND"
+      });
+    }
+
+    const listing = listingResult.rows[0];
+
+    if (listing.listing_status !== "AVAILABLE") {
+      await client.query("ROLLBACK");
+
+      return res.status(409).json({
+        ok: false,
+        error: "USED_LISTING_NOT_AVAILABLE",
+        listing_status: listing.listing_status
+      });
+    }
+
+    if (listing.available_for_purchase !== true) {
+      await client.query("ROLLBACK");
+
+      return res.status(409).json({
+        ok: false,
+        error: "USED_LISTING_NOT_AVAILABLE_FOR_PURCHASE"
+      });
+    }
+
+    const purchasePrice = Math.round(Number(listing.market_price || 0));
+
+    if (!purchasePrice || purchasePrice <= 0) {
+      await client.query("ROLLBACK");
+
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_USED_MARKET_PRICE"
+      });
+    }
+
+    /* ============================================================
+       2) ENSURE + LOCK FINANCE ROW
+       ============================================================ */
+
+    await client.query(
+      `
+      INSERT INTO company_finance (airline_id, capital)
+      VALUES ($1, 700000)
+      ON CONFLICT (airline_id)
+      DO NOTHING
+      `,
+      [airlineId]
+    );
+
+    const financeBeforeResult = await client.query(
+      `
+      SELECT *
+      FROM company_finance
+      WHERE airline_id = $1
+      FOR UPDATE
+      `,
+      [airlineId]
+    );
+
+    const financeBefore = financeBeforeResult.rows[0];
+    const currentCapital = Math.round(Number(financeBefore?.capital || 0));
+
+    if (currentCapital < purchasePrice) {
+      await client.query("ROLLBACK");
+
+      return res.status(400).json({
+        ok: false,
+        error: "INSUFFICIENT_CAPITAL",
+        capital: currentCapital,
+        required: purchasePrice
+      });
+    }
+
+    /* ============================================================
+       3) RESOLVE ACS WORLD TIME + BASE AIRPORT
+       ============================================================ */
+
+    const worldTimeResult = await client.query(
+      `
+      SELECT
+        COALESCE(frozen_sim_time, sim_start, NOW()) AS sim_time
+      FROM acs_world
+      WHERE id = 1
+      LIMIT 1
+      `
+    );
+
+    const simTime =
+      worldTimeResult.rows[0]?.sim_time ||
+      new Date();
+
+    let baseIcao = null;
+
+    if (userId) {
+      const baseResult = await client.query(
+        `
+        SELECT base_icao
+        FROM users
+        WHERE user_id = $1
+        LIMIT 1
+        `,
+        [userId]
+      );
+
+      baseIcao = baseResult.rows[0]?.base_icao || null;
+    }
+
+    const currentAirport =
+      listing.current_airport ||
+      baseIcao ||
+      null;
+
+    const aircraftName =
+      listing.aircraft_name ||
+      `${listing.manufacturer} ${listing.catalog_model || listing.model_key}`;
+
+    const currentValue = Math.round(
+      Number(listing.market_price || listing.base_price || listing.catalog_price || 0)
+    );
+
+    /* ============================================================
+       4) CREATE AIRCRAFT_FLEET RECORD
+       ------------------------------------------------------------
+       Notes:
+       - Registration uses previous_registration for now.
+       - Dedicated backend re-registration system can replace this later.
+       ============================================================ */
+
+    const aircraftResult = await client.query(
+      `
+      INSERT INTO aircraft_fleet (
+        aircraft_uid,
+        airline_id,
+        user_id,
+        source,
+        ownership_type,
+        manufacturer,
+        model_key,
+        aircraft_name,
+        registration,
+        serial_number,
+        new_aircraft_order_id,
+        used_listing_id,
+        status,
+        operational_status,
+        base_icao,
+        current_airport,
+        year_built,
+        delivery_date,
+        entry_into_service_date,
+        total_hours,
+        total_cycles,
+        condition_pct,
+        maintenance_status,
+        purchase_price,
+        current_value,
+        currency,
+        created_at,
+        updated_at
+      )
+      VALUES (
+        gen_random_uuid(),
+        $1,
+        $2,
+        'USED_MARKET',
+        'OWNED',
+        $3,
+        $4,
+        $5,
+        $6,
+        $7,
+        NULL,
+        $8,
+        'ACTIVE',
+        'AVAILABLE',
+        $9,
+        $10,
+        $11,
+        $12,
+        $12,
+        $13,
+        $14,
+        $15,
+        $16,
+        $17,
+        $18,
+        'USD',
+        NOW(),
+        NOW()
+      )
+      RETURNING *
+      `,
+      [
+        airlineId,
+        userId,
+        listing.manufacturer,
+        listing.model_key,
+        aircraftName,
+        listing.previous_registration || null,
+        listing.serial_number || null,
+        listing.id,
+        baseIcao,
+        currentAirport,
+        listing.year_built || null,
+        simTime,
+        Number(listing.total_hours || 0),
+        Number(listing.total_cycles || 0),
+        Number(listing.condition_pct || 100),
+        listing.maintenance_status || "SERVICEABLE",
+        purchasePrice,
+        currentValue
+      ]
+    );
+
+    const aircraft = aircraftResult.rows[0];
+
+    /* ============================================================
+       5) APPLY FINANCE IMPACT
+       ============================================================ */
+
+    await client.query(
+      `
+      UPDATE company_finance
+      SET
+        capital = COALESCE(capital, 0) - $2,
+        expenses = COALESCE(expenses, 0) + $2,
+        profit = COALESCE(profit, 0) - $2,
+        updated_at = NOW()
+      WHERE airline_id = $1
+      `,
+      [airlineId, purchasePrice]
+    );
+
+    /* ============================================================
+       6) FINANCE LOG
+       ============================================================ */
+
+    await client.query(
+      `
+      INSERT INTO finance_log (
+        airline_id,
+        type,
+        source,
+        amount,
+        timestamp
+      )
+      VALUES ($1, 'EXPENSE', $2, $3, $4)
+      `,
+      [
+        airlineId,
+        `USED MARKET PURCHASE — ${aircraftName}`,
+        purchasePrice,
+        Date.now()
+      ]
+    );
+
+    /* ============================================================
+       7) MARK USED LISTING AS SOLD
+       ------------------------------------------------------------
+       ACS Rule:
+       - No automatic replacement.
+       - Available market count decreases naturally.
+       ============================================================ */
+
+    const soldListingResult = await client.query(
+      `
+      UPDATE used_aircraft_market
+      SET
+        listing_status = 'SOLD',
+        sold_to_airline_id = $2,
+        sold_at = NOW(),
+        updated_at = NOW()
+      WHERE id = $1
+      RETURNING *
+      `,
+      [listing.id, airlineId]
+    );
+
+    const soldListing = soldListingResult.rows[0];
+
+    /* ============================================================
+       8) RETURN UPDATED FINANCE SNAPSHOT
+       ============================================================ */
+
+    const financeAfterResult = await client.query(
+      `
+      SELECT *
+      FROM company_finance
+      WHERE airline_id = $1
+      `,
+      [airlineId]
+    );
+
+    await client.query("COMMIT");
+
+    return res.status(201).json({
+      ok: true,
+      endpoint: "ACS_USED_AIRCRAFT_PURCHASE",
+      version: "v1.0",
+      policy: {
+        backend_authority: true,
+        localStorage: false,
+        replacement_after_purchase: false,
+        listing_transition: "AVAILABLE_TO_SOLD"
+      },
+      aircraft,
+      listing: soldListing,
+      finance: financeAfterResult.rows[0],
+      purchase: {
+        listing_id: listing.id,
+        aircraft_name: aircraftName,
+        purchase_price: purchasePrice,
+        currency: "USD"
+      }
+    });
+
+  } catch (err) {
+    await client.query("ROLLBACK");
+
+    console.error("ACS USED AIRCRAFT PURCHASE ERROR:", err);
+
+    return res.status(500).json({
+      ok: false,
+      error: "USED_AIRCRAFT_PURCHASE_FAILED",
+      details: err.message
+    });
+
+  } finally {
+    client.release();
+  }
+});
+
+/* ============================================================
    🟦 ACS AIRCRAFT PRODUCTION RULES — BACKEND AUTHORITY v1.0
    ------------------------------------------------------------
    Route:
