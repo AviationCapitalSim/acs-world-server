@@ -1730,56 +1730,63 @@ router.get("/aircraft/used-market", requireAuth, async (req, res) => {
     const seedStatus = await ACS_seedUsedAircraftMarketIfNeeded(client);
 
     const result = await client.query(
-      `
-      SELECT
-        id,
-        listing_uid,
-        manufacturer,
-        model_key,
-        aircraft_name,
-        serial_number,
-        previous_registration,
-        previous_operator,
-        previous_operator_name,
-        year_built,
-        age_years,
-        total_hours,
-        total_cycles,
-        condition_pct,
-        current_location,
-        current_airport,
-        base_price,
-        market_price,
-        currency,
-        maintenance_status,
-        c_check_due_hours,
-        c_check_due_cycles,
-        d_check_due_date,
-        listing_status,
-        reserved_by_airline_id,
-        sold_to_airline_id,
-        listed_at,
-        reserved_at,
-        sold_at,
-        market_source,
-        system_generated,
-        generation_batch_id,
-        generated_for_sim_year,
-        expires_sim_year,
-        previous_airline_id,
-        lessor_name,
-        remarketing_agent,
-        available_for_purchase,
-        available_for_lease,
-        ownership_offer_type,
-        created_at,
-        updated_at
-      FROM used_aircraft_market
-      WHERE listing_status IN ('AVAILABLE', 'RESERVED')
-      ORDER BY listed_at DESC, id DESC
-      `
-    );
+  `
+  SELECT
+    uam.id,
+    uam.listing_uid,
+    uam.manufacturer,
+    uam.model_key,
+    uam.aircraft_name,
 
+    ac.model AS model,
+    ac.image_filename AS image_filename,
+    ac.image_filename AS image_file_name,
+
+    uam.serial_number,
+    uam.previous_registration,
+    uam.previous_operator,
+    uam.previous_operator_name,
+    uam.year_built,
+    uam.age_years,
+    uam.total_hours,
+    uam.total_cycles,
+    uam.condition_pct,
+    uam.current_location,
+    uam.current_airport,
+    uam.base_price,
+    uam.market_price,
+    uam.currency,
+    uam.maintenance_status,
+    uam.c_check_due_hours,
+    uam.c_check_due_cycles,
+    uam.d_check_due_date,
+    uam.listing_status,
+    uam.reserved_by_airline_id,
+    uam.sold_to_airline_id,
+    uam.listed_at,
+    uam.reserved_at,
+    uam.sold_at,
+    uam.market_source,
+    uam.system_generated,
+    uam.generation_batch_id,
+    uam.generated_for_sim_year,
+    uam.expires_sim_year,
+    uam.previous_airline_id,
+    uam.lessor_name,
+    uam.remarketing_agent,
+    uam.available_for_purchase,
+    uam.available_for_lease,
+    uam.ownership_offer_type,
+    uam.created_at,
+    uam.updated_at
+  FROM used_aircraft_market uam
+  LEFT JOIN aircraft_catalog ac
+    ON ac.model_key = uam.model_key
+  WHERE uam.listing_status IN ('AVAILABLE', 'RESERVED')
+  ORDER BY uam.listed_at DESC, uam.id DESC
+  `
+);
+     
     await client.query("COMMIT");
 
     return res.json({
