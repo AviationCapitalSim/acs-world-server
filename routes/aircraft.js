@@ -1849,6 +1849,14 @@ router.get("/aircraft/used-market", requireAuth, async (req, res) => {
     uam.available_for_purchase,
     uam.available_for_lease,
     uam.ownership_offer_type,
+
+    uam.broker_serviced,
+    uam.broker_serviced_at,
+    uam.system_refresh_count,
+    uam.system_refresh_last_sim_date,
+    uam.system_refresh_last_type,
+    uam.system_refresh_policy_version,
+
     uam.created_at,
     uam.updated_at
   FROM used_aircraft_market uam
