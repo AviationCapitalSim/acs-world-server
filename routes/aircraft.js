@@ -2000,56 +2000,80 @@ router.post("/aircraft/used-market/:id/buy", requireAuth, async (req, res) => {
        3) RESOLVE ACS WORLD TIME + BASE AIRPORT
        ============================================================ */
 
-        /* ============================================================
-       🟦 ACS USED BUY SIM DATE RESOLVER — OCC v1.1
-       ------------------------------------------------------------
-       Purpose:
-       - Prefer explicit ACS sim date sent by frontend.
-       - Fallback to acs_world only if no sim date is provided.
-       - Needed because Used Market delivery / maintenance decisions
-         must use the same ACS date visible to the player.
-       ============================================================ */
+/* ============================================================
+   🟦 ACS USED BUY SIM DATE RESOLVER — OCC v1.2
+   ------------------------------------------------------------
+   Purpose:
+   - Never use real server date as simulation authority.
+   - Prefer explicit ACS sim date sent by frontend.
+   - Fallback only to ACS world time.
+   - If ACS time is unavailable, reject operation.
+   ============================================================ */
 
-    const bodySimYear = Number(req.body?.sim_year);
-    const bodySimMonth = Number(req.body?.sim_month);
-    const bodySimDay = Number(req.body?.sim_day);
+const bodySimYear = Number(req.body?.sim_year);
+const bodySimMonth = Number(req.body?.sim_month);
+const bodySimDay = Number(req.body?.sim_day);
 
-    let simTime = null;
+let simTime = null;
 
-    if (
-      Number.isInteger(bodySimYear) &&
-      bodySimYear >= 1900 &&
-      bodySimYear <= 2100 &&
-      Number.isInteger(bodySimMonth) &&
-      bodySimMonth >= 1 &&
-      bodySimMonth <= 12 &&
-      Number.isInteger(bodySimDay) &&
-      bodySimDay >= 1 &&
-      bodySimDay <= 31
-    ) {
-      simTime = new Date(Date.UTC(
-        bodySimYear,
-        bodySimMonth - 1,
-        bodySimDay,
-        12,
-        0,
-        0
-      ));
-    } else {
-      const worldTimeResult = await client.query(
-        `
-        SELECT
-          COALESCE(frozen_sim_time, sim_start, NOW()) AS sim_time
-        FROM acs_world
-        WHERE id = 1
-        LIMIT 1
-        `
-      );
+if (
+  Number.isInteger(bodySimYear) &&
+  bodySimYear >= 1900 &&
+  bodySimYear <= 2100 &&
+  Number.isInteger(bodySimMonth) &&
+  bodySimMonth >= 1 &&
+  bodySimMonth <= 12 &&
+  Number.isInteger(bodySimDay) &&
+  bodySimDay >= 1 &&
+  bodySimDay <= 31
+) {
+  simTime = new Date(Date.UTC(
+    bodySimYear,
+    bodySimMonth - 1,
+    bodySimDay,
+    12,
+    0,
+    0
+  ));
+} else {
+  const worldTimeResult = await client.query(
+    `
+    SELECT
+      frozen_sim_time,
+      sim_start
+    FROM acs_world
+    WHERE id = 1
+    LIMIT 1
+    `
+  );
 
-      simTime =
-        worldTimeResult.rows[0]?.sim_time ||
-        new Date();
-    }
+  const worldTime =
+    worldTimeResult.rows[0]?.frozen_sim_time ||
+    worldTimeResult.rows[0]?.sim_start ||
+    null;
+
+  if (!worldTime) {
+    await client.query("ROLLBACK");
+
+    return res.status(409).json({
+      ok: false,
+      error: "ACS_SIM_TIME_UNAVAILABLE",
+      message: "ACS simulation time is required for used aircraft acquisition."
+    });
+  }
+
+  simTime = new Date(worldTime);
+}
+
+if (!(simTime instanceof Date) || Number.isNaN(simTime.getTime())) {
+  await client.query("ROLLBACK");
+
+  return res.status(409).json({
+    ok: false,
+    error: "INVALID_ACS_SIM_TIME",
+    message: "Invalid ACS simulation time received by backend."
+  });
+}
 
     let baseIcao = null;
 
