@@ -2225,23 +2225,44 @@ if (!(simTime instanceof Date) || Number.isNaN(simTime.getTime())) {
     let usedDeliveryMode = "STARTER_ACTIVE";
     let usedMaintenanceDisposition = "CLEAR";
 
-    if (requiredMaintenance) {
+     if (requiredMaintenance) {
       fleetStatus = "MAINTENANCE";
-      fleetOperationalStatus = requiredMaintenance;
+
+      /*
+        aircraft_fleet.operational_status CHECK constraint currently allows:
+        AVAILABLE / ASSIGNED / IN_FLIGHT / IN_MAINTENANCE / UNAVAILABLE
+
+        C_CHECK / D_CHECK are operational meanings, but they are not valid
+        database values in this column. Store the DB-safe value here and
+        keep the exact check type in usedPurchasePolicy.required_maintenance.
+      */
+      fleetOperationalStatus = "IN_MAINTENANCE";
+
       fleetDeliveryDate = starterPrivilegeAvailable
         ? simTime
         : estimatedUsedDeliveryDate;
+
       fleetEntryIntoServiceDate = null;
+
       usedDeliveryMode = starterPrivilegeAvailable
         ? "STARTER_MAINTENANCE"
         : "DELIVERY_THEN_MAINTENANCE";
+
       usedMaintenanceDisposition =
         requiredMaintenance === "D_CHECK"
           ? "D_CHECK_OVERDUE"
           : "C_CHECK_OVERDUE";
+
     } else if (!starterPrivilegeAvailable) {
       fleetStatus = "PENDING_DELIVERY";
-      fleetOperationalStatus = "IN_DELIVERY";
+
+      /*
+        aircraft_fleet.operational_status does not currently allow IN_DELIVERY.
+        Use UNAVAILABLE as DB-safe operational state while status carries
+        PENDING_DELIVERY.
+      */
+      fleetOperationalStatus = "UNAVAILABLE";
+
       fleetDeliveryDate = estimatedUsedDeliveryDate;
       fleetEntryIntoServiceDate = null;
       usedDeliveryMode = "STANDARD_USED_DELIVERY";
@@ -2366,7 +2387,7 @@ if (!(simTime instanceof Date) || Number.isNaN(simTime.getTime())) {
         Number(listing.condition_pct || 100),
 
         requiredMaintenance
-          ? usedMaintenanceDisposition
+          ? "CHECK_REQUIRED"
           : (listing.maintenance_status || "SERVICEABLE"),
 
         purchasePrice,
