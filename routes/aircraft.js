@@ -2000,19 +2000,56 @@ router.post("/aircraft/used-market/:id/buy", requireAuth, async (req, res) => {
        3) RESOLVE ACS WORLD TIME + BASE AIRPORT
        ============================================================ */
 
-    const worldTimeResult = await client.query(
-      `
-      SELECT
-        COALESCE(frozen_sim_time, sim_start, NOW()) AS sim_time
-      FROM acs_world
-      WHERE id = 1
-      LIMIT 1
-      `
-    );
+        /* ============================================================
+       🟦 ACS USED BUY SIM DATE RESOLVER — OCC v1.1
+       ------------------------------------------------------------
+       Purpose:
+       - Prefer explicit ACS sim date sent by frontend.
+       - Fallback to acs_world only if no sim date is provided.
+       - Needed because Used Market delivery / maintenance decisions
+         must use the same ACS date visible to the player.
+       ============================================================ */
 
-    const simTime =
-      worldTimeResult.rows[0]?.sim_time ||
-      new Date();
+    const bodySimYear = Number(req.body?.sim_year);
+    const bodySimMonth = Number(req.body?.sim_month);
+    const bodySimDay = Number(req.body?.sim_day);
+
+    let simTime = null;
+
+    if (
+      Number.isInteger(bodySimYear) &&
+      bodySimYear >= 1900 &&
+      bodySimYear <= 2100 &&
+      Number.isInteger(bodySimMonth) &&
+      bodySimMonth >= 1 &&
+      bodySimMonth <= 12 &&
+      Number.isInteger(bodySimDay) &&
+      bodySimDay >= 1 &&
+      bodySimDay <= 31
+    ) {
+      simTime = new Date(Date.UTC(
+        bodySimYear,
+        bodySimMonth - 1,
+        bodySimDay,
+        12,
+        0,
+        0
+      ));
+    } else {
+      const worldTimeResult = await client.query(
+        `
+        SELECT
+          COALESCE(frozen_sim_time, sim_start, NOW()) AS sim_time
+        FROM acs_world
+        WHERE id = 1
+        LIMIT 1
+        `
+      );
+
+      simTime =
+        worldTimeResult.rows[0]?.sim_time ||
+        new Date();
+    }
 
     let baseIcao = null;
 
