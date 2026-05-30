@@ -2245,8 +2245,16 @@ if (!(simTime instanceof Date) || Number.isNaN(simTime.getTime())) {
       fleetEntryIntoServiceDate = null;
 
       usedDeliveryMode = starterPrivilegeAvailable
-        ? "STARTER_MAINTENANCE"
-        : "DELIVERY_THEN_MAINTENANCE";
+  ? (
+      requiredMaintenance === "D_CHECK"
+        ? "STARTER_D_CHECK_MAINTENANCE"
+        : "STARTER_C_CHECK_MAINTENANCE"
+    )
+  : (
+      requiredMaintenance === "D_CHECK"
+        ? "DELIVERY_THEN_D_CHECK_MAINTENANCE"
+        : "DELIVERY_THEN_C_CHECK_MAINTENANCE"
+    );
 
       usedMaintenanceDisposition =
         requiredMaintenance === "D_CHECK"
