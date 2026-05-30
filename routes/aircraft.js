@@ -2043,6 +2043,172 @@ router.post("/aircraft/used-market/:id/buy", requireAuth, async (req, res) => {
       Number(listing.market_price || listing.base_price || listing.catalog_price || 0)
     );
 
+        /* ============================================================
+       🟧 ACS USED MARKET OCC DECISION ENGINE v1.2
+       ------------------------------------------------------------
+       Rules:
+       - Max 3 Used Market acquisitions per 24 real hours.
+       - First 3 lifetime Used Market acquisitions may enter ACTIVE.
+       - C/D overdue overrides starter privilege.
+       - D-check overrides C-check.
+       - After starter privilege, aircraft enters PENDING_DELIVERY.
+       - A/B preparation is represented by delivery time only after
+         the third ACTIVE starter aircraft.
+       ============================================================ */
+
+    const usedCycleResult = await client.query(
+      `
+      SELECT COUNT(*)::INTEGER AS cycle_count
+      FROM aircraft_fleet
+      WHERE airline_id = $1
+        AND source = 'USED_MARKET'
+        AND created_at >= (NOW() - INTERVAL '24 hours')
+      `,
+      [airlineId]
+    );
+
+    const usedLifetimeResult = await client.query(
+      `
+      SELECT COUNT(*)::INTEGER AS lifetime_count
+      FROM aircraft_fleet
+      WHERE airline_id = $1
+        AND source = 'USED_MARKET'
+      `,
+      [airlineId]
+    );
+
+    const usedCycleCount = Number(
+      usedCycleResult.rows[0]?.cycle_count || 0
+    );
+
+    const usedLifetimeCount = Number(
+      usedLifetimeResult.rows[0]?.lifetime_count || 0
+    );
+
+    if (usedCycleCount >= 3) {
+      await client.query("ROLLBACK");
+
+      return res.status(409).json({
+        ok: false,
+        error: "MARKET_GATE_NEXT_DAY",
+        message: "Used market cycle limit.",
+        market_gate: {
+          code: "NEXT_DAY",
+          label: "MARKET GATE: NEXT DAY",
+          used_market_cycle_limit: true
+        },
+        policy: {
+          max_used_market_acquisitions_per_cycle: 3,
+          cycle_clock: "SERVER_REAL_TIME_24H",
+          frontend_message: "MARKET GATE: NEXT DAY"
+        }
+      });
+    }
+
+    const starterPrivilegeAvailable = usedLifetimeCount < 3;
+
+    const maintenanceText = String(
+      listing.maintenance_status || ""
+    ).toUpperCase();
+
+    const dCheckDueDate = listing.d_check_due_date
+      ? new Date(listing.d_check_due_date)
+      : null;
+
+    const dCheckOverdue =
+      maintenanceText.includes("D-CHECK OVERDUE") ||
+      maintenanceText.includes("D CHECK OVERDUE") ||
+      maintenanceText.includes("D_OVERDUE") ||
+      (
+        dCheckDueDate instanceof Date &&
+        !Number.isNaN(dCheckDueDate.getTime()) &&
+        dCheckDueDate.getTime() <= new Date(simTime).getTime()
+      );
+
+    const cCheckDueHours = Number(listing.c_check_due_hours || 0);
+    const cCheckDueCycles = Number(listing.c_check_due_cycles || 0);
+    const listingHours = Number(listing.total_hours || 0);
+    const listingCycles = Number(listing.total_cycles || 0);
+
+    const cCheckOverdue =
+      maintenanceText.includes("C-CHECK OVERDUE") ||
+      maintenanceText.includes("C CHECK OVERDUE") ||
+      maintenanceText.includes("C_OVERDUE") ||
+      (
+        cCheckDueHours > 0 &&
+        listingHours >= cCheckDueHours
+      ) ||
+      (
+        cCheckDueCycles > 0 &&
+        listingCycles >= cCheckDueCycles
+      );
+
+    const requiredMaintenance =
+      dCheckOverdue
+        ? "D_CHECK"
+        : cCheckOverdue
+          ? "C_CHECK"
+          : null;
+
+    const usedBaseDeliveryDays = 10;
+
+    const estimatedUsedDeliveryDate = new Date(
+      new Date(simTime).getTime() +
+      (usedBaseDeliveryDays * 24 * 60 * 60 * 1000)
+    );
+
+    let fleetStatus = "ACTIVE";
+    let fleetOperationalStatus = "AVAILABLE";
+    let fleetDeliveryDate = simTime;
+    let fleetEntryIntoServiceDate = simTime;
+    let usedDeliveryMode = "STARTER_ACTIVE";
+    let usedMaintenanceDisposition = "CLEAR";
+
+    if (requiredMaintenance) {
+      fleetStatus = "MAINTENANCE";
+      fleetOperationalStatus = requiredMaintenance;
+      fleetDeliveryDate = starterPrivilegeAvailable
+        ? simTime
+        : estimatedUsedDeliveryDate;
+      fleetEntryIntoServiceDate = null;
+      usedDeliveryMode = starterPrivilegeAvailable
+        ? "STARTER_MAINTENANCE"
+        : "DELIVERY_THEN_MAINTENANCE";
+      usedMaintenanceDisposition =
+        requiredMaintenance === "D_CHECK"
+          ? "D_CHECK_OVERDUE"
+          : "C_CHECK_OVERDUE";
+    } else if (!starterPrivilegeAvailable) {
+      fleetStatus = "PENDING_DELIVERY";
+      fleetOperationalStatus = "IN_DELIVERY";
+      fleetDeliveryDate = estimatedUsedDeliveryDate;
+      fleetEntryIntoServiceDate = null;
+      usedDeliveryMode = "STANDARD_USED_DELIVERY";
+      usedMaintenanceDisposition = "CLEAR";
+    }
+
+    const usedPurchasePolicy = {
+      version: "ACS_USED_MARKET_ACQUISITION_OCC_V1_2",
+      used_cycle_count_before_purchase: usedCycleCount,
+      used_lifetime_count_before_purchase: usedLifetimeCount,
+      starter_privilege_available: starterPrivilegeAvailable,
+      starter_privilege_limit: 3,
+      market_gate: "CLEAR",
+      max_used_market_acquisitions_per_24h: 3,
+      required_maintenance: requiredMaintenance,
+      maintenance_disposition: usedMaintenanceDisposition,
+      delivery_mode: usedDeliveryMode,
+      base_delivery_days_after_starter: usedBaseDeliveryDays,
+      ab_check_policy:
+        starterPrivilegeAvailable
+          ? "A_B_NOT_APPLIED_TO_STARTER_ACTIVE_AIRCRAFT"
+          : "A_B_PREPARATION_REPRESENTED_BY_DELIVERY_TIME",
+      c_d_policy:
+        "C_D_OVERDUE_OVERRIDES_ACTIVE_STATUS_D_CHECK_HAS_PRIORITY"
+    };
+
+    console.log("🟧 ACS USED BUY OCC DECISION:", usedPurchasePolicy);
+     
     /* ============================================================
        4) CREATE AIRCRAFT_FLEET RECORD
        ------------------------------------------------------------
@@ -2051,7 +2217,7 @@ router.post("/aircraft/used-market/:id/buy", requireAuth, async (req, res) => {
        - Dedicated backend re-registration system can replace this later.
        ============================================================ */
 
-    const aircraftResult = await client.query(
+       const aircraftResult = await client.query(
       `
       INSERT INTO aircraft_fleet (
         aircraft_uid,
@@ -2096,12 +2262,9 @@ router.post("/aircraft/used-market/:id/buy", requireAuth, async (req, res) => {
         $7,
         NULL,
         $8,
-        'ACTIVE',
-        'AVAILABLE',
         $9,
         $10,
         $11,
-        $12,
         $12,
         $13,
         $14,
@@ -2109,6 +2272,9 @@ router.post("/aircraft/used-market/:id/buy", requireAuth, async (req, res) => {
         $16,
         $17,
         $18,
+        $19,
+        $20,
+        $21,
         'USD',
         NOW(),
         NOW()
@@ -2124,14 +2290,24 @@ router.post("/aircraft/used-market/:id/buy", requireAuth, async (req, res) => {
         listing.previous_registration || null,
         listing.serial_number || null,
         listing.id,
+
+        fleetStatus,
+        fleetOperationalStatus,
+
         baseIcao,
         currentAirport,
         listing.year_built || null,
-        simTime,
+        fleetDeliveryDate,
+        fleetEntryIntoServiceDate,
+
         Number(listing.total_hours || 0),
         Number(listing.total_cycles || 0),
         Number(listing.condition_pct || 100),
-        listing.maintenance_status || "SERVICEABLE",
+
+        requiredMaintenance
+          ? usedMaintenanceDisposition
+          : (listing.maintenance_status || "SERVICEABLE"),
+
         purchasePrice,
         currentValue
       ]
@@ -2231,12 +2407,32 @@ router.post("/aircraft/used-market/:id/buy", requireAuth, async (req, res) => {
       aircraft,
       listing: soldListing,
       finance: financeAfterResult.rows[0],
+       
       purchase: {
-        listing_id: listing.id,
-        aircraft_name: aircraftName,
-        purchase_price: purchasePrice,
-        currency: "USD"
-      }
+  listing_id: listing.id,
+  aircraft_name: aircraftName,
+  purchase_price: purchasePrice,
+  currency: "USD",
+  used_purchase_policy: usedPurchasePolicy,
+  delivery: {
+    mode: usedDeliveryMode,
+    status: fleetStatus,
+    operational_status: fleetOperationalStatus,
+    estimated_delivery_date: fleetDeliveryDate,
+    entry_into_service_date: fleetEntryIntoServiceDate
+  },
+  maintenance: {
+    required_maintenance: requiredMaintenance,
+    disposition: usedMaintenanceDisposition,
+    d_check_overdue: dCheckOverdue,
+    c_check_overdue: cCheckOverdue
+  },
+  market_gate: {
+    code: "CLEAR",
+    cycle_count_before_purchase: usedCycleCount,
+    lifetime_count_before_purchase: usedLifetimeCount
+  }
+}
     });
 
   } catch (err) {
