@@ -1772,9 +1772,29 @@ router.get("/aircraft/used-market", requireAuth, async (req, res) => {
   const client = await pool.connect();
 
   try {
+    const simDatePayload = ACS_resolveUsedMarketSimDateFromQuery(req);
+
+    if (!simDatePayload.ok) {
+      return res.status(400).json({
+        ok: false,
+        error: simDatePayload.error,
+        details: "Used Market requires ACS simulated date authority."
+      });
+    }
+
     await client.query("BEGIN");
 
     const seedStatus = await ACS_seedUsedAircraftMarketIfNeeded(client);
+
+    const refreshResult = await client.query(
+      `
+      SELECT *
+      FROM public.acs_used_market_system_refresh_resolver($1::date)
+      `,
+      [simDatePayload.sim_date]
+    );
+
+    const systemRefresh = refreshResult.rows[0] || null;
 
     const result = await client.query(
   `
