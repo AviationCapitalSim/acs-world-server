@@ -1881,7 +1881,15 @@ router.get("/aircraft/used-market", requireAuth, async (req, res) => {
         post_bootstrap_system_generation: false,
         policy_version: ACS_USED_MARKET_POLICY.policyVersion
       },
-      seed_status: seedStatus,
+            seed_status: seedStatus,
+      system_refresh: systemRefresh,
+      sim_date_authority: {
+        source: "ACS_TIME",
+        sim_year: simDatePayload.sim_year,
+        sim_month: simDatePayload.sim_month,
+        sim_day: simDatePayload.sim_day,
+        sim_date: simDatePayload.sim_date
+      },
       count: result.rows.length,
       used_market: result.rows
     });
