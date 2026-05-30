@@ -1721,6 +1721,53 @@ async function ACS_seedUsedAircraftMarketIfNeeded(client) {
   };
 }
 
+/* ============================================================
+   🕒 ACS USED MARKET SIM DATE RESOLVER — BACKEND AUTHORITY v1.0
+   ------------------------------------------------------------
+   Purpose:
+   - Used Market must age using ACS simulated date.
+   - No Date.now() / new Date() as simulation authority.
+   - Frontend must send sim_year, sim_month, sim_day.
+   ============================================================ */
+
+function ACS_resolveUsedMarketSimDateFromQuery(req) {
+  const simYear = Number(req.query?.sim_year);
+  const simMonth = Number(req.query?.sim_month);
+  const simDay = Number(req.query?.sim_day);
+
+  if (!Number.isInteger(simYear) || simYear < 1900 || simYear > 2100) {
+    return {
+      ok: false,
+      error: "INVALID_ACS_SIM_YEAR"
+    };
+  }
+
+  if (!Number.isInteger(simMonth) || simMonth < 1 || simMonth > 12) {
+    return {
+      ok: false,
+      error: "INVALID_ACS_SIM_MONTH"
+    };
+  }
+
+  if (!Number.isInteger(simDay) || simDay < 1 || simDay > 31) {
+    return {
+      ok: false,
+      error: "INVALID_ACS_SIM_DAY"
+    };
+  }
+
+  const mm = String(simMonth).padStart(2, "0");
+  const dd = String(simDay).padStart(2, "0");
+
+  return {
+    ok: true,
+    sim_year: simYear,
+    sim_month: simMonth,
+    sim_day: simDay,
+    sim_date: `${simYear}-${mm}-${dd}`
+  };
+}
+
 router.get("/aircraft/used-market", requireAuth, async (req, res) => {
   const client = await pool.connect();
 
