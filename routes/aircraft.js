@@ -18,6 +18,198 @@ import { requireAuth } from "../middleware/auth.js";
 const router = express.Router();
 
 /* ============================================================
+   🟦 ACS-RA-BE1 — REGISTRATION AUTHORITY HELPERS
+   ------------------------------------------------------------
+   Purpose:
+   - Resolve aircraft registration prefix from base ICAO
+   - Generate unique aircraft registrations from PostgreSQL
+   - Backend authority only
+   - No localStorage
+   - Safe for 700+ players
+   ============================================================ */
+
+function ACS_RA_normalizeIcao(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
+function ACS_RA_numberToLetters(num, length) {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  let n = Math.max(0, Number(num || 0));
+  let result = "";
+
+  for (let i = 0; i < Number(length || 3); i++) {
+    result = alphabet[n % 26] + result;
+    n = Math.floor(n / 26);
+  }
+
+  return result;
+}
+
+function ACS_RA_getNumericStart(registrationLength) {
+  const length = Number(registrationLength || 4);
+
+  if (length <= 1) return 1;
+
+  return Math.pow(10, length - 1) + 1;
+}
+
+async function ACS_RA_resolveRegistrationRule(client, baseIcao) {
+  const normalizedBase = ACS_RA_normalizeIcao(baseIcao);
+
+  if (!normalizedBase) {
+    throw new Error("REGISTRATION_BASE_ICAO_REQUIRED");
+  }
+
+  /*
+    Longest-prefix match:
+    - LYPG resolves before LY
+    - VHHH resolves before VH
+    - SVMI resolves to SV
+    - KJFK resolves to K
+  */
+
+  const result = await client.query(
+    `
+    SELECT
+      id,
+      country_name,
+      country_iso2,
+      icao_prefix,
+      registration_prefix,
+      registration_format,
+      registration_length,
+      separator,
+      sample_registration
+    FROM public.aircraft_registration_prefixes
+    WHERE is_active = TRUE
+      AND $1 LIKE (icao_prefix || '%')
+    ORDER BY LENGTH(icao_prefix) DESC
+    LIMIT 1
+    `,
+    [normalizedBase]
+  );
+
+  if (!result.rows.length) {
+    throw new Error(`REGISTRATION_RULE_NOT_FOUND_FOR_BASE_${normalizedBase}`);
+  }
+
+  return result.rows[0];
+}
+
+async function ACS_RA_generateCandidateFromRule(client, rule) {
+  const prefix = String(rule.registration_prefix || "").trim().toUpperCase();
+  const format = String(rule.registration_format || "NUMERIC").trim().toUpperCase();
+  const length = Number(rule.registration_length || 4);
+
+  if (!prefix) {
+    throw new Error("REGISTRATION_PREFIX_REQUIRED");
+  }
+
+  const initialCounter =
+    format === "LETTERS"
+      ? 0
+      : ACS_RA_getNumericStart(length);
+
+  /*
+    Counter is locked with FOR UPDATE to prevent two players/tabs
+    generating the same registration at the same time.
+  */
+
+  await client.query(
+    `
+    INSERT INTO public.aircraft_registration_counters (
+      registration_prefix,
+      next_number,
+      created_at,
+      updated_at
+    )
+    VALUES ($1, $2, NOW(), NOW())
+    ON CONFLICT (registration_prefix)
+    DO NOTHING
+    `,
+    [prefix, initialCounter]
+  );
+
+  const counterResult = await client.query(
+    `
+    SELECT
+      registration_prefix,
+      next_number
+    FROM public.aircraft_registration_counters
+    WHERE registration_prefix = $1
+    FOR UPDATE
+    `,
+    [prefix]
+  );
+
+  if (!counterResult.rows.length) {
+    throw new Error(`REGISTRATION_COUNTER_NOT_FOUND_${prefix}`);
+  }
+
+  const currentCounter = Number(counterResult.rows[0].next_number || initialCounter);
+
+  let registration;
+
+  if (format === "LETTERS") {
+    const letters = ACS_RA_numberToLetters(currentCounter, length);
+    registration = `${prefix}${letters}`;
+  } else {
+    const numericPart = String(currentCounter).padStart(length, "0").slice(-length);
+    registration = `${prefix}${numericPart}`;
+  }
+
+  await client.query(
+    `
+    UPDATE public.aircraft_registration_counters
+    SET
+      next_number = next_number + 1,
+      updated_at = NOW()
+    WHERE registration_prefix = $1
+    `,
+    [prefix]
+  );
+
+  return registration;
+}
+
+async function ACS_RA_generateUniqueRegistration(client, rule) {
+  /*
+    Safety loop:
+    If a registration already exists because of old data or manual import,
+    generate the next one.
+  */
+
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const candidate = await ACS_RA_generateCandidateFromRule(client, rule);
+
+    const existsResult = await client.query(
+      `
+      SELECT id
+      FROM public.aircraft_fleet
+      WHERE registration = $1
+      LIMIT 1
+      `,
+      [candidate]
+    );
+
+    if (!existsResult.rows.length) {
+      return candidate;
+    }
+  }
+
+  throw new Error("REGISTRATION_GENERATION_EXHAUSTED");
+}
+
+function ACS_RA_registrationMatchesRule(registration, rule) {
+  const reg = String(registration || "").trim().toUpperCase();
+  const prefix = String(rule?.registration_prefix || "").trim().toUpperCase();
+
+  if (!reg || !prefix) return false;
+
+  return reg.startsWith(prefix);
+}
+
+/* ============================================================
    🟩 HEALTH CHECK
    ============================================================ */
 
@@ -102,6 +294,164 @@ router.get("/aircraft/fleet", requireAuth, async (req, res) => {
       error: "AIRCRAFT_FLEET_FAILED",
       details: err.message
     });
+  }
+});
+
+/* ============================================================
+   🟦 ACS-RA-BE2 — AUTO ASSIGN AIRCRAFT REGISTRATION
+   ------------------------------------------------------------
+   Route:
+   POST /v1/aircraft/fleet/:id/registration/auto-assign
+
+   Purpose:
+   - Assign or correct aircraft registration from backend authority
+   - Uses aircraft base_icao/current_airport to resolve country rule
+   - Prevents duplicated registrations globally
+   - Allows replacing old previous_registration like N434RT when
+     airline base requires YV-, EC-, HK-, etc.
+   ============================================================ */
+
+router.post("/aircraft/fleet/:id/registration/auto-assign", requireAuth, async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const airlineId = Number(req.airline_id);
+    const aircraftId = Number(req.params.id);
+
+    if (!airlineId || !Number.isInteger(airlineId)) {
+      return res.status(401).json({
+        ok: false,
+        error: "NO_AIRLINE_SESSION"
+      });
+    }
+
+    if (!aircraftId || !Number.isInteger(aircraftId)) {
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_AIRCRAFT_ID"
+      });
+    }
+
+    await client.query("BEGIN");
+
+    const aircraftResult = await client.query(
+      `
+      SELECT
+        *
+      FROM public.aircraft_fleet
+      WHERE id = $1
+        AND airline_id = $2
+      FOR UPDATE
+      `,
+      [aircraftId, airlineId]
+    );
+
+    if (!aircraftResult.rows.length) {
+      await client.query("ROLLBACK");
+
+      return res.status(404).json({
+        ok: false,
+        error: "AIRCRAFT_NOT_FOUND_OR_NOT_OWNED"
+      });
+    }
+
+    const aircraft = aircraftResult.rows[0];
+
+    const baseIcao =
+      aircraft.base_icao ||
+      aircraft.current_airport ||
+      null;
+
+    if (!baseIcao) {
+      await client.query("ROLLBACK");
+
+      return res.status(409).json({
+        ok: false,
+        error: "AIRCRAFT_BASE_ICAO_REQUIRED",
+        message: "Aircraft must have base_icao or current_airport before registration assignment."
+      });
+    }
+
+    const rule = await ACS_RA_resolveRegistrationRule(client, baseIcao);
+
+    const currentRegistration = String(aircraft.registration || "").trim();
+
+    const forceReassign =
+      req.body?.force === true ||
+      req.body?.force_reassign === true;
+
+    const alreadyValid =
+      ACS_RA_registrationMatchesRule(currentRegistration, rule);
+
+    if (currentRegistration && alreadyValid && !forceReassign) {
+      await client.query("COMMIT");
+
+      return res.json({
+        ok: true,
+        endpoint: "ACS_RA_AUTO_ASSIGN_REGISTRATION",
+        version: "v1.0",
+        action: "REGISTRATION_ALREADY_VALID",
+        registration: currentRegistration,
+        rule,
+        aircraft
+      });
+    }
+
+    const newRegistration = await ACS_RA_generateUniqueRegistration(client, rule);
+
+    const updatedResult = await client.query(
+      `
+      UPDATE public.aircraft_fleet
+      SET
+        registration = $3,
+        updated_at = NOW()
+      WHERE id = $1
+        AND airline_id = $2
+      RETURNING *
+      `,
+      [
+        aircraftId,
+        airlineId,
+        newRegistration
+      ]
+    );
+
+    await client.query("COMMIT");
+
+    return res.json({
+      ok: true,
+      endpoint: "ACS_RA_AUTO_ASSIGN_REGISTRATION",
+      version: "v1.0",
+      action: currentRegistration
+        ? "REGISTRATION_REASSIGNED"
+        : "REGISTRATION_ASSIGNED",
+      previous_registration: currentRegistration || null,
+      registration: newRegistration,
+      rule: {
+        country_name: rule.country_name,
+        country_iso2: rule.country_iso2,
+        icao_prefix: rule.icao_prefix,
+        registration_prefix: rule.registration_prefix,
+        registration_format: rule.registration_format,
+        registration_length: rule.registration_length,
+        sample_registration: rule.sample_registration
+      },
+      aircraft: updatedResult.rows[0]
+    });
+
+  } catch (err) {
+    await client.query("ROLLBACK");
+
+    console.error("ACS RA AUTO ASSIGN REGISTRATION ERROR:", err);
+
+    return res.status(500).json({
+      ok: false,
+      error: "REGISTRATION_AUTO_ASSIGN_FAILED",
+      details: err.message
+    });
+
+  } finally {
+    client.release();
   }
 });
 
