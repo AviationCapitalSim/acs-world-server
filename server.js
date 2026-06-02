@@ -45,8 +45,6 @@ const loginLimiter = rateLimit({
   }
 });
 
-app.use(globalLimiter);
-
 app.set("trust proxy", 1);
 
 const allowedOrigins = [
@@ -55,34 +53,57 @@ const allowedOrigins = [
   "https://aviationcapitalsim.github.io"
 ];
 
-app.use(cors({
+const corsOptions = {
   origin: function(origin, callback) {
 
-    // permitir requests sin origin (ej: curl, health checks)
+    // Permitir requests sin origin: curl, health checks, Railway checks
     if (!origin) return callback(null, true);
 
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
-    } else {
-      return callback(new Error("CORS not allowed: " + origin));
     }
+
+    return callback(new Error("CORS not allowed: " + origin));
   },
   credentials: true,
   methods: ["GET","POST","PATCH","PUT","DELETE","OPTIONS"],
   allowedHeaders: ["Content-Type","Authorization"]
-}));
+};
 
-app.options("*", cors());
+/*
+  CORS must run BEFORE rate limit.
+  Otherwise 429 responses can appear in the browser as CORS failures.
+*/
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
+
+/*
+  Global limiter after CORS.
+
+  /v1/world is the ACS Time Authority endpoint.
+  The frontend clock reads it frequently, so it must not be blocked
+  by the general rate limiter.
+
+  /health is also excluded so Railway can always verify the service.
+*/
+app.use((req, res, next) => {
+  if (req.path === "/v1/world" || req.path === "/health") {
+    return next();
+  }
+
+  return globalLimiter(req, res, next);
+});
 
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
 
-// ✅ Health check (NO DB) — Railway debe recibir respuesta sí o sí
+// ✅ Health check (NO DB / NO ACS TIME AUTHORITY)
 app.get("/health", (req, res) => {
   res.status(200).json({
     ok: true,
     service: "acs-world-server",
-    ts: Date.now()
+    authority: "RAILWAY_POSTGRESQL",
+    time_engine: "POSTGRESQL_TIME_AUTHORITY"
   });
 });
 
