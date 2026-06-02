@@ -329,6 +329,285 @@ router.get("/aircraft/fleet", requireAuth, async (req, res) => {
 });
 
 /* ============================================================
+   🟦 ACS MAINTENANCE QUOTE — SERVICE C & D CONTROL v1.0
+   ------------------------------------------------------------
+   Route:
+   GET /v1/aircraft/fleet/:id/maintenance/quote
+
+   Purpose:
+   - Backend authority for C/D service duration and cost
+   - Reads aircraft_maintenance_policy from PostgreSQL
+   - No frontend cost calculation
+   - No localStorage
+   - No Date.now()
+   - Uses acs_get_current_sim_time()
+   ============================================================ */
+
+router.get("/aircraft/fleet/:id/maintenance/quote", requireAuth, async (req, res) => {
+  try {
+    const airlineId = Number(req.airline_id);
+    const aircraftId = Number(req.params.id);
+
+    if (!airlineId || !Number.isInteger(airlineId)) {
+      return res.status(401).json({
+        ok: false,
+        error: "NO_AIRLINE_SESSION"
+      });
+    }
+
+    if (!aircraftId || !Number.isInteger(aircraftId)) {
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_AIRCRAFT_ID"
+      });
+    }
+
+    const aircraftResult = await pool.query(
+      `
+      SELECT
+        af.id,
+        af.registration,
+        af.aircraft_name,
+        af.manufacturer,
+        af.model_key,
+        af.source,
+        af.year_built,
+        af.total_hours,
+        af.total_cycles,
+        af.condition_pct,
+        af.current_value,
+        af.purchase_price,
+        af.currency,
+        af.status,
+        af.operational_status,
+        af.maintenance_status,
+
+        ac.aircraft_category,
+        ac.seats,
+        ac.price_acs_usd,
+
+        ams.c_check_due_date,
+        ams.c_check_status,
+        ams.d_check_due_date,
+        ams.d_check_status,
+        ams.maintenance_control_status,
+        ams.maintenance_control_reason,
+
+        acs_get_current_sim_time() AS current_sim_time
+
+      FROM aircraft_fleet af
+
+      LEFT JOIN aircraft_catalog ac
+        ON ac.model_key = af.model_key
+
+      LEFT JOIN aircraft_maintenance_status ams
+        ON ams.aircraft_id = af.id
+
+      WHERE af.id = $1
+        AND af.airline_id = $2
+
+      LIMIT 1
+      `,
+      [aircraftId, airlineId]
+    );
+
+    if (!aircraftResult.rows.length) {
+      return res.status(404).json({
+        ok: false,
+        error: "AIRCRAFT_NOT_FOUND_OR_NOT_OWNED"
+      });
+    }
+
+    const aircraft = aircraftResult.rows[0];
+
+    const aircraftCategory = String(aircraft.aircraft_category || "").toUpperCase();
+    const aircraftName = String(aircraft.aircraft_name || "").toUpperCase();
+    const seats = Number(aircraft.seats || 0);
+
+    let sizeClass = "LIGHT";
+
+    if (
+      aircraftCategory.includes("WIDEBODY") ||
+      aircraftName.includes("747") ||
+      aircraftName.includes("DC-10") ||
+      aircraftName.includes("L-1011") ||
+      aircraftName.includes("A300") ||
+      aircraftName.includes("A310") ||
+      seats >= 220
+    ) {
+      sizeClass = "HEAVY";
+    } else if (
+      aircraftCategory.includes("NARROWBODY") ||
+      aircraftCategory.includes("REGIONAL") ||
+      aircraftName.includes("707") ||
+      aircraftName.includes("720") ||
+      aircraftName.includes("727") ||
+      aircraftName.includes("737") ||
+      aircraftName.includes("DC-8") ||
+      aircraftName.includes("DC-9") ||
+      aircraftName.includes("CONSTELLATION") ||
+      aircraftName.includes("DC-6") ||
+      aircraftName.includes("DC-7") ||
+      seats >= 80
+    ) {
+      sizeClass = "MEDIUM";
+    }
+
+    const simYearResult = await pool.query(
+      `
+      SELECT EXTRACT(YEAR FROM acs_get_current_sim_time())::INTEGER AS sim_year
+      `
+    );
+
+    const simYear = Number(simYearResult.rows[0]?.sim_year || 1940);
+
+    const policyResult = await pool.query(
+      `
+      SELECT
+        policy_code,
+        aircraft_size_class,
+        aircraft_category,
+        era_start_year,
+        era_end_year,
+        c_check_duration_days,
+        d_check_duration_days,
+        c_check_cost_rate,
+        d_check_cost_rate,
+        condition_factor_low,
+        condition_factor_medium,
+        condition_factor_good,
+        usage_factor_high,
+        usage_factor_medium,
+        usage_factor_normal
+      FROM aircraft_maintenance_policy
+      WHERE is_active = TRUE
+        AND aircraft_size_class = $1
+        AND aircraft_category = 'ANY'
+        AND era_start_year <= $2
+        AND era_end_year >= $2
+      ORDER BY era_start_year DESC
+      LIMIT 1
+      `,
+      [sizeClass, simYear]
+    );
+
+    if (!policyResult.rows.length) {
+      return res.status(409).json({
+        ok: false,
+        error: "MAINTENANCE_POLICY_NOT_FOUND",
+        size_class: sizeClass,
+        sim_year: simYear
+      });
+    }
+
+    const policy = policyResult.rows[0];
+
+    const conditionPct = Number(aircraft.condition_pct || 80);
+    const totalHours = Number(aircraft.total_hours || 0);
+    const totalCycles = Number(aircraft.total_cycles || 0);
+
+    const aircraftValue = Math.round(
+      Number(
+        aircraft.current_value ||
+        aircraft.purchase_price ||
+        aircraft.price_acs_usd ||
+        0
+      )
+    );
+
+    const currency = aircraft.currency || "USD";
+
+    let conditionFactor = Number(policy.condition_factor_good || 1);
+
+    if (conditionPct < 70) {
+      conditionFactor = Number(policy.condition_factor_low || 1.25);
+    } else if (conditionPct < 85) {
+      conditionFactor = Number(policy.condition_factor_medium || 1.12);
+    }
+
+    let usageFactor = Number(policy.usage_factor_normal || 1);
+
+    if (totalHours > 20000 || totalCycles > 12000) {
+      usageFactor = Number(policy.usage_factor_high || 1.18);
+    } else if (totalHours > 10000 || totalCycles > 6000) {
+      usageFactor = Number(policy.usage_factor_medium || 1.10);
+    }
+
+    const cEstimatedCost = aircraftValue > 0
+      ? Math.round(
+          aircraftValue *
+          Number(policy.c_check_cost_rate) *
+          conditionFactor *
+          usageFactor
+        )
+      : null;
+
+    const dEstimatedCost = aircraftValue > 0
+      ? Math.round(
+          aircraftValue *
+          Number(policy.d_check_cost_rate) *
+          conditionFactor *
+          usageFactor
+        )
+      : null;
+
+    return res.json({
+      ok: true,
+      endpoint: "ACS_MAINTENANCE_QUOTE",
+      version: "v1.0",
+      authority: {
+        time: "acs_get_current_sim_time",
+        fleet: "aircraft_fleet",
+        maintenance: "aircraft_maintenance_status",
+        catalog: "aircraft_catalog",
+        policy: "aircraft_maintenance_policy"
+      },
+      aircraft: {
+        id: aircraft.id,
+        registration: aircraft.registration,
+        aircraft_name: aircraft.aircraft_name,
+        model_key: aircraft.model_key,
+        source: aircraft.source,
+        size_class: sizeClass,
+        condition_pct: conditionPct,
+        total_hours: totalHours,
+        total_cycles: totalCycles,
+        current_value: aircraftValue,
+        currency
+      },
+      current_sim_time: aircraft.current_sim_time,
+      policy: {
+        policy_code: policy.policy_code,
+        aircraft_size_class: policy.aircraft_size_class
+      },
+      c_check: {
+        status: aircraft.c_check_status || "NOT_ESTABLISHED",
+        due_date: aircraft.c_check_due_date,
+        duration_days: Number(policy.c_check_duration_days),
+        estimated_cost: cEstimatedCost,
+        currency
+      },
+      d_check: {
+        status: aircraft.d_check_status || "NOT_ESTABLISHED",
+        due_date: aircraft.d_check_due_date,
+        duration_days: Number(policy.d_check_duration_days),
+        estimated_cost: dEstimatedCost,
+        currency
+      }
+    });
+
+  } catch (err) {
+    console.error("ACS MAINTENANCE QUOTE ERROR:", err);
+
+    return res.status(500).json({
+      ok: false,
+      error: "MAINTENANCE_QUOTE_FAILED",
+      details: err.message
+    });
+  }
+});
+
+/* ============================================================
    🟦 ACS-RA-BE2 — AUTO ASSIGN AIRCRAFT REGISTRATION
    ------------------------------------------------------------
    Route:
