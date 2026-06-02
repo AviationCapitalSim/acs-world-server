@@ -1109,6 +1109,235 @@ router.post("/aircraft/fleet/:id/maintenance/start", requireAuth, async (req, re
 });
 
 /* ============================================================
+   🟦 ACS MAINTENANCE RESOLVER — C/D COMPLETION v1.0
+   ------------------------------------------------------------
+   Route:
+   POST /v1/aircraft/maintenance/resolver
+
+   Purpose:
+   - Close expired maintenance events using ACS simulated time
+   - No Date.now()
+   - No frontend authority
+   - Uses acs_get_current_sim_time()
+   - D_CHECK resets C/D calendar
+   - C_CHECK resets C calendar only
+   ============================================================ */
+
+router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const airlineId = Number(req.airline_id);
+
+    if (!airlineId || !Number.isInteger(airlineId)) {
+      return res.status(401).json({
+        ok: false,
+        error: "NO_AIRLINE_SESSION"
+      });
+    }
+
+    await client.query("BEGIN");
+
+    const eventsResult = await client.query(
+      `
+      SELECT
+        ame.id,
+        ame.airline_id,
+        ame.aircraft_id,
+        ame.check_type,
+        ame.event_status,
+        ame.started_at,
+        ame.expected_completion_at,
+        ame.duration_days,
+        ame.final_cost,
+        ame.currency,
+        af.registration,
+        af.aircraft_name,
+        af.status,
+        af.operational_status,
+        ams.c_check_due_date,
+        ams.c_check_status,
+        ams.d_check_due_date,
+        ams.d_check_status,
+        acs_get_current_sim_time() AS current_sim_time
+      FROM aircraft_maintenance_events ame
+
+      JOIN aircraft_fleet af
+        ON af.id = ame.aircraft_id
+
+      LEFT JOIN aircraft_maintenance_status ams
+        ON ams.aircraft_id = ame.aircraft_id
+
+      WHERE ame.airline_id = $1
+        AND ame.event_status = 'IN_PROGRESS'
+        AND ame.expected_completion_at <= acs_get_current_sim_time()
+
+      ORDER BY ame.expected_completion_at ASC
+
+      FOR UPDATE OF ame, af
+      `,
+      [airlineId]
+    );
+
+    const completedEvents = [];
+
+    for (const event of eventsResult.rows) {
+      const checkType = String(event.check_type || "").toUpperCase();
+      const aircraftId = Number(event.aircraft_id);
+      const completionTime = event.current_sim_time;
+
+      await client.query(
+        `
+        UPDATE aircraft_maintenance_events
+        SET
+          event_status = 'COMPLETED',
+          completed_at = $2,
+          updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+        WHERE id = $1
+        `,
+        [event.id, completionTime]
+      );
+
+      if (checkType === "D_CHECK") {
+        /*
+          ACS / Airbus OCC Rule:
+          D Check is a major structural service.
+          It resets D, C, B, A logic.
+          In current backend table, C and D are stored here.
+        */
+
+        await client.query(
+          `
+          UPDATE aircraft_maintenance_status
+          SET
+            c_check_due_date = $2::TIMESTAMP + INTERVAL '12 months',
+            c_check_status = 'OPEN',
+            d_check_due_date = $2::TIMESTAMP + INTERVAL '8 years',
+            d_check_status = 'OPEN',
+            maintenance_control_status = 'SERVICEABLE',
+            maintenance_control_reason = NULL,
+            updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+          WHERE aircraft_id = $1
+          `,
+          [aircraftId, completionTime]
+        );
+
+        await client.query(
+          `
+          UPDATE aircraft_fleet
+          SET
+            status = 'ACTIVE',
+            operational_status = 'AVAILABLE',
+            maintenance_status = 'SERVICEABLE',
+            updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+          WHERE id = $1
+          `,
+          [aircraftId]
+        );
+
+      } else if (checkType === "C_CHECK") {
+        /*
+          ACS / Airbus OCC Rule:
+          C Check resets C calendar.
+          D Check remains authoritative.
+          If D is still overdue, aircraft returns active but non-dispatchable.
+        */
+
+        const dIsOverdueResult = await client.query(
+          `
+          SELECT
+            CASE
+              WHEN d_check_due_date IS NOT NULL
+               AND d_check_due_date < acs_get_current_sim_time()
+              THEN TRUE
+              ELSE FALSE
+            END AS d_is_overdue
+          FROM aircraft_maintenance_status
+          WHERE aircraft_id = $1
+          `,
+          [aircraftId]
+        );
+
+        const dIsOverdue = dIsOverdueResult.rows[0]?.d_is_overdue === true;
+
+        await client.query(
+          `
+          UPDATE aircraft_maintenance_status
+          SET
+            c_check_due_date = $2::TIMESTAMP + INTERVAL '12 months',
+            c_check_status = 'OPEN',
+            d_check_status = CASE
+              WHEN $3::BOOLEAN = TRUE THEN 'OVERDUE'
+              ELSE d_check_status
+            END,
+            maintenance_control_status = CASE
+              WHEN $3::BOOLEAN = TRUE THEN 'MAINTENANCE_REQUIRED'
+              ELSE 'SERVICEABLE'
+            END,
+            maintenance_control_reason = CASE
+              WHEN $3::BOOLEAN = TRUE THEN 'D_CHECK_OVERDUE'
+              ELSE NULL
+            END,
+            updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+          WHERE aircraft_id = $1
+          `,
+          [aircraftId, completionTime, dIsOverdue]
+        );
+
+        await client.query(
+          `
+          UPDATE aircraft_fleet
+          SET
+            status = 'ACTIVE',
+            operational_status = 'AVAILABLE',
+            maintenance_status = CASE
+              WHEN $2::BOOLEAN = TRUE THEN 'CHECK_REQUIRED'
+              ELSE 'SERVICEABLE'
+            END,
+            updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+          WHERE id = $1
+          `,
+          [aircraftId, dIsOverdue]
+        );
+      }
+
+      completedEvents.push({
+        event_id: event.id,
+        aircraft_id: aircraftId,
+        registration: event.registration,
+        aircraft_name: event.aircraft_name,
+        check_type: checkType,
+        completed_at: completionTime
+      });
+    }
+
+    await client.query("COMMIT");
+
+    return res.json({
+      ok: true,
+      endpoint: "ACS_MAINTENANCE_RESOLVER",
+      version: "v1.0",
+      completed_count: completedEvents.length,
+      completed_events: completedEvents
+    });
+
+  } catch (err) {
+    await client.query("ROLLBACK");
+
+    console.error("ACS MAINTENANCE RESOLVER ERROR:", err);
+
+    return res.status(500).json({
+      ok: false,
+      error: "MAINTENANCE_RESOLVER_FAILED",
+      details: err.message
+    });
+
+  } finally {
+    client.release();
+  }
+});
+
+/* ============================================================
    🟦 ACS-RA-BE2 — AUTO ASSIGN AIRCRAFT REGISTRATION
    ------------------------------------------------------------
    Route:
