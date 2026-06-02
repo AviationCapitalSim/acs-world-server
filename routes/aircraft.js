@@ -222,10 +222,17 @@ router.get("/aircraft/health", requireAuth, async (req, res) => {
 });
 
 /* ============================================================
-   🟦 GET MY AIRCRAFT FLEET
+   🟦 GET MY AIRCRAFT FLEET — MAINTENANCE AUTHORITY v1.2
    ------------------------------------------------------------
    Route:
    GET /v1/aircraft/fleet
+
+   Purpose:
+   - Read aircraft fleet from PostgreSQL
+   - Join aircraft_maintenance_status as technical authority
+   - No localStorage authority
+   - No frontend maintenance calculation
+   - My Aircraft receives real C/D check status
    ============================================================ */
 
 router.get("/aircraft/fleet", requireAuth, async (req, res) => {
@@ -243,45 +250,69 @@ router.get("/aircraft/fleet", requireAuth, async (req, res) => {
     const result = await pool.query(
       `
       SELECT
-        id,
-        aircraft_uid,
-        airline_id,
-        user_id,
-        source,
-        ownership_type,
-        manufacturer,
-        model_key,
-        aircraft_name,
-        registration,
-        serial_number,
-        line_number,
-        new_aircraft_order_id,
-        used_listing_id,
-        status,
-        operational_status,
-        base_icao,
-        current_airport,
-        year_built,
-        delivery_date,
-        entry_into_service_date,
-        total_hours,
-        total_cycles,
-        condition_pct,
-        maintenance_status,
-        purchase_price,
-        current_value,
-        currency,
-        created_at,
-        updated_at
-      FROM aircraft_fleet
-      WHERE airline_id = $1
-      ORDER BY created_at DESC, id DESC
+        af.id,
+        af.aircraft_uid,
+        af.airline_id,
+        af.user_id,
+        af.source,
+        af.ownership_type,
+        af.manufacturer,
+        af.model_key,
+        af.aircraft_name,
+        af.registration,
+        af.serial_number,
+        af.line_number,
+        af.new_aircraft_order_id,
+        af.used_listing_id,
+        af.status,
+        af.operational_status,
+        af.base_icao,
+        af.current_airport,
+        af.year_built,
+        af.delivery_date,
+        af.entry_into_service_date,
+        af.total_hours,
+        af.total_cycles,
+        af.condition_pct,
+        af.maintenance_status,
+        af.purchase_price,
+        af.current_value,
+        af.currency,
+        af.created_at,
+        af.updated_at,
+
+        ams.c_check_due_hours,
+        ams.c_check_due_cycles,
+        ams.c_check_due_date,
+        ams.c_check_status,
+        ams.d_check_due_date,
+        ams.d_check_status,
+        ams.maintenance_control_status,
+        ams.maintenance_control_reason,
+
+        acs_get_current_sim_time() AS current_sim_time
+
+      FROM aircraft_fleet af
+
+      LEFT JOIN aircraft_maintenance_status ams
+        ON ams.aircraft_id = af.id
+
+      WHERE af.airline_id = $1
+
+      ORDER BY af.created_at DESC, af.id DESC
       `,
       [airlineId]
     );
 
     return res.json({
       ok: true,
+      endpoint: "ACS_MY_AIRCRAFT_FLEET",
+      version: "v1.2",
+      authority: {
+        fleet: "aircraft_fleet",
+        maintenance: "aircraft_maintenance_status",
+        time: "acs_get_current_sim_time"
+      },
       airline_id: airlineId,
       fleet: result.rows
     });
