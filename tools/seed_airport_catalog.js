@@ -1,6 +1,7 @@
 // ============================================================
 // ACS + AIRBUS OCC
 // tools/seed_airport_catalog.js
+// ES Module Version
 // ------------------------------------------------------------
 // Purpose:
 //   Seeds public.airport_catalog from data/acs_airport_db.js
@@ -12,10 +13,13 @@
 //   public.airport_catalog
 // ============================================================
 
-require("dotenv").config();
+import dotenv from "dotenv";
+import pg from "pg";
+import { ACS_AIRPORT_DB } from "../data/acs_airport_db.js";
 
-const { Pool } = require("pg");
-const { ACS_AIRPORT_DB } = require("../data/acs_airport_db");
+dotenv.config();
+
+const { Pool } = pg;
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -167,7 +171,7 @@ async function seedAirportCatalog() {
     console.log(`Updated: ${updated}`);
     console.log(`Total processed: ${inserted + updated}`);
 
-    const summary = await pool.query(`
+    const continentSummary = await pool.query(`
       SELECT
         continent,
         COUNT(*) AS airports
@@ -179,7 +183,7 @@ async function seedAirportCatalog() {
     console.log("============================================");
     console.log("AIRPORTS BY CONTINENT");
     console.log("============================================");
-    console.table(summary.rows);
+    console.table(continentSummary.rows);
 
     const categorySummary = await pool.query(`
       SELECT
