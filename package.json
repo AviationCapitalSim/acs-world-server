@@ -6,9 +6,9 @@
   "scripts": {
     "start": "node server.js",
     "seed:aircraft": "node tools/seed_aircraft_catalog.js",
-    "seed:production-rules": "node tools/seed_aircraft_production_rules.js"
+    "seed:production-rules": "node tools/seed_aircraft_production_rules.js",
+    "seed:airport": "node tools/seed_airport_catalog.js"
   },
-  
   "dependencies": {
     "bcrypt": "^5.1.0",
     "cors": "^2.8.5",
