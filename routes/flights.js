@@ -75,7 +75,8 @@ LIMIT 5000
 // =============================================
 // FLIGHT DEPARTURE
 // =============================================
-router.post("/flight/departure", async (req, res) => {
+
+router.post("/flight/departure", requireAuth, async (req, res) => {
 
   try {
 
@@ -156,7 +157,8 @@ router.post("/flight/departure", async (req, res) => {
 // =============================================
 // FLIGHT ARRIVAL
 // =============================================
-router.post("/flight/arrival", async (req,res)=>{
+
+router.post("/flight/arrival", requireAuth, async (req,res)=>{
 
   try{
 
