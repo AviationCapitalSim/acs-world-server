@@ -1,7 +1,7 @@
 // ============================================================
 // ACS + AIRBUS OCC
 // data/acs_airport_db.js
-// Global Airport Database Consolidator
+// Global Airport Database Consolidator - ES Module Version
 // ------------------------------------------------------------
 // Purpose:
 //   Consolidates the 7 ACS continent airport JS databases into
@@ -18,26 +18,21 @@
 //
 // Output:
 //   ACS_AIRPORT_DB
-//
-// Backend flow:
-//   engine/airports/world_airports_*.js
-//        ↓
-//   data/acs_airport_db.js
-//        ↓
-//   tools/seed_airport_catalog.js
-//        ↓
-//   public.airport_catalog
 // ============================================================
 
-const path = require("path");
-const fs = require("fs");
-const vm = require("vm");
+import fs from "fs";
+import path from "path";
+import vm from "vm";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // ------------------------------------------------------------
 // Source files
 // ------------------------------------------------------------
 
-const AIRPORT_SOURCE_FILES = [
+export const AIRPORT_SOURCE_FILES = [
   {
     key: "SouthAmerica",
     label: "South America",
@@ -170,6 +165,7 @@ function loadAirportFile(source) {
   };
 
   vm.createContext(sandbox);
+
   vm.runInContext(code, sandbox, {
     filename: source.file,
   });
@@ -189,7 +185,7 @@ function loadAirportFile(source) {
 // Build global airport DB
 // ------------------------------------------------------------
 
-function buildAirportDatabase() {
+export function buildAirportDatabase() {
   const allAirports = [];
   const seenIcao = new Set();
 
@@ -213,14 +209,4 @@ function buildAirportDatabase() {
   return allAirports;
 }
 
-const ACS_AIRPORT_DB = buildAirportDatabase();
-
-// ------------------------------------------------------------
-// Exports
-// ------------------------------------------------------------
-
-module.exports = {
-  ACS_AIRPORT_DB,
-  AIRPORT_SOURCE_FILES,
-  buildAirportDatabase,
-};
+export const ACS_AIRPORT_DB = buildAirportDatabase();
