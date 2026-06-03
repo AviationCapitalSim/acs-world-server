@@ -1222,13 +1222,14 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
           [aircraftId, completionTime]
         );
 
-        await client.query(
+         await client.query(
           `
           UPDATE aircraft_fleet
           SET
             status = 'ACTIVE',
             operational_status = 'AVAILABLE',
             maintenance_status = 'SERVICEABLE',
+            condition_pct = 100,
             updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
           WHERE id = $1
           `,
@@ -1284,7 +1285,7 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
           [aircraftId, completionTime, dIsOverdue]
         );
 
-        await client.query(
+         await client.query(
           `
           UPDATE aircraft_fleet
           SET
@@ -1294,6 +1295,7 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
               WHEN $2::BOOLEAN = TRUE THEN 'CHECK_REQUIRED'
               ELSE 'SERVICEABLE'
             END,
+            condition_pct = 100,
             updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
           WHERE id = $1
           `,
