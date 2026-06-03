@@ -1,7 +1,6 @@
 // ============================================================
 // ACS + AIRBUS OCC
 // tools/seed_airport_catalog.js
-// ES Module Version
 // ------------------------------------------------------------
 // Purpose:
 //   Seeds public.airport_catalog from data/acs_airport_db.js
@@ -29,22 +28,83 @@ const pool = new Pool({
       : false,
 });
 
-function validateAirport(airport) {
-  if (!airport.icao) {
+function cleanText(value) {
+  if (value === undefined || value === null) return "";
+  return String(value).trim();
+}
+
+function cleanTextOrNull(value) {
+  const text = cleanText(value);
+  return text.length ? text : null;
+}
+
+function cleanNumberOrNull(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function cleanNumberOrZero(value) {
+  const num = cleanNumberOrNull(value);
+  return num === null ? 0 : num;
+}
+
+function prepareAirportForSeed(airport) {
+  if (!airport || !airport.icao) {
     throw new Error("Airport missing ICAO");
   }
 
+  const icao = cleanText(airport.icao).toUpperCase();
+
+  const city = cleanText(airport.city) || icao;
+  const country = cleanText(airport.country) || "UNKNOWN";
+  const continent = cleanText(airport.continent) || "UNKNOWN";
+
   if (!airport.city) {
-    throw new Error(`Airport ${airport.icao} missing city`);
+    console.warn(`ACS AIRPORT SEED WARNING - ${icao} missing city. Using ICAO as city fallback.`);
   }
 
   if (!airport.country) {
-    throw new Error(`Airport ${airport.icao} missing country`);
+    console.warn(`ACS AIRPORT SEED WARNING - ${icao} missing country. Using UNKNOWN fallback.`);
   }
 
   if (!airport.continent) {
-    throw new Error(`Airport ${airport.icao} missing continent`);
+    console.warn(`ACS AIRPORT SEED WARNING - ${icao} missing continent. Using UNKNOWN fallback.`);
   }
+
+  return {
+    icao,
+    iata: airport.iata ? cleanText(airport.iata).toUpperCase() : null,
+
+    city,
+    country,
+    continent,
+    region: cleanTextOrNull(airport.region),
+
+    latitude: cleanNumberOrNull(airport.latitude),
+    longitude: cleanNumberOrNull(airport.longitude),
+    elevation_ft: cleanNumberOrNull(airport.elevation_ft),
+
+    runway_m: cleanNumberOrNull(airport.runway_m),
+    open_hrs: cleanTextOrNull(airport.open_hrs),
+    category: cleanTextOrNull(airport.category),
+
+    demand_y: cleanNumberOrZero(airport.demand_y),
+    demand_c: cleanNumberOrZero(airport.demand_c),
+    demand_f: cleanNumberOrZero(airport.demand_f),
+
+    slot_cost_usd: cleanNumberOrZero(airport.slot_cost_usd),
+    landing_fee_usd: cleanNumberOrZero(airport.landing_fee_usd),
+    fuel_usd_gal: cleanNumberOrZero(airport.fuel_usd_gal),
+    ticket_fee_percent: cleanNumberOrZero(airport.ticket_fee_percent),
+    pax_growth_factor: cleanNumberOrZero(airport.pax_growth_factor || 1),
+
+    slot_capacity: cleanNumberOrZero(airport.slot_capacity),
+    aircraft_limit: cleanTextOrNull(airport.aircraft_limit),
+
+    notes: cleanText(airport.notes),
+    source: cleanText(airport.source) || "ACS_AIRPORT_DB",
+  };
 }
 
 async function seedAirportCatalog() {
@@ -60,9 +120,10 @@ async function seedAirportCatalog() {
 
     let inserted = 0;
     let updated = 0;
+    let processed = 0;
 
-    for (const airport of ACS_AIRPORT_DB) {
-      validateAirport(airport);
+    for (const rawAirport of ACS_AIRPORT_DB) {
+      const airport = prepareAirportForSeed(rawAirport);
 
       const result = await client.query(
         `
@@ -151,9 +212,11 @@ async function seedAirportCatalog() {
           airport.slot_capacity,
           airport.aircraft_limit,
           airport.notes,
-          airport.source || "ACS_CONTINENT_JS",
+          airport.source,
         ]
       );
+
+      processed++;
 
       if (result.rows[0].inserted) {
         inserted++;
@@ -169,7 +232,7 @@ async function seedAirportCatalog() {
     console.log("============================================");
     console.log(`Inserted: ${inserted}`);
     console.log(`Updated: ${updated}`);
-    console.log(`Total processed: ${inserted + updated}`);
+    console.log(`Total processed: ${processed}`);
 
     const continentSummary = await pool.query(`
       SELECT
