@@ -4,11 +4,10 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
-  "start": "node server.js",
-  "seed:aircraft": "node tools/seed_aircraft_catalog.js",
-  "seed:production-rules": "node tools/seed_aircraft_production_rules.js",
-  "seed:airport": "node tools/seed_airport_catalog.js"
-}
+    "start": "node server.js",
+    "seed:aircraft": "node tools/seed_aircraft_catalog.js",
+    "seed:production-rules": "node tools/seed_aircraft_production_rules.js"
+  },
   
   "dependencies": {
     "bcrypt": "^5.1.0",
