@@ -105596,3 +105596,113 @@ WorldAirportsACS.SouthAmerica = [
   },
 ];
 
+// ============================================================
+// ACS + AIRBUS OCC
+// AIRPORT DB EXPORT LAYER
+// ------------------------------------------------------------
+// Converts raw WorldAirportsACS continent arrays into the
+// backend-ready ACS_AIRPORT_DB export used by seed scripts.
+// ============================================================
+
+function acsToStringOrNull(value) {
+  if (value === undefined || value === null) return null;
+  const text = String(value).trim();
+  return text.length ? text : null;
+}
+
+function acsToStringOrEmpty(value) {
+  if (value === undefined || value === null) return "";
+  return String(value).trim();
+}
+
+function acsToNumberOrNull(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function acsToNumberOrZero(value) {
+  const num = acsToNumberOrNull(value);
+  return num === null ? 0 : num;
+}
+
+function acsNormalizeAirport(rawAirport, fallbackContinent) {
+  const demand = rawAirport && rawAirport.demand ? rawAirport.demand : {};
+
+  return {
+    icao: acsToStringOrNull(rawAirport.icao)?.toUpperCase() || null,
+    iata: acsToStringOrNull(rawAirport.iata)?.toUpperCase() || null,
+
+    city: acsToStringOrEmpty(rawAirport.city),
+    country: acsToStringOrEmpty(rawAirport.country),
+    continent: acsToStringOrEmpty(rawAirport.continent || fallbackContinent),
+    region: acsToStringOrNull(rawAirport.region),
+
+    latitude: acsToNumberOrNull(rawAirport.latitude),
+    longitude: acsToNumberOrNull(rawAirport.longitude),
+    elevation_ft: acsToNumberOrNull(rawAirport.elevation_ft),
+
+    runway_m: acsToNumberOrNull(rawAirport.runway_m),
+    open_hrs: acsToStringOrNull(rawAirport.open_hrs),
+    category: acsToStringOrNull(rawAirport.category),
+
+    demand_y: acsToNumberOrZero(demand.Y),
+    demand_c: acsToNumberOrZero(demand.C),
+    demand_f: acsToNumberOrZero(demand.F),
+
+    slot_cost_usd: acsToNumberOrZero(rawAirport.slot_cost_usd),
+    landing_fee_usd: acsToNumberOrZero(rawAirport.landing_fee_usd),
+    fuel_usd_gal: acsToNumberOrZero(rawAirport.fuel_usd_gal),
+    ticket_fee_percent: acsToNumberOrZero(rawAirport.ticket_fee_percent),
+    pax_growth_factor: acsToNumberOrZero(rawAirport.pax_growth_factor || 1),
+
+    slot_capacity: acsToNumberOrZero(rawAirport.slot_capacity),
+    aircraft_limit: acsToStringOrNull(rawAirport.aircraft_limit),
+
+    notes: acsToStringOrEmpty(rawAirport.notes),
+    source: "ACS_AIRPORT_DB",
+  };
+}
+
+function acsBuildAirportDatabase() {
+  const continentMap = [
+    ["SouthAmerica", "South America"],
+    ["NorthAmerica", "North America"],
+    ["Europe", "Europe"],
+    ["Asia", "Asia"],
+    ["Africa", "Africa"],
+    ["Oceania", "Oceania"],
+    ["MiddleEast", "Middle East"],
+  ];
+
+  const allAirports = [];
+  const seenIcao = new Set();
+
+  for (const [key, label] of continentMap) {
+    const airports = WorldAirportsACS[key];
+
+    if (!Array.isArray(airports)) {
+      throw new Error(`Missing or invalid airport continent array: WorldAirportsACS.${key}`);
+    }
+
+    for (const rawAirport of airports) {
+      const airport = acsNormalizeAirport(rawAirport, label);
+
+      if (!airport.icao) {
+        throw new Error(`Airport without ICAO detected in WorldAirportsACS.${key}`);
+      }
+
+      if (seenIcao.has(airport.icao)) {
+        throw new Error(`Duplicate airport ICAO detected: ${airport.icao}`);
+      }
+
+      seenIcao.add(airport.icao);
+      allAirports.push(airport);
+    }
+  }
+
+  return allAirports;
+}
+
+export const ACS_AIRPORT_DB = acsBuildAirportDatabase();
+export { WorldAirportsACS };
