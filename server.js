@@ -18,6 +18,7 @@ import scheduleRoutes from "./routes/schedule.js";
 import aircraftRoutes from "./routes/aircraft.js";
 import factoryRoutes from "./routes/factory.js";
 import routePlanRoutes from "./routes/route_plans.js";
+import airportsRoutes from "./routes/airports.js";
 
 dotenv.config();
 
@@ -127,6 +128,7 @@ app.use("/v1", scheduleRoutes);
 app.use("/v1", aircraftRoutes);
 app.use("/v1", routePlanRoutes);
 app.use("/v1/aircraft/factory", factoryRoutes);
+app.use("/v1", airportsRoutes);
 
 const PORT = process.env.PORT || 3000;
 
