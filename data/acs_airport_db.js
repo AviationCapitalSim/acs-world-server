@@ -105695,11 +105695,12 @@ function acsBuildAirportDatabase() {
       }
 
       if (seenIcao.has(airport.icao)) {
-        throw new Error(`Duplicate airport ICAO detected: ${airport.icao}`);
-      }
+     console.warn(`ACS AIRPORT DB WARNING - Duplicate ICAO skipped: ${airport.icao}`);
+     continue;
+     }
 
-      seenIcao.add(airport.icao);
-      allAirports.push(airport);
+     seenIcao.add(airport.icao);
+     allAirports.push(airport);
     }
   }
 
