@@ -281,6 +281,12 @@ router.get("/aircraft/fleet", requireAuth, async (req, res) => {
         af.created_at,
         af.updated_at,
 
+        ac.aircraft_category,
+        ac.seats,
+        ac.range_nm,
+        ac.speed_kts,
+        ac.price_acs_usd,
+
         ams.c_check_due_hours,
         ams.c_check_due_cycles,
         ams.c_check_due_date,
@@ -293,6 +299,9 @@ router.get("/aircraft/fleet", requireAuth, async (req, res) => {
         acs_get_current_sim_time() AS current_sim_time
 
       FROM aircraft_fleet af
+
+      LEFT JOIN aircraft_catalog ac
+        ON ac.model_key = af.model_key
 
       LEFT JOIN aircraft_maintenance_status ams
         ON ams.aircraft_id = af.id
