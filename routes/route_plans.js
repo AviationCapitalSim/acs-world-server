@@ -850,13 +850,26 @@ if (totalSlotPrice > 0) {
      
     await client.query("COMMIT");
 
-    return res.status(201).json({
+        return res.status(201).json({
       ok: true,
       endpoint: "ACS_ROUTE_PLAN_CREATE",
-      version: "v1.1",
-      message: "ROUTE_PLAN_CREATED_WITH_SLOTS",
+      version: "v1.2",
+      message: "ROUTE_PLAN_CREATED_WITH_SLOTS_SCHEDULE_AND_FINANCE",
+
       route_plan: routePlan,
+
       slot_bookings: insertedSlots,
+
+      schedule_items: insertedScheduleItems,
+
+      finance: {
+        applied: totalSlotPrice > 0,
+        airport_slot_fee: totalSlotPrice,
+        origin_slot_fee: originSlotFee,
+        destination_slot_fee: destinationSlotFee,
+        finance_log: financeLog
+      },
+
       slot_summary: {
         total: insertedSlots.length,
         dep: insertedSlots.filter(s => s.movement_type === "DEP").length,
