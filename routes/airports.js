@@ -266,42 +266,75 @@ router.get("/airports/catalog/:icao", requireAuth, async (req, res) => {
     }
 
     const result = await pool.query(
-      `
-      SELECT
-        id,
-        icao,
-        iata,
-        city,
-        country,
-        continent,
-        region,
-        latitude,
-        longitude,
-        elevation_ft,
-        runway_m,
-        open_hrs,
-        category,
-        demand_y,
-        demand_c,
-        demand_f,
-        slot_cost_usd,
-        landing_fee_usd,
-        fuel_usd_gal,
-        ticket_fee_percent,
-        pax_growth_factor,
-        slot_capacity,
-        aircraft_limit,
-        notes,
-        source,
-        created_at,
-        updated_at
-      FROM public.airport_catalog
-      WHERE icao = $1
-      LIMIT 1
-      `,
-      [icao]
-    );
+  `
+  WITH reserved_slots AS (
+    SELECT
+      airport_icao AS icao,
+      COUNT(*)::INTEGER AS reserved_slots
+    FROM public.airport_slot_bookings
+    WHERE slot_status = 'RESERVED'
+      AND airport_icao = $1
+    GROUP BY airport_icao
+  )
 
+  SELECT
+    ac.id,
+    ac.icao,
+    ac.iata,
+    ac.city,
+    ac.country,
+    ac.continent,
+    ac.region,
+    ac.latitude,
+    ac.longitude,
+    ac.elevation_ft,
+    ac.runway_m,
+    ac.open_hrs,
+    ac.category,
+    ac.demand_y,
+    ac.demand_c,
+    ac.demand_f,
+    ac.slot_cost_usd,
+    ac.landing_fee_usd,
+    ac.fuel_usd_gal,
+    ac.ticket_fee_percent,
+    ac.pax_growth_factor,
+    ac.slot_capacity,
+
+    COALESCE(rs.reserved_slots, 0)::INTEGER AS reserved_slots,
+
+    GREATEST(
+      ac.slot_capacity - COALESCE(rs.reserved_slots, 0),
+      0
+    )::INTEGER AS available_slots,
+
+    CASE
+      WHEN ac.slot_capacity > 0 THEN
+        ROUND(
+          (COALESCE(rs.reserved_slots, 0)::NUMERIC / ac.slot_capacity::NUMERIC) * 100,
+          2
+        )
+      ELSE 0
+    END AS slot_utilization_pct,
+
+    ac.aircraft_limit,
+    ac.notes,
+    ac.source,
+    ac.created_at,
+    ac.updated_at
+
+  FROM public.airport_catalog ac
+
+  LEFT JOIN reserved_slots rs
+    ON rs.icao = ac.icao
+
+  WHERE ac.icao = $1
+
+  LIMIT 1
+  `,
+  [icao]
+);
+     
     if (!result.rows.length) {
       return res.status(404).json({
         ok: false,
@@ -313,7 +346,7 @@ router.get("/airports/catalog/:icao", requireAuth, async (req, res) => {
     return res.json({
       ok: true,
       endpoint: "ACS_AIRPORT_BY_ICAO",
-      version: "v1.0",
+      version: "v1.1",
       authority: {
         airport_catalog: "public.airport_catalog"
       },
