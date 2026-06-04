@@ -27,6 +27,162 @@ import { requireAuth } from "../middleware/auth.js";
 const router = express.Router();
 
 /* ============================================================
+   🟧 ACS HISTORICAL ECONOMIC PROFILE — AIRPORT COST FACTOR v1.0
+   ------------------------------------------------------------
+   Purpose:
+   - Apply simulated-year economic scaling to airport costs
+   - Preserve raw airport_catalog values
+   - Avoid frontend/localStorage economic authority
+   - Safe migration path for Route Schedule and continent pages
+
+   IMPORTANT:
+   - This does not mutate PostgreSQL data.
+   - This only adjusts API response values when sim_year is provided.
+   ============================================================ */
+
+function ACS_parseSimYear(value) {
+  const year = Number(value);
+
+  if (!Number.isFinite(year)) {
+    return null;
+  }
+
+  const cleanYear = Math.floor(year);
+
+  if (cleanYear < 1900 || cleanYear > 2100) {
+    return null;
+  }
+
+  return cleanYear;
+}
+
+function ACS_getHistoricalEconomicProfile(simYear) {
+  if (!simYear) {
+    return {
+      applied: false,
+      year: null,
+      factor: 1.0,
+      label: "BASE_CATALOG"
+    };
+  }
+
+  if (simYear < 1940) {
+    return {
+      applied: true,
+      year: simYear,
+      factor: 0.05,
+      label: "PRE_1940_EARLY_AVIATION"
+    };
+  }
+
+  if (simYear < 1950) {
+    return {
+      applied: true,
+      year: simYear,
+      factor: 0.10,
+      label: "1940S_POSTWAR_AVIATION"
+    };
+  }
+
+  if (simYear < 1958) {
+    return {
+      applied: true,
+      year: simYear,
+      factor: 0.25,
+      label: "1950S_EARLY_COMMERCIAL_EXPANSION"
+    };
+  }
+
+  if (simYear < 1965) {
+    return {
+      applied: true,
+      year: simYear,
+      factor: 0.45,
+      label: "EARLY_JET_AGE"
+    };
+  }
+
+  if (simYear < 1975) {
+    return {
+      applied: true,
+      year: simYear,
+      factor: 0.60,
+      label: "JET_AGE_EXPANSION"
+    };
+  }
+
+  if (simYear < 1990) {
+    return {
+      applied: true,
+      year: simYear,
+      factor: 0.80,
+      label: "DEREGULATION_AND_GLOBAL_GROWTH"
+    };
+  }
+
+  if (simYear < 2005) {
+    return {
+      applied: true,
+      year: simYear,
+      factor: 1.00,
+      label: "MODERN_BASELINE"
+    };
+  }
+
+  if (simYear < 2020) {
+    return {
+      applied: true,
+      year: simYear,
+      factor: 1.20,
+      label: "HIGH_COST_GLOBALIZATION"
+    };
+  }
+
+  return {
+    applied: true,
+    year: simYear,
+    factor: 1.35,
+    label: "POST_2020_HIGH_COST_ENVIRONMENT"
+  };
+}
+
+function ACS_roundMoney(value) {
+  const n = Number(value);
+
+  if (!Number.isFinite(n)) {
+    return 0;
+  }
+
+  return Math.round(n * 100) / 100;
+}
+
+function ACS_applyHistoricalAirportEconomics(row, simYear) {
+  const profile = ACS_getHistoricalEconomicProfile(simYear);
+  const factor = profile.factor;
+
+  const rawSlotCost = ACS_roundMoney(row.slot_cost_usd);
+  const rawLandingFee = ACS_roundMoney(row.landing_fee_usd);
+  const rawFuelPrice = ACS_roundMoney(row.fuel_usd_gal);
+
+  return {
+    ...row,
+
+    slot_cost_base_usd: rawSlotCost,
+    landing_fee_base_usd: rawLandingFee,
+    fuel_base_usd_gal: rawFuelPrice,
+
+    slot_cost_usd: ACS_roundMoney(rawSlotCost * factor),
+    landing_fee_usd: ACS_roundMoney(rawLandingFee * factor),
+    fuel_usd_gal: ACS_roundMoney(rawFuelPrice * factor),
+
+    economic_year: profile.year,
+    economic_era_factor: profile.factor,
+    economic_era_label: profile.label,
+    historical_economics_applied: profile.applied
+  };
+}
+
+/* ============================================================
    🟩 HEALTH CHECK
    ============================================================ */
 
@@ -77,6 +233,8 @@ router.get("/airports/catalog", requireAuth, async (req, res) => {
     const region = String(req.query?.region || "").trim();
     const category = String(req.query?.category || "").trim();
     const q = String(req.query?.q || "").trim();
+
+    const simYear = ACS_parseSimYear(req.query?.sim_year);
 
     const requestedLimit = Number(req.query?.limit || 5000);
     const limit =
@@ -205,21 +363,25 @@ router.get("/airports/catalog", requireAuth, async (req, res) => {
     return res.json({
       ok: true,
       endpoint: "ACS_AIRPORT_CATALOG",
-      version: "v1.1",
+      version: "v1.2",
       authority: {
         airport_catalog: "public.airport_catalog"
       },
       airline_id: airlineId,
-      filters: {
+        filters: {
         continent: continent || null,
         country: country || null,
         region: region || null,
         category: category || null,
         q: q || null,
+        sim_year: simYear,
         limit
       },
+      economics: ACS_getHistoricalEconomicProfile(simYear),
       count: result.rows.length,
-      airports: result.rows
+      airports: result.rows.map(row =>
+        ACS_applyHistoricalAirportEconomics(row, simYear)
+      )
     });
 
   } catch (err) {
@@ -254,6 +416,8 @@ router.get("/airports/catalog/:icao", requireAuth, async (req, res) => {
         details: "No airline_id found in authenticated session"
       });
     }
+
+    const simYear = ACS_parseSimYear(req.query?.sim_year);
 
     const icao = String(req.params?.icao || "").trim().toUpperCase();
 
@@ -343,15 +507,16 @@ router.get("/airports/catalog/:icao", requireAuth, async (req, res) => {
       });
     }
 
-    return res.json({
+      return res.json({
       ok: true,
       endpoint: "ACS_AIRPORT_BY_ICAO",
-      version: "v1.1",
+      version: "v1.2",
       authority: {
         airport_catalog: "public.airport_catalog"
       },
       airline_id: airlineId,
-      airport: result.rows[0]
+      economics: ACS_getHistoricalEconomicProfile(simYear),
+      airport: ACS_applyHistoricalAirportEconomics(result.rows[0], simYear)
     });
 
   } catch (err) {
