@@ -138,6 +138,62 @@ async function ACS_getReservedSlotCount(client, movement) {
   return Number(result.rows[0]?.used || 0);
 }
 
+async function ACS_getAirportSlotFee(client, airportIcao) {
+  const result = await client.query(
+    `
+    SELECT
+      slot_cost_usd
+    FROM airport_catalog
+    WHERE icao = $1
+    LIMIT 1
+    `,
+    [airportIcao]
+  );
+
+  return Math.round(Number(result.rows[0]?.slot_cost_usd || 0));
+}
+
+function ACS_minutesFromHHMM(value) {
+  const text = String(value || "").trim();
+  const [h, m] = text.split(":").map(Number);
+
+  if (!Number.isFinite(h) || !Number.isFinite(m)) {
+    return 0;
+  }
+
+  return (h * 60) + m;
+}
+
+function ACS_dayIndex(day) {
+  const key = ACS_normalizeWeekday(day);
+
+  return {
+    mon: 0,
+    tue: 1,
+    wed: 2,
+    thu: 3,
+    fri: 4,
+    sat: 5,
+    sun: 6
+  }[key] ?? 0;
+}
+
+function ACS_buildAbsMinutes(day, departure, arrival) {
+  const base = ACS_dayIndex(day) * 1440;
+
+  const depAbsMin = base + ACS_minutesFromHHMM(departure);
+  let arrAbsMin = base + ACS_minutesFromHHMM(arrival);
+
+  if (arrAbsMin <= depAbsMin) {
+    arrAbsMin += 1440;
+  }
+
+  return {
+    depAbsMin,
+    arrAbsMin
+  };
+}
+
 /* ============================================================
    POST /v1/routes/plans
    ============================================================ */
@@ -411,6 +467,51 @@ router.post("/routes/plans", requireAuth, async (req, res) => {
       }
     }
 
+   const originSlotFee = await ACS_getAirportSlotFee(client, origin);
+const destinationSlotFee = await ACS_getAirportSlotFee(client, destination);
+
+const totalSlotPrice =
+  Math.round((originSlotFee + destinationSlotFee) * selectedDays.length);
+
+const financeResult = await client.query(
+  `
+  SELECT
+    airline_id,
+    capital,
+    expenses,
+    cost_slots
+  FROM company_finance
+  WHERE airline_id = $1
+  FOR UPDATE
+  `,
+  [airlineId]
+);
+
+if (!financeResult.rows.length) {
+  await client.query("ROLLBACK");
+
+  return res.status(404).json({
+    ok: false,
+    error: "COMPANY_FINANCE_NOT_FOUND"
+  });
+}
+
+const currentCapital = Number(financeResult.rows[0].capital || 0);
+
+if (currentCapital < totalSlotPrice) {
+  await client.query("ROLLBACK");
+
+  return res.status(409).json({
+    ok: false,
+    error: "INSUFFICIENT_CAPITAL_FOR_AIRPORT_SLOT_FEE",
+    finance: {
+      capital: currentCapital,
+      required: totalSlotPrice,
+      missing: totalSlotPrice - currentCapital
+    }
+  });
+}
+     
     const capabilityCode = "DISPATCHABLE";
     const operationalLimitation = "NONE";
 
@@ -576,6 +677,177 @@ router.post("/routes/plans", requireAuth, async (req, res) => {
       insertedSlots.push(insertSlotResult.rows[0]);
     }
 
+    const insertedScheduleItems = [];
+
+for (const day of selectedDays) {
+  const abs = ACS_buildAbsMinutes(day, departure, arrival);
+
+  const scheduleItemResult = await client.query(
+    `
+    INSERT INTO schedule_items (
+      schedule_uid,
+      route_plan_id,
+      route_uid,
+      airline_id,
+      item_type,
+      service_type,
+      origin,
+      destination,
+      selected_day,
+      departure,
+      arrival,
+      model_key,
+      aircraft,
+      aircraft_id,
+      aircraft_registration,
+      flight_number,
+      paired_flight_number,
+      flight_direction,
+      distance_nm,
+      dep_abs_min,
+      arr_abs_min,
+      block_time_min,
+      turnaround_min,
+      status,
+      notes,
+      created_at,
+      updated_at
+    )
+    VALUES (
+      gen_random_uuid()::TEXT,
+      $1,
+      $2,
+      $3,
+      'flight',
+      NULL,
+      $4,
+      $5,
+      $6,
+      $7,
+      $8,
+      $9,
+      $10,
+      $11,
+      $12,
+      $13,
+      $14,
+      'OUTBOUND',
+      $15,
+      $16,
+      $17,
+      $18,
+      $19,
+      'planned',
+      'Created from Route Schedule confirm route',
+      NOW(),
+      NOW()
+    )
+    RETURNING *
+    `,
+    [
+      routePlan.id,
+      routePlan.route_uid,
+      airlineId,
+      origin,
+      destination,
+      day,
+      departure,
+      arrival,
+      routePlan.model_key,
+      routePlan.aircraft,
+      aircraftId,
+      routePlan.registration,
+      flightNumberOut,
+      flightNumberIn,
+      distanceNm,
+      abs.depAbsMin,
+      abs.arrAbsMin,
+      blockTimeMin,
+      turnaroundMin
+    ]
+  );
+
+  insertedScheduleItems.push(scheduleItemResult.rows[0]);
+}
+
+let financeLog = null;
+
+if (totalSlotPrice > 0) {
+  await client.query(
+    `
+    UPDATE company_finance
+    SET
+      capital = COALESCE(capital, 0) - $2,
+      expenses = COALESCE(expenses, 0) + $2,
+      cost_slots = COALESCE(cost_slots, 0) + $2,
+      updated_at = NOW()
+    WHERE airline_id = $1
+    `,
+    [airlineId, totalSlotPrice]
+  );
+
+  const financeLogResult = await client.query(
+    `
+    INSERT INTO finance_log (
+      airline_id,
+      type,
+      source,
+      amount,
+      timestamp,
+      route_plan_id,
+      schedule_item_id,
+      reference_uid,
+      description,
+      created_at
+    )
+    VALUES (
+      $1,
+      'EXPENSE',
+      'AIRPORT SLOT FEE',
+      $2,
+      EXTRACT(EPOCH FROM NOW())::BIGINT * 1000,
+      $3,
+      NULL,
+      $4,
+      $5,
+      NOW()
+    )
+    RETURNING *
+    `,
+    [
+      airlineId,
+      totalSlotPrice,
+      routePlan.id,
+      routePlan.route_uid,
+      `Airport slot fee for route ${origin}-${destination} flights ${flightNumberOut}/${flightNumberIn}`
+    ]
+  );
+
+  financeLog = financeLogResult.rows[0];
+
+  await client.query(
+    `
+    UPDATE route_plans
+    SET
+      origin_slot_price = $1,
+      destination_slot_price = $2,
+      total_slot_price = $3,
+      selected_schedule_cost = $3,
+      finance_applied = TRUE,
+      finance_transaction_id = $4,
+      updated_at = NOW()
+    WHERE id = $5
+    `,
+    [
+      originSlotFee,
+      destinationSlotFee,
+      totalSlotPrice,
+      String(financeLog.id),
+      routePlan.id
+    ]
+  );
+}
+     
     await client.query("COMMIT");
 
     return res.status(201).json({
