@@ -495,14 +495,16 @@ router.post("/routes/plans", requireAuth, async (req, res) => {
     }
 
     const slotMovements = ACS_buildSlotMovements({
-      origin,
-      destination,
-      selectedDays,
-      departure,
-      arrival,
-      flightNumberOut,
-      flightNumberIn
-    });
+  origin,
+  destination,
+  selectedDays,
+  departure,
+  arrival,
+  blockTimeMin,
+  turnaroundMin,
+  flightNumberOut,
+  flightNumberIn
+  });
 
     if (!slotMovements.length) {
       await client.query("ROLLBACK");
@@ -546,8 +548,8 @@ router.post("/routes/plans", requireAuth, async (req, res) => {
 const destinationSlotFee = await ACS_getAirportSlotFee(client, destination);
 
 const totalSlotPrice =
-  Math.round((originSlotFee + destinationSlotFee) * selectedDays.length);
-
+  Math.round(((originSlotFee * 2) + (destinationSlotFee * 2)) * selectedDays.length);
+     
 const financeResult = await client.query(
   `
   SELECT
