@@ -68,12 +68,40 @@ function ACS_getSlotCapacityFromPayload(payload, prefix) {
   return ACS_getMaxSlotsByCategory(category);
 }
 
+function ACS_shiftWeekday(weekday, dayOffset = 0) {
+  const days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+  const base = days.indexOf(ACS_normalizeWeekday(weekday));
+
+  if (base === -1) return ACS_normalizeWeekday(weekday);
+
+  const next = (base + dayOffset + 7) % 7;
+  return days[next];
+}
+
+function ACS_addMinutesToDayTime(weekday, timeHHMM, addMinutes = 0) {
+  const baseMin = ACS_minutesFromHHMM(timeHHMM);
+  const totalMin = baseMin + Number(addMinutes || 0);
+
+  const dayOffset = Math.floor(totalMin / 1440);
+  const minuteOfDay = ((totalMin % 1440) + 1440) % 1440;
+
+  const hh = String(Math.floor(minuteOfDay / 60)).padStart(2, "0");
+  const mm = String(minuteOfDay % 60).padStart(2, "0");
+
+  return {
+    weekday: ACS_shiftWeekday(weekday, dayOffset),
+    time_local: `${hh}:${mm}`
+  };
+}
+
 function ACS_buildSlotMovements({
   origin,
   destination,
   selectedDays,
   departure,
   arrival,
+  blockTimeMin,
+  turnaroundMin,
   flightNumberOut,
   flightNumberIn
 }) {
@@ -82,19 +110,66 @@ function ACS_buildSlotMovements({
   selectedDays.forEach(dayRaw => {
     const weekday = ACS_normalizeWeekday(dayRaw);
 
+    const outboundDep = {
+      weekday,
+      time_local: departure
+    };
+
+    const outboundArr = ACS_addMinutesToDayTime(
+      weekday,
+      departure,
+      blockTimeMin
+    );
+
+    const inboundDep = ACS_addMinutesToDayTime(
+      outboundArr.weekday,
+      outboundArr.time_local,
+      turnaroundMin
+    );
+
+    const inboundArr = ACS_addMinutesToDayTime(
+      inboundDep.weekday,
+      inboundDep.time_local,
+      blockTimeMin
+    );
+
     movements.push({
       airport_icao: origin,
       movement_type: "DEP",
-      weekday,
-      time_local: departure,
+      weekday: outboundDep.weekday,
+      time_local: outboundDep.time_local,
+      origin,
+      destination,
       flight_number: flightNumberOut
     });
 
     movements.push({
       airport_icao: destination,
       movement_type: "ARR",
-      weekday,
-      time_local: arrival,
+      weekday: outboundArr.weekday,
+      time_local: outboundArr.time_local,
+      origin,
+      destination,
+      flight_number: flightNumberOut
+    });
+
+    movements.push({
+      airport_icao: destination,
+      movement_type: "DEP",
+      weekday: inboundDep.weekday,
+      time_local: inboundDep.time_local,
+      origin: destination,
+      destination: origin,
+      flight_number: flightNumberIn
+    });
+
+    movements.push({
+      airport_icao: origin,
+      movement_type: "ARR",
+      weekday: inboundArr.weekday,
+      time_local: inboundArr.time_local,
+      origin: destination,
+      destination: origin,
       flight_number: flightNumberIn
     });
   });
