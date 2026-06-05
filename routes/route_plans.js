@@ -31,201 +31,211 @@ function ACS_isValidHHMM(value) {
   return /^([01]\d|2[0-3]):[0-5]\d$/.test(String(value || "").trim());
 }
 
-function ACS_getMaxSlotsByCategory(category = "") {
-  const c = String(category || "").trim().toUpperCase();
+/* ============================================================
+   🟦 ACS WORLD TIME AUTHORITY — POSTGRESQL
+   ------------------------------------------------------------
+   - acs_world is the official world clock authority
+   - acs_get_current_sim_time() resolves the current ACS time
+   - Frontend payload cannot choose the simulation year
+   ============================================================ */
 
-  if (c.includes("PRIMARY")) return 36;
-  if (c.includes("HUB")) return 36;
-
-  if (c.includes("MAJOR")) return 24;
-  if (c.includes("INTERN")) return 24;
-
-  if (c.includes("REGIONAL")) return 12;
-
-  return 6;
-}
-
-function ACS_getSlotCapacityFromPayload(payload, prefix) {
-  const direct = Number(
-    payload?.[`${prefix}_slot_capacity`] ||
-    payload?.[`${prefix}SlotCapacity`] ||
-    payload?.[`${prefix}_max_slots`] ||
-    payload?.[`${prefix}MaxSlots`] ||
-    0
-  );
-
-  if (Number.isFinite(direct) && direct > 0) {
-    return Math.round(direct);
-  }
-
-  const category =
-    payload?.[`${prefix}_airport_category`] ||
-    payload?.[`${prefix}AirportCategory`] ||
-    payload?.[`${prefix}_category`] ||
-    payload?.[`${prefix}Category`] ||
-    "";
-
-  return ACS_getMaxSlotsByCategory(category);
-}
-
-function ACS_shiftWeekday(weekday, dayOffset = 0) {
-  const days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
-  const base = days.indexOf(ACS_normalizeWeekday(weekday));
-
-  if (base === -1) return ACS_normalizeWeekday(weekday);
-
-  const next = (base + dayOffset + 7) % 7;
-  return days[next];
-}
-
-function ACS_addMinutesToDayTime(weekday, timeHHMM, addMinutes = 0) {
-  const baseMin = ACS_minutesFromHHMM(timeHHMM);
-  const totalMin = baseMin + Number(addMinutes || 0);
-
-  const dayOffset = Math.floor(totalMin / 1440);
-  const minuteOfDay = ((totalMin % 1440) + 1440) % 1440;
-
-  const hh = String(Math.floor(minuteOfDay / 60)).padStart(2, "0");
-  const mm = String(minuteOfDay % 60).padStart(2, "0");
-
-  return {
-    weekday: ACS_shiftWeekday(weekday, dayOffset),
-    time_local: `${hh}:${mm}`
-  };
-}
-
-function ACS_buildSlotMovements({
-  origin,
-  destination,
-  selectedDays,
-  departure,
-  arrival,
-  blockTimeMin,
-  turnaroundMin,
-  flightNumberOut,
-  flightNumberIn
-}) {
-  const movements = [];
-
-  selectedDays.forEach(dayRaw => {
-    const weekday = ACS_normalizeWeekday(dayRaw);
-
-    const outboundDep = {
-      weekday,
-      time_local: departure
-    };
-
-    const outboundArr = ACS_addMinutesToDayTime(
-      weekday,
-      departure,
-      blockTimeMin
-    );
-
-    const inboundDep = ACS_addMinutesToDayTime(
-      outboundArr.weekday,
-      outboundArr.time_local,
-      turnaroundMin
-    );
-
-    const inboundArr = ACS_addMinutesToDayTime(
-      inboundDep.weekday,
-      inboundDep.time_local,
-      blockTimeMin
-    );
-
-    movements.push({
-      airport_icao: origin,
-      movement_type: "DEP",
-      weekday: outboundDep.weekday,
-      time_local: outboundDep.time_local,
-      origin,
-      destination,
-      flight_number: flightNumberOut
-    });
-
-    movements.push({
-      airport_icao: destination,
-      movement_type: "ARR",
-      weekday: outboundArr.weekday,
-      time_local: outboundArr.time_local,
-      origin,
-      destination,
-      flight_number: flightNumberOut
-    });
-
-    movements.push({
-      airport_icao: destination,
-      movement_type: "DEP",
-      weekday: inboundDep.weekday,
-      time_local: inboundDep.time_local,
-      origin: destination,
-      destination: origin,
-      flight_number: flightNumberIn
-    });
-
-    movements.push({
-      airport_icao: origin,
-      movement_type: "ARR",
-      weekday: inboundArr.weekday,
-      time_local: inboundArr.time_local,
-      origin: destination,
-      destination: origin,
-      flight_number: flightNumberIn
-    });
-  });
-
-  return movements;
-}
-
-async function ACS_lockSlotKey(client, movement) {
-  const lockKey = [
-    "ACS_SLOT",
-    movement.airport_icao,
-    movement.weekday,
-    movement.time_local
-  ].join("|");
-
-  await client.query(
-    `
-    SELECT pg_advisory_xact_lock(hashtext($1))
-    `,
-    [lockKey]
-  );
-}
-
-async function ACS_getReservedSlotCount(client, movement) {
-  const result = await client.query(
-    `
-    SELECT COUNT(*)::INTEGER AS used
-    FROM airport_slot_bookings
-    WHERE airport_icao = $1
-      AND weekday = $2
-      AND time_local = $3
-      AND slot_status = 'RESERVED'
-    `,
-    [
-      movement.airport_icao,
-      movement.weekday,
-      movement.time_local
-    ]
-  );
-
-  return Number(result.rows[0]?.used || 0);
-}
-
-async function ACS_getAirportSlotFee(client, airportIcao) {
+async function ACS_getOfficialSimTime(client) {
   const result = await client.query(
     `
     SELECT
-      slot_cost_usd
-    FROM airport_catalog
-    WHERE icao = $1
+      id,
+      status,
+      sim_start,
+      sim_end,
+      acs_get_current_sim_time() AS current_sim_time
+    FROM public.acs_world
+    WHERE id = 1
     LIMIT 1
-    `,
-    [airportIcao]
+    `
   );
 
-  return Math.round(Number(result.rows[0]?.slot_cost_usd || 0));
+  if (!result.rows.length) {
+    const err = new Error("ACS_WORLD_NOT_FOUND");
+    err.code = "ACS_WORLD_NOT_FOUND";
+    throw err;
+  }
+
+  const world = result.rows[0];
+  const currentSimTime = new Date(world.current_sim_time);
+
+  if (Number.isNaN(currentSimTime.getTime())) {
+    const err = new Error("ACS_CURRENT_SIM_TIME_INVALID");
+    err.code = "ACS_CURRENT_SIM_TIME_INVALID";
+    throw err;
+  }
+
+  const simYear = currentSimTime.getUTCFullYear();
+
+  if (simYear < 1940 || simYear > 2030) {
+    const err = new Error("ACS_SIM_YEAR_OUT_OF_RANGE");
+    err.code = "ACS_SIM_YEAR_OUT_OF_RANGE";
+    throw err;
+  }
+
+  return {
+    world_id: Number(world.id),
+    world_status: ACS_normalizeText(world.status).toUpperCase(),
+    current_sim_time: currentSimTime,
+    current_sim_time_iso: currentSimTime.toISOString(),
+    sim_year: simYear,
+    authority: "POSTGRESQL_TIME_AUTHORITY"
+  };
+}
+
+/* ============================================================
+   🟦 ACS AIRPORT HISTORICAL AUTHORITY
+   ------------------------------------------------------------
+   Resolves infrastructure and airport economics for the
+   official simulated year.
+
+   Authority:
+   - airport_catalog: base airport identity
+   - airport_historical_profiles: historical state
+   ============================================================ */
+
+async function ACS_getAirportHistoricalAuthority(
+  client,
+  airportIcao,
+  simYear
+) {
+  const icao = ACS_normalizeIcao(airportIcao);
+
+  const result = await client.query(
+    `
+    SELECT
+      ac.id AS airport_catalog_id,
+      ac.icao,
+      ac.city,
+      ac.country,
+      ac.continent,
+
+      ac.slot_capacity AS slot_capacity_base,
+      COALESCE(
+        ahp.slot_capacity,
+        ac.slot_capacity,
+        0
+      )::INTEGER AS slot_capacity,
+
+      ac.slot_cost_usd AS slot_cost_base_usd,
+      COALESCE(
+        ahp.slot_cost_usd,
+        ac.slot_cost_usd,
+        0
+      )::NUMERIC(12,2) AS slot_cost_usd,
+
+      ac.landing_fee_usd AS landing_fee_base_usd,
+      COALESCE(
+        ahp.landing_fee_usd,
+        ac.landing_fee_usd,
+        0
+      )::NUMERIC(12,2) AS landing_fee_usd,
+
+      ac.fuel_usd_gal AS fuel_base_usd_gal,
+      COALESCE(
+        ahp.fuel_usd_gal,
+        ac.fuel_usd_gal,
+        0
+      )::NUMERIC(10,2) AS fuel_usd_gal,
+
+      ac.runway_m AS runway_m_base,
+      COALESCE(
+        ahp.runway_m,
+        ac.runway_m
+      )::INTEGER AS runway_m,
+
+      ac.category AS category_base,
+      COALESCE(
+        ahp.category,
+        ac.category
+      ) AS category,
+
+      ac.aircraft_limit AS aircraft_limit_base,
+      COALESCE(
+        ahp.aircraft_limit,
+        ac.aircraft_limit
+      ) AS aircraft_limit,
+
+      (ahp.id IS NOT NULL) AS historical_profile_applied,
+      ahp.id AS historical_profile_id,
+      ahp.era_from,
+      ahp.era_to,
+      ahp.era_label,
+      ahp.expansion_stage,
+      COALESCE(
+        ahp.airport_status,
+        'ACTIVE'
+      ) AS airport_status,
+      ahp.source AS historical_profile_source
+
+    FROM public.airport_catalog ac
+
+    LEFT JOIN LATERAL (
+      SELECT hp.*
+      FROM public.airport_historical_profiles hp
+      WHERE hp.airport_icao = ac.icao
+        AND $2::INTEGER BETWEEN hp.era_from AND hp.era_to
+      ORDER BY hp.era_from DESC
+      LIMIT 1
+    ) ahp
+      ON TRUE
+
+    WHERE ac.icao = $1
+
+    LIMIT 1
+    `,
+    [icao, simYear]
+  );
+
+  if (!result.rows.length) {
+    const err = new Error(`AIRPORT_NOT_FOUND_${icao}`);
+    err.code = "AIRPORT_NOT_FOUND";
+    err.airport_icao = icao;
+    throw err;
+  }
+
+  const airport = result.rows[0];
+
+  if (!airport.historical_profile_applied) {
+    const err = new Error(
+      `AIRPORT_HISTORICAL_PROFILE_NOT_FOUND_${icao}_${simYear}`
+    );
+
+    err.code = "AIRPORT_HISTORICAL_PROFILE_NOT_FOUND";
+    err.airport_icao = icao;
+    err.sim_year = simYear;
+
+    throw err;
+  }
+
+  const slotCapacity = Number(airport.slot_capacity);
+  const slotCostUsd = Number(airport.slot_cost_usd);
+
+  if (!Number.isFinite(slotCapacity) || slotCapacity < 0) {
+    const err = new Error(`INVALID_HISTORICAL_SLOT_CAPACITY_${icao}`);
+    err.code = "INVALID_HISTORICAL_SLOT_CAPACITY";
+    err.airport_icao = icao;
+    throw err;
+  }
+
+  if (!Number.isFinite(slotCostUsd) || slotCostUsd < 0) {
+    const err = new Error(`INVALID_HISTORICAL_SLOT_COST_${icao}`);
+    err.code = "INVALID_HISTORICAL_SLOT_COST";
+    err.airport_icao = icao;
+    throw err;
+  }
+
+  return {
+    ...airport,
+    slot_capacity: Math.round(slotCapacity),
+    slot_cost_usd: Math.round(slotCostUsd * 100) / 100,
+    sim_year: simYear,
+    authority: "AIRPORT_HISTORICAL_PROFILES"
+  };
 }
 
 function ACS_minutesFromHHMM(value) {
