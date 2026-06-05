@@ -644,6 +644,136 @@ async function ACS_getReservedSlotCount(client, movement) {
 }
 
 /* ============================================================
+   🟦 GET NEXT FLIGHT NUMBER PAIR — BACKEND AUTHORITY
+   ------------------------------------------------------------
+   Route:
+   GET /v1/routes/flight-number-preview
+
+   Purpose:
+   - Read official airline IATA from PostgreSQL
+   - Preview next available OUT / IN pair
+   - No localStorage
+   - Does not reserve or increment sequence
+   - Final allocation remains transactional on POST /routes/plans
+   ============================================================ */
+
+router.get(
+  "/routes/flight-number-preview",
+  requireAuth,
+  async (req, res) => {
+    const client = await pool.connect();
+
+    try {
+      const airlineId = Number(req.airline_id);
+
+      if (!Number.isInteger(airlineId) || airlineId <= 0) {
+        return res.status(401).json({
+          ok: false,
+          error: "NO_AIRLINE_SESSION"
+        });
+      }
+
+      const airline = await ACS_getAirlineIata(
+        client,
+        airlineId
+      );
+
+      const sequenceResult = await client.query(
+        `
+        SELECT
+          last_number
+        FROM public.flight_number_sequences
+        WHERE airline_id = $1
+          AND iata_code = $2
+        LIMIT 1
+        `,
+        [
+          airlineId,
+          airline.iata
+        ]
+      );
+
+      let outboundNumeric = Math.max(
+        100,
+        Number(
+          sequenceResult.rows[0]?.last_number || 0
+        ) + 1
+      );
+
+      if (outboundNumeric % 2 !== 0) {
+        outboundNumeric += 1;
+      }
+
+      let flightNumberOut = "";
+      let flightNumberIn = "";
+      let attempts = 0;
+
+      while (attempts < 5000) {
+        flightNumberOut =
+          `${airline.iata}${outboundNumeric}`;
+
+        flightNumberIn =
+          `${airline.iata}${outboundNumeric + 1}`;
+
+        const exists = await ACS_flightNumberExists(
+          client,
+          airlineId,
+          flightNumberOut,
+          flightNumberIn
+        );
+
+        if (!exists) {
+          break;
+        }
+
+        outboundNumeric += 2;
+        attempts += 1;
+      }
+
+      if (
+        !flightNumberOut ||
+        !flightNumberIn ||
+        attempts >= 5000
+      ) {
+        return res.status(409).json({
+          ok: false,
+          error: "FLIGHT_NUMBER_RANGE_EXHAUSTED"
+        });
+      }
+
+      return res.json({
+        ok: true,
+        endpoint: "ACS_FLIGHT_NUMBER_PREVIEW",
+        version: "v1.0",
+        authority: "POSTGRESQL_FLIGHT_NUMBER_AUTHORITY",
+        airline_id: airlineId,
+        iata_code: airline.iata,
+        flight_number_out: flightNumberOut,
+        flight_number_in: flightNumberIn,
+        display: `${flightNumberOut} ➜ ${flightNumberIn}`
+      });
+
+    } catch (error) {
+      console.error(
+        "ACS FLIGHT NUMBER PREVIEW ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        ok: false,
+        error:
+          error.code ||
+          "FLIGHT_NUMBER_PREVIEW_FAILED",
+        details: error.message
+      });
+
+    } finally {
+      client.release();
+    }
+  }
+);
+
+/* ============================================================
    POST /v1/routes/plans
    ============================================================ */
 
