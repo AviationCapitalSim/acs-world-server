@@ -498,7 +498,20 @@ router.get("/airports/catalog/:icao", requireAuth, async (req, res) => {
 
     const simYear = ACS_parseSimYear(req.query?.sim_year);
 
-    const icao = String(req.params?.icao || "").trim().toUpperCase();
+    if (
+      req.query?.sim_year !== undefined &&
+      (simYear === null || simYear < 1940 || simYear > 2030)
+    ) {
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_SIM_YEAR",
+        details: "sim_year must be between 1940 and 2030"
+      });
+    }
+
+    const icao = String(req.params?.icao || "")
+      .trim()
+      .toUpperCase();
 
     if (!icao || icao.length !== 4) {
       return res.status(400).json({
@@ -509,75 +522,170 @@ router.get("/airports/catalog/:icao", requireAuth, async (req, res) => {
     }
 
     const result = await pool.query(
-  `
-  WITH reserved_slots AS (
-    SELECT
-      airport_icao AS icao,
-      COUNT(*)::INTEGER AS reserved_slots
-    FROM public.airport_slot_bookings
-    WHERE slot_status = 'RESERVED'
-      AND airport_icao = $1
-    GROUP BY airport_icao
-  )
+      `
+      WITH reserved_slots AS (
+        SELECT
+          airport_icao AS icao,
+          COUNT(*)::INTEGER AS reserved_slots
+        FROM public.airport_slot_bookings
+        WHERE slot_status = 'RESERVED'
+          AND airport_icao = $1
+        GROUP BY airport_icao
+      )
 
-  SELECT
-    ac.id,
-    ac.icao,
-    ac.iata,
-    ac.city,
-    ac.country,
-    ac.continent,
-    ac.region,
-    ac.latitude,
-    ac.longitude,
-    ac.elevation_ft,
-    ac.runway_m,
-    ac.open_hrs,
-    ac.category,
-    ac.demand_y,
-    ac.demand_c,
-    ac.demand_f,
-    ac.slot_cost_usd,
-    ac.landing_fee_usd,
-    ac.fuel_usd_gal,
-    ac.ticket_fee_percent,
-    ac.pax_growth_factor,
-    ac.slot_capacity,
+      SELECT
+        ac.id,
+        ac.icao,
+        ac.iata,
+        ac.city,
+        ac.country,
+        ac.continent,
+        ac.region,
+        ac.latitude,
+        ac.longitude,
+        ac.elevation_ft,
 
-    COALESCE(rs.reserved_slots, 0)::INTEGER AS reserved_slots,
+        ac.runway_m AS runway_m_base,
+        COALESCE(ahp.runway_m, ac.runway_m) AS runway_m,
 
-    GREATEST(
-      ac.slot_capacity - COALESCE(rs.reserved_slots, 0),
-      0
-    )::INTEGER AS available_slots,
+        ac.open_hrs AS open_hrs_base,
+        COALESCE(ahp.open_hrs, ac.open_hrs) AS open_hrs,
 
-    CASE
-      WHEN ac.slot_capacity > 0 THEN
-        ROUND(
-          (COALESCE(rs.reserved_slots, 0)::NUMERIC / ac.slot_capacity::NUMERIC) * 100,
-          2
-        )
-      ELSE 0
-    END AS slot_utilization_pct,
+        ac.category AS category_base,
+        COALESCE(ahp.category, ac.category) AS category,
 
-    ac.aircraft_limit,
-    ac.notes,
-    ac.source,
-    ac.created_at,
-    ac.updated_at
+        ac.aircraft_limit AS aircraft_limit_base,
+        COALESCE(
+          ahp.aircraft_limit,
+          ac.aircraft_limit
+        ) AS aircraft_limit,
 
-  FROM public.airport_catalog ac
+        ac.demand_y,
+        ac.demand_c,
+        ac.demand_f,
 
-  LEFT JOIN reserved_slots rs
-    ON rs.icao = ac.icao
+        ac.slot_cost_usd AS slot_cost_base_usd,
+        COALESCE(
+          ahp.slot_cost_usd,
+          ac.slot_cost_usd
+        ) AS slot_cost_usd,
 
-  WHERE ac.icao = $1
+        ac.landing_fee_usd AS landing_fee_base_usd,
+        COALESCE(
+          ahp.landing_fee_usd,
+          ac.landing_fee_usd
+        ) AS landing_fee_usd,
 
-  LIMIT 1
-  `,
-  [icao]
-);
-     
+        ac.fuel_usd_gal AS fuel_base_usd_gal,
+        COALESCE(
+          ahp.fuel_usd_gal,
+          ac.fuel_usd_gal
+        ) AS fuel_usd_gal,
+
+        ac.ticket_fee_percent AS ticket_fee_percent_base,
+        COALESCE(
+          ahp.ticket_fee_percent,
+          ac.ticket_fee_percent
+        ) AS ticket_fee_percent,
+
+        ac.pax_growth_factor AS pax_growth_factor_base,
+        COALESCE(
+          ahp.pax_growth_factor,
+          ac.pax_growth_factor
+        ) AS pax_growth_factor,
+
+        ac.slot_capacity AS slot_capacity_base,
+        COALESCE(
+          ahp.slot_capacity,
+          ac.slot_capacity,
+          0
+        )::INTEGER AS slot_capacity,
+
+        COALESCE(
+          rs.reserved_slots,
+          0
+        )::INTEGER AS reserved_slots,
+
+        GREATEST(
+          COALESCE(
+            ahp.slot_capacity,
+            ac.slot_capacity,
+            0
+          ) - COALESCE(
+            rs.reserved_slots,
+            0
+          ),
+          0
+        )::INTEGER AS available_slots,
+
+        CASE
+          WHEN COALESCE(
+            ahp.slot_capacity,
+            ac.slot_capacity,
+            0
+          ) > 0 THEN
+            ROUND(
+              (
+                COALESCE(
+                  rs.reserved_slots,
+                  0
+                )::NUMERIC
+                /
+                COALESCE(
+                  ahp.slot_capacity,
+                  ac.slot_capacity
+                )::NUMERIC
+              ) * 100,
+              2
+            )
+          ELSE 0
+        END AS slot_utilization_pct,
+
+        $2::INTEGER AS economic_year,
+
+        (ahp.id IS NOT NULL) AS historical_profile_applied,
+
+        ahp.id AS historical_profile_id,
+        ahp.era_from,
+        ahp.era_to,
+        ahp.era_label,
+        ahp.expansion_stage,
+
+        COALESCE(
+          ahp.airport_status,
+          'ACTIVE'
+        ) AS airport_status,
+
+        ahp.source AS historical_profile_source,
+
+        ac.notes,
+        ac.source,
+        ac.created_at,
+        ac.updated_at
+
+      FROM public.airport_catalog ac
+
+      LEFT JOIN LATERAL (
+        SELECT hp.*
+        FROM public.airport_historical_profiles hp
+        WHERE hp.airport_icao = ac.icao
+          AND $2::INTEGER IS NOT NULL
+          AND $2::INTEGER BETWEEN hp.era_from AND hp.era_to
+        ORDER BY hp.era_from DESC
+        LIMIT 1
+      ) ahp
+        ON TRUE
+
+      LEFT JOIN reserved_slots rs
+        ON rs.icao = ac.icao
+
+      WHERE ac.icao = $1
+
+      LIMIT 1
+      `,
+      [icao, simYear]
+    );
+
     if (!result.rows.length) {
       return res.status(404).json({
         ok: false,
@@ -586,16 +694,24 @@ router.get("/airports/catalog/:icao", requireAuth, async (req, res) => {
       });
     }
 
-      return res.json({
+    return res.json({
       ok: true,
       endpoint: "ACS_AIRPORT_BY_ICAO",
-      version: "v1.2",
+      version: "v2.0",
       authority: {
-        airport_catalog: "public.airport_catalog"
+        airport_catalog: "public.airport_catalog",
+        historical_profiles: "public.airport_historical_profiles",
+        slot_bookings: "public.airport_slot_bookings"
       },
       airline_id: airlineId,
-      economics: ACS_getHistoricalEconomicProfile(simYear),
-      airport: ACS_applyHistoricalAirportEconomics(result.rows[0], simYear)
+      historical_resolution: {
+        requested_year: simYear,
+        source:
+          simYear === null
+            ? "BASE_AIRPORT_CATALOG"
+            : "AIRPORT_HISTORICAL_PROFILES"
+      },
+      airport: result.rows[0]
     });
 
   } catch (err) {
