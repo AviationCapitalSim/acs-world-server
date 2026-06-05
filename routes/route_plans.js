@@ -1,5 +1,5 @@
 /* ============================================================
-   🟦 ACS ROUTE PLANS BACKEND AUTHORITY — Airbus OCC v1.1
+   🟦 ACS ROUTE PLANS BACKEND AUTHORITY — Airbus OCC v2.0
    ------------------------------------------------------------
    File: routes/route_plans.js
    Purpose:
@@ -238,6 +238,7 @@ async function ACS_getAirportHistoricalAuthority(
   };
 }
 
+
 function ACS_minutesFromHHMM(value) {
   const text = String(value || "").trim();
   const [h, m] = text.split(":").map(Number);
@@ -247,6 +248,152 @@ function ACS_minutesFromHHMM(value) {
   }
 
   return (h * 60) + m;
+}
+
+function ACS_shiftWeekday(weekday, dayOffset = 0) {
+  const days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+  const base = days.indexOf(ACS_normalizeWeekday(weekday));
+
+  if (base === -1) {
+    return ACS_normalizeWeekday(weekday);
+  }
+
+  const next = (base + dayOffset + 7) % 7;
+  return days[next];
+}
+
+function ACS_addMinutesToDayTime(weekday, timeHHMM, addMinutes = 0) {
+  const baseMin = ACS_minutesFromHHMM(timeHHMM);
+  const totalMin = baseMin + Number(addMinutes || 0);
+
+  const dayOffset = Math.floor(totalMin / 1440);
+  const minuteOfDay = ((totalMin % 1440) + 1440) % 1440;
+
+  const hh = String(Math.floor(minuteOfDay / 60)).padStart(2, "0");
+  const mm = String(minuteOfDay % 60).padStart(2, "0");
+
+  return {
+    weekday: ACS_shiftWeekday(weekday, dayOffset),
+    time_local: `${hh}:${mm}`
+  };
+}
+
+function ACS_buildSlotMovements({
+  origin,
+  destination,
+  selectedDays,
+  departure,
+  blockTimeMin,
+  turnaroundMin,
+  flightNumberOut,
+  flightNumberIn
+}) {
+  const movements = [];
+
+  selectedDays.forEach(dayRaw => {
+    const weekday = ACS_normalizeWeekday(dayRaw);
+
+    const outboundDep = {
+      weekday,
+      time_local: departure
+    };
+
+    const outboundArr = ACS_addMinutesToDayTime(
+      weekday,
+      departure,
+      blockTimeMin
+    );
+
+    const inboundDep = ACS_addMinutesToDayTime(
+      outboundArr.weekday,
+      outboundArr.time_local,
+      turnaroundMin
+    );
+
+    const inboundArr = ACS_addMinutesToDayTime(
+      inboundDep.weekday,
+      inboundDep.time_local,
+      blockTimeMin
+    );
+
+    movements.push({
+      airport_icao: origin,
+      movement_type: "DEP",
+      weekday: outboundDep.weekday,
+      time_local: outboundDep.time_local,
+      origin,
+      destination,
+      flight_number: flightNumberOut
+    });
+
+    movements.push({
+      airport_icao: destination,
+      movement_type: "ARR",
+      weekday: outboundArr.weekday,
+      time_local: outboundArr.time_local,
+      origin,
+      destination,
+      flight_number: flightNumberOut
+    });
+
+    movements.push({
+      airport_icao: destination,
+      movement_type: "DEP",
+      weekday: inboundDep.weekday,
+      time_local: inboundDep.time_local,
+      origin: destination,
+      destination: origin,
+      flight_number: flightNumberIn
+    });
+
+    movements.push({
+      airport_icao: origin,
+      movement_type: "ARR",
+      weekday: inboundArr.weekday,
+      time_local: inboundArr.time_local,
+      origin: destination,
+      destination: origin,
+      flight_number: flightNumberIn
+    });
+  });
+
+  return movements;
+}
+
+async function ACS_lockSlotKey(client, movement) {
+  const lockKey = [
+    "ACS_SLOT",
+    movement.airport_icao,
+    movement.weekday,
+    movement.time_local
+  ].join("|");
+
+  await client.query(
+    `
+    SELECT pg_advisory_xact_lock(hashtext($1))
+    `,
+    [lockKey]
+  );
+}
+
+async function ACS_getReservedSlotCount(client, movement) {
+  const result = await client.query(
+    `
+    SELECT COUNT(*)::INTEGER AS used
+    FROM public.airport_slot_bookings
+    WHERE airport_icao = $1
+      AND weekday = $2
+      AND time_local = $3
+      AND slot_status = 'RESERVED'
+    `,
+    [
+      movement.airport_icao,
+      movement.weekday,
+      movement.time_local
+    ]
+  );
+
+  return Number(result.rows[0]?.used || 0);
 }
 
 function ACS_dayIndex(day) {
@@ -327,8 +474,6 @@ router.post("/routes/plans", requireAuth, async (req, res) => {
 
     const routeType = ACS_normalizeText(b.route_type || "PASSENGER").toUpperCase();
 
-    const originSlotCapacity = ACS_getSlotCapacityFromPayload(b, "origin");
-    const destinationSlotCapacity = ACS_getSlotCapacityFromPayload(b, "destination");
 
     if (!origin || !destination) {
       return res.status(400).json({
@@ -387,6 +532,28 @@ router.post("/routes/plans", requireAuth, async (req, res) => {
     }
 
     await client.query("BEGIN");
+
+    const officialTime = await ACS_getOfficialSimTime(client);
+
+    const originAirportAuthority =
+      await ACS_getAirportHistoricalAuthority(
+        client,
+        origin,
+        officialTime.sim_year
+      );
+
+    const destinationAirportAuthority =
+      await ACS_getAirportHistoricalAuthority(
+        client,
+        destination,
+        officialTime.sim_year
+      );
+
+    const originSlotCapacity =
+      originAirportAuthority.slot_capacity;
+
+    const destinationSlotCapacity =
+      destinationAirportAuthority.slot_capacity;
 
     const aircraftResult = await client.query(
       `
@@ -554,11 +721,21 @@ router.post("/routes/plans", requireAuth, async (req, res) => {
       }
     }
 
-   const originSlotFee = await ACS_getAirportSlotFee(client, origin);
-const destinationSlotFee = await ACS_getAirportSlotFee(client, destination);
+    const originSlotFee =
+      Number(originAirportAuthority.slot_cost_usd);
 
-const totalSlotPrice =
-  Math.round(((originSlotFee * 2) + (destinationSlotFee * 2)) * selectedDays.length);
+    const destinationSlotFee =
+      Number(destinationAirportAuthority.slot_cost_usd);
+
+    const totalSlotPrice =
+      Math.round(
+        (
+          (
+            (originSlotFee * 2) +
+            (destinationSlotFee * 2)
+          ) * selectedDays.length
+        ) * 100
+      ) / 100;
      
 const financeResult = await client.query(
   `
@@ -668,7 +845,7 @@ if (currentCapital < totalSlotPrice) {
         FALSE,
         '',
         'ACTIVE',
-        'ACS_ROUTE_PLANS_BACKEND_AUTHORITY_V1_1',
+        'ACS_ROUTE_PLANS_BACKEND_AUTHORITY_V2_0',
         NOW(),
         NOW()
       )
@@ -739,7 +916,7 @@ if (currentCapital < totalSlotPrice) {
           $11,
           $12,
           'RESERVED',
-          'ACS_ROUTE_PLAN_SLOT_RESERVATION_V1_1',
+          'ACS_ROUTE_PLAN_SLOT_RESERVATION_V2_0',
           NOW(),
           NOW()
         )
@@ -906,7 +1083,7 @@ if (totalSlotPrice > 0) {
       totalSlotPrice,
       routePlan.id,
       routePlan.route_uid,
-      `Airport slot fee for route ${origin}-${destination} flights ${flightNumberOut}/${flightNumberIn}`
+      `Airport slot fee for route ${origin}-${destination} flights ${flightNumberOut}/${flightNumberIn} — ACS year ${officialTime.sim_year}`
     ]
   );
 
@@ -940,8 +1117,41 @@ if (totalSlotPrice > 0) {
         return res.status(201).json({
       ok: true,
       endpoint: "ACS_ROUTE_PLAN_CREATE",
-      version: "v1.2",
-      message: "ROUTE_PLAN_CREATED_WITH_SLOTS_SCHEDULE_AND_FINANCE",
+      version: "v2.0",
+      message: "ROUTE_PLAN_CREATED_WITH_HISTORICAL_SLOTS_SCHEDULE_AND_FINANCE",
+
+      simulation: {
+        current_sim_time: officialTime.current_sim_time_iso,
+        sim_year: officialTime.sim_year,
+        authority: officialTime.authority
+      },
+
+      airport_authority: {
+        origin: {
+          icao: originAirportAuthority.icao,
+          historical_profile_id:
+            originAirportAuthority.historical_profile_id,
+          era_from: originAirportAuthority.era_from,
+          era_to: originAirportAuthority.era_to,
+          era_label: originAirportAuthority.era_label,
+          slot_capacity:
+            originAirportAuthority.slot_capacity,
+          slot_cost_usd:
+            originAirportAuthority.slot_cost_usd
+        },
+        destination: {
+          icao: destinationAirportAuthority.icao,
+          historical_profile_id:
+            destinationAirportAuthority.historical_profile_id,
+          era_from: destinationAirportAuthority.era_from,
+          era_to: destinationAirportAuthority.era_to,
+          era_label: destinationAirportAuthority.era_label,
+          slot_capacity:
+            destinationAirportAuthority.slot_capacity,
+          slot_cost_usd:
+            destinationAirportAuthority.slot_cost_usd
+        }
+      },
 
       route_plan: routePlan,
 
