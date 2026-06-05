@@ -1,12 +1,22 @@
 /* ============================================================
-   🟦 ACS ROUTE PLANS BACKEND AUTHORITY — Airbus OCC v2.0
+   🟦 ACS ROUTE PLANS BACKEND AUTHORITY — Airbus OCC v2.1
    ------------------------------------------------------------
    File: routes/route_plans.js
-   Purpose:
-   - Store operational route plans in PostgreSQL
-   - Reserve airport slots transactionally
-   - Backend authority for route creation
+
+   Authority:
+   - PostgreSQL time: acs_get_current_sim_time()
+   - Airport history: airport_historical_profiles
+   - Flight numbers: airlines + flight_number_sequences
+                     + flight_number_allocations
+   - Slots: airport_slot_bookings
+   - Finance: company_finance + finance_log
+
+   Rules:
    - No localStorage authority
+   - No flight numbers accepted from frontend
+   - No airport capacity accepted from frontend
+   - No airport price accepted from frontend
+   - Route, slots, schedule, numbering and finance are transactional
    ============================================================ */
 
 import express from "express";
@@ -14,6 +24,8 @@ import { pool } from "../db/pool.js";
 import { requireAuth } from "../middleware/auth.js";
 
 const router = express.Router();
+
+const ACS_WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 
 function ACS_normalizeIcao(value) {
   return String(value || "").trim().toUpperCase();
@@ -31,12 +43,152 @@ function ACS_isValidHHMM(value) {
   return /^([01]\d|2[0-3]):[0-5]\d$/.test(String(value || "").trim());
 }
 
+function ACS_roundMoney(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 0;
+  return Math.round(number * 100) / 100;
+}
+
+function ACS_minutesFromHHMM(value) {
+  const [hours, minutes] = String(value || "").trim().split(":").map(Number);
+
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
+    return 0;
+  }
+
+  return (hours * 60) + minutes;
+}
+
+function ACS_dayIndex(day) {
+  const index = ACS_WEEKDAYS.indexOf(ACS_normalizeWeekday(day));
+  return index >= 0 ? index : 0;
+}
+
+function ACS_shiftWeekday(weekday, dayOffset = 0) {
+  const base = ACS_WEEKDAYS.indexOf(ACS_normalizeWeekday(weekday));
+
+  if (base < 0) {
+    return ACS_normalizeWeekday(weekday);
+  }
+
+  return ACS_WEEKDAYS[(base + dayOffset + 7) % 7];
+}
+
+function ACS_addMinutesToDayTime(weekday, timeHHMM, addMinutes = 0) {
+  const totalMinutes =
+    ACS_minutesFromHHMM(timeHHMM) + Number(addMinutes || 0);
+
+  const dayOffset = Math.floor(totalMinutes / 1440);
+  const minuteOfDay = ((totalMinutes % 1440) + 1440) % 1440;
+
+  const hours = String(Math.floor(minuteOfDay / 60)).padStart(2, "0");
+  const minutes = String(minuteOfDay % 60).padStart(2, "0");
+
+  return {
+    weekday: ACS_shiftWeekday(weekday, dayOffset),
+    time_local: `${hours}:${minutes}`
+  };
+}
+
+function ACS_buildAbsMinutes(day, departure, arrival) {
+  const base = ACS_dayIndex(day) * 1440;
+  const depAbsMin = base + ACS_minutesFromHHMM(departure);
+
+  let arrAbsMin = base + ACS_minutesFromHHMM(arrival);
+
+  if (arrAbsMin <= depAbsMin) {
+    arrAbsMin += 1440;
+  }
+
+  return {
+    depAbsMin,
+    arrAbsMin
+  };
+}
+
+function ACS_buildSlotMovements({
+  origin,
+  destination,
+  selectedDays,
+  departure,
+  blockTimeMin,
+  turnaroundMin,
+  flightNumberOut,
+  flightNumberIn
+}) {
+  const movements = [];
+
+  for (const dayRaw of selectedDays) {
+    const weekday = ACS_normalizeWeekday(dayRaw);
+
+    const outboundDeparture = {
+      weekday,
+      time_local: departure
+    };
+
+    const outboundArrival = ACS_addMinutesToDayTime(
+      weekday,
+      departure,
+      blockTimeMin
+    );
+
+    const inboundDeparture = ACS_addMinutesToDayTime(
+      outboundArrival.weekday,
+      outboundArrival.time_local,
+      turnaroundMin
+    );
+
+    const inboundArrival = ACS_addMinutesToDayTime(
+      inboundDeparture.weekday,
+      inboundDeparture.time_local,
+      blockTimeMin
+    );
+
+    movements.push(
+      {
+        airport_icao: origin,
+        movement_type: "DEP",
+        weekday: outboundDeparture.weekday,
+        time_local: outboundDeparture.time_local,
+        origin,
+        destination,
+        flight_number: flightNumberOut
+      },
+      {
+        airport_icao: destination,
+        movement_type: "ARR",
+        weekday: outboundArrival.weekday,
+        time_local: outboundArrival.time_local,
+        origin,
+        destination,
+        flight_number: flightNumberOut
+      },
+      {
+        airport_icao: destination,
+        movement_type: "DEP",
+        weekday: inboundDeparture.weekday,
+        time_local: inboundDeparture.time_local,
+        origin: destination,
+        destination: origin,
+        flight_number: flightNumberIn
+      },
+      {
+        airport_icao: origin,
+        movement_type: "ARR",
+        weekday: inboundArrival.weekday,
+        time_local: inboundArrival.time_local,
+        origin: destination,
+        destination: origin,
+        flight_number: flightNumberIn
+      }
+    );
+  }
+
+  return movements;
+}
+
 /* ============================================================
-   🟦 ACS WORLD TIME AUTHORITY — POSTGRESQL
-   ------------------------------------------------------------
-   - acs_world is the official world clock authority
-   - acs_get_current_sim_time() resolves the current ACS time
-   - Frontend payload cannot choose the simulation year
+   POSTGRESQL WORLD TIME AUTHORITY
    ============================================================ */
 
 async function ACS_getOfficialSimTime(client) {
@@ -55,32 +207,31 @@ async function ACS_getOfficialSimTime(client) {
   );
 
   if (!result.rows.length) {
-    const err = new Error("ACS_WORLD_NOT_FOUND");
-    err.code = "ACS_WORLD_NOT_FOUND";
-    throw err;
+    const error = new Error("ACS_WORLD_NOT_FOUND");
+    error.code = "ACS_WORLD_NOT_FOUND";
+    throw error;
   }
 
   const world = result.rows[0];
   const currentSimTime = new Date(world.current_sim_time);
 
   if (Number.isNaN(currentSimTime.getTime())) {
-    const err = new Error("ACS_CURRENT_SIM_TIME_INVALID");
-    err.code = "ACS_CURRENT_SIM_TIME_INVALID";
-    throw err;
+    const error = new Error("ACS_CURRENT_SIM_TIME_INVALID");
+    error.code = "ACS_CURRENT_SIM_TIME_INVALID";
+    throw error;
   }
 
   const simYear = currentSimTime.getUTCFullYear();
 
   if (simYear < 1940 || simYear > 2030) {
-    const err = new Error("ACS_SIM_YEAR_OUT_OF_RANGE");
-    err.code = "ACS_SIM_YEAR_OUT_OF_RANGE";
-    throw err;
+    const error = new Error("ACS_SIM_YEAR_OUT_OF_RANGE");
+    error.code = "ACS_SIM_YEAR_OUT_OF_RANGE";
+    throw error;
   }
 
   return {
     world_id: Number(world.id),
     world_status: ACS_normalizeText(world.status).toUpperCase(),
-    current_sim_time: currentSimTime,
     current_sim_time_iso: currentSimTime.toISOString(),
     sim_year: simYear,
     authority: "POSTGRESQL_TIME_AUTHORITY"
@@ -88,14 +239,7 @@ async function ACS_getOfficialSimTime(client) {
 }
 
 /* ============================================================
-   🟦 ACS AIRPORT HISTORICAL AUTHORITY
-   ------------------------------------------------------------
-   Resolves infrastructure and airport economics for the
-   official simulated year.
-
-   Authority:
-   - airport_catalog: base airport identity
-   - airport_historical_profiles: historical state
+   AIRPORT HISTORICAL AUTHORITY
    ============================================================ */
 
 async function ACS_getAirportHistoricalAuthority(
@@ -115,61 +259,32 @@ async function ACS_getAirportHistoricalAuthority(
       ac.continent,
 
       ac.slot_capacity AS slot_capacity_base,
-      COALESCE(
-        ahp.slot_capacity,
-        ac.slot_capacity,
-        0
-      )::INTEGER AS slot_capacity,
+      ahp.slot_capacity::INTEGER AS slot_capacity,
 
       ac.slot_cost_usd AS slot_cost_base_usd,
-      COALESCE(
-        ahp.slot_cost_usd,
-        ac.slot_cost_usd,
-        0
-      )::NUMERIC(12,2) AS slot_cost_usd,
+      ahp.slot_cost_usd::NUMERIC(12,2) AS slot_cost_usd,
 
       ac.landing_fee_usd AS landing_fee_base_usd,
-      COALESCE(
-        ahp.landing_fee_usd,
-        ac.landing_fee_usd,
-        0
-      )::NUMERIC(12,2) AS landing_fee_usd,
+      ahp.landing_fee_usd::NUMERIC(12,2) AS landing_fee_usd,
 
       ac.fuel_usd_gal AS fuel_base_usd_gal,
-      COALESCE(
-        ahp.fuel_usd_gal,
-        ac.fuel_usd_gal,
-        0
-      )::NUMERIC(10,2) AS fuel_usd_gal,
+      ahp.fuel_usd_gal::NUMERIC(10,2) AS fuel_usd_gal,
 
       ac.runway_m AS runway_m_base,
-      COALESCE(
-        ahp.runway_m,
-        ac.runway_m
-      )::INTEGER AS runway_m,
+      ahp.runway_m::INTEGER AS runway_m,
 
       ac.category AS category_base,
-      COALESCE(
-        ahp.category,
-        ac.category
-      ) AS category,
+      ahp.category,
 
       ac.aircraft_limit AS aircraft_limit_base,
-      COALESCE(
-        ahp.aircraft_limit,
-        ac.aircraft_limit
-      ) AS aircraft_limit,
+      ahp.aircraft_limit,
 
-      (ahp.id IS NOT NULL) AS historical_profile_applied,
       ahp.id AS historical_profile_id,
       ahp.era_from,
       ahp.era_to,
       ahp.era_label,
       ahp.expansion_stage,
-      COALESCE(
-        ahp.airport_status,
-        'ACTIVE'
-      ) AS airport_status,
+      ahp.airport_status,
       ahp.source AS historical_profile_source
 
     FROM public.airport_catalog ac
@@ -185,180 +300,312 @@ async function ACS_getAirportHistoricalAuthority(
       ON TRUE
 
     WHERE ac.icao = $1
-
     LIMIT 1
     `,
     [icao, simYear]
   );
 
   if (!result.rows.length) {
-    const err = new Error(`AIRPORT_NOT_FOUND_${icao}`);
-    err.code = "AIRPORT_NOT_FOUND";
-    err.airport_icao = icao;
-    throw err;
+    const error = new Error(`AIRPORT_NOT_FOUND_${icao}`);
+    error.code = "AIRPORT_NOT_FOUND";
+    error.airport_icao = icao;
+    throw error;
   }
 
   const airport = result.rows[0];
 
-  if (!airport.historical_profile_applied) {
-    const err = new Error(
+  if (!airport.historical_profile_id) {
+    const error = new Error(
       `AIRPORT_HISTORICAL_PROFILE_NOT_FOUND_${icao}_${simYear}`
     );
 
-    err.code = "AIRPORT_HISTORICAL_PROFILE_NOT_FOUND";
-    err.airport_icao = icao;
-    err.sim_year = simYear;
-
-    throw err;
+    error.code = "AIRPORT_HISTORICAL_PROFILE_NOT_FOUND";
+    error.airport_icao = icao;
+    error.sim_year = simYear;
+    throw error;
   }
 
   const slotCapacity = Number(airport.slot_capacity);
   const slotCostUsd = Number(airport.slot_cost_usd);
 
-  if (!Number.isFinite(slotCapacity) || slotCapacity < 0) {
-    const err = new Error(`INVALID_HISTORICAL_SLOT_CAPACITY_${icao}`);
-    err.code = "INVALID_HISTORICAL_SLOT_CAPACITY";
-    err.airport_icao = icao;
-    throw err;
+  if (!Number.isInteger(slotCapacity) || slotCapacity < 0) {
+    const error = new Error(`INVALID_HISTORICAL_SLOT_CAPACITY_${icao}`);
+    error.code = "INVALID_HISTORICAL_SLOT_CAPACITY";
+    throw error;
   }
 
   if (!Number.isFinite(slotCostUsd) || slotCostUsd < 0) {
-    const err = new Error(`INVALID_HISTORICAL_SLOT_COST_${icao}`);
-    err.code = "INVALID_HISTORICAL_SLOT_COST";
-    err.airport_icao = icao;
-    throw err;
+    const error = new Error(`INVALID_HISTORICAL_SLOT_COST_${icao}`);
+    error.code = "INVALID_HISTORICAL_SLOT_COST";
+    throw error;
   }
 
   return {
     ...airport,
-    slot_capacity: Math.round(slotCapacity),
-    slot_cost_usd: Math.round(slotCostUsd * 100) / 100,
+    slot_capacity: slotCapacity,
+    slot_cost_usd: ACS_roundMoney(slotCostUsd),
     sim_year: simYear,
     authority: "AIRPORT_HISTORICAL_PROFILES"
   };
 }
 
+/* ============================================================
+   FLIGHT NUMBER AUTHORITY
+   ============================================================ */
 
-function ACS_minutesFromHHMM(value) {
-  const text = String(value || "").trim();
-  const [h, m] = text.split(":").map(Number);
+async function ACS_getAirlineIata(client, airlineId) {
+  const result = await client.query(
+    `
+    SELECT
+      airline_id,
+      airline_name,
+      UPPER(TRIM(iata)) AS iata
+    FROM public.airlines
+    WHERE airline_id = $1
+    LIMIT 1
+    `,
+    [airlineId]
+  );
 
-  if (!Number.isFinite(h) || !Number.isFinite(m)) {
-    return 0;
+  if (!result.rows.length) {
+    const error = new Error("AIRLINE_NOT_FOUND");
+    error.code = "AIRLINE_NOT_FOUND";
+    throw error;
   }
 
-  return (h * 60) + m;
-}
+  const airline = result.rows[0];
+  const iata = ACS_normalizeText(airline.iata).toUpperCase();
 
-function ACS_shiftWeekday(weekday, dayOffset = 0) {
-  const days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
-  const base = days.indexOf(ACS_normalizeWeekday(weekday));
-
-  if (base === -1) {
-    return ACS_normalizeWeekday(weekday);
+  if (!/^[A-Z0-9]{2}$/.test(iata)) {
+    const error = new Error("AIRLINE_IATA_NOT_CONFIGURED");
+    error.code = "AIRLINE_IATA_NOT_CONFIGURED";
+    throw error;
   }
-
-  const next = (base + dayOffset + 7) % 7;
-  return days[next];
-}
-
-function ACS_addMinutesToDayTime(weekday, timeHHMM, addMinutes = 0) {
-  const baseMin = ACS_minutesFromHHMM(timeHHMM);
-  const totalMin = baseMin + Number(addMinutes || 0);
-
-  const dayOffset = Math.floor(totalMin / 1440);
-  const minuteOfDay = ((totalMin % 1440) + 1440) % 1440;
-
-  const hh = String(Math.floor(minuteOfDay / 60)).padStart(2, "0");
-  const mm = String(minuteOfDay % 60).padStart(2, "0");
 
   return {
-    weekday: ACS_shiftWeekday(weekday, dayOffset),
-    time_local: `${hh}:${mm}`
+    airline_id: Number(airline.airline_id),
+    airline_name: airline.airline_name,
+    iata
   };
 }
 
-function ACS_buildSlotMovements({
-  origin,
-  destination,
-  selectedDays,
-  departure,
-  blockTimeMin,
-  turnaroundMin,
-  flightNumberOut,
-  flightNumberIn
-}) {
-  const movements = [];
+async function ACS_flightNumberExists(client, airlineId, outNumber, inNumber) {
+  const result = await client.query(
+    `
+    SELECT EXISTS (
+      SELECT 1
+      FROM public.flight_number_allocations fna
+      WHERE fna.airline_id = $1
+        AND fna.flight_number IN ($2, $3)
 
-  selectedDays.forEach(dayRaw => {
-    const weekday = ACS_normalizeWeekday(dayRaw);
+      UNION ALL
 
-    const outboundDep = {
-      weekday,
-      time_local: departure
-    };
+      SELECT 1
+      FROM public.route_plans rp
+      WHERE rp.airline_id = $1
+        AND (
+          rp.flight_number_out IN ($2, $3)
+          OR rp.flight_number_in IN ($2, $3)
+        )
 
-    const outboundArr = ACS_addMinutesToDayTime(
-      weekday,
-      departure,
-      blockTimeMin
-    );
+      UNION ALL
 
-    const inboundDep = ACS_addMinutesToDayTime(
-      outboundArr.weekday,
-      outboundArr.time_local,
-      turnaroundMin
-    );
+      SELECT 1
+      FROM public.schedule_items si
+      WHERE si.airline_id = $1
+        AND (
+          si.flight_number IN ($2, $3)
+          OR si.paired_flight_number IN ($2, $3)
+        )
+    ) AS exists
+    `,
+    [airlineId, outNumber, inNumber]
+  );
 
-    const inboundArr = ACS_addMinutesToDayTime(
-      inboundDep.weekday,
-      inboundDep.time_local,
-      blockTimeMin
-    );
-
-    movements.push({
-      airport_icao: origin,
-      movement_type: "DEP",
-      weekday: outboundDep.weekday,
-      time_local: outboundDep.time_local,
-      origin,
-      destination,
-      flight_number: flightNumberOut
-    });
-
-    movements.push({
-      airport_icao: destination,
-      movement_type: "ARR",
-      weekday: outboundArr.weekday,
-      time_local: outboundArr.time_local,
-      origin,
-      destination,
-      flight_number: flightNumberOut
-    });
-
-    movements.push({
-      airport_icao: destination,
-      movement_type: "DEP",
-      weekday: inboundDep.weekday,
-      time_local: inboundDep.time_local,
-      origin: destination,
-      destination: origin,
-      flight_number: flightNumberIn
-    });
-
-    movements.push({
-      airport_icao: origin,
-      movement_type: "ARR",
-      weekday: inboundArr.weekday,
-      time_local: inboundArr.time_local,
-      origin: destination,
-      destination: origin,
-      flight_number: flightNumberIn
-    });
-  });
-
-  return movements;
+  return result.rows[0]?.exists === true;
 }
+
+async function ACS_allocateFlightNumberPair(client, airlineId) {
+  const airline = await ACS_getAirlineIata(client, airlineId);
+
+  await client.query(
+    `
+    SELECT pg_advisory_xact_lock(hashtext($1))
+    `,
+    [`ACS_FLIGHT_NUMBER_SEQUENCE|${airlineId}`]
+  );
+
+  await client.query(
+    `
+    INSERT INTO public.flight_number_sequences (
+      airline_id,
+      iata_code,
+      last_number,
+      created_at,
+      updated_at
+    )
+    VALUES ($1, $2, 0, NOW(), NOW())
+    ON CONFLICT (airline_id, iata_code)
+    DO NOTHING
+    `,
+    [airlineId, airline.iata]
+  );
+
+  const sequenceResult = await client.query(
+    `
+    SELECT
+      id,
+      airline_id,
+      iata_code,
+      last_number
+    FROM public.flight_number_sequences
+    WHERE airline_id = $1
+      AND iata_code = $2
+    FOR UPDATE
+    `,
+    [airlineId, airline.iata]
+  );
+
+  if (!sequenceResult.rows.length) {
+    const error = new Error("FLIGHT_NUMBER_SEQUENCE_NOT_FOUND");
+    error.code = "FLIGHT_NUMBER_SEQUENCE_NOT_FOUND";
+    throw error;
+  }
+
+  let outboundNumeric = Math.max(
+    100,
+    Number(sequenceResult.rows[0].last_number || 0) + 1
+  );
+
+  if (outboundNumeric % 2 !== 0) {
+    outboundNumeric += 1;
+  }
+
+  let outbound;
+  let inbound;
+  let attempts = 0;
+
+  while (attempts < 5000) {
+    outbound = `${airline.iata}${outboundNumeric}`;
+    inbound = `${airline.iata}${outboundNumeric + 1}`;
+
+    const exists = await ACS_flightNumberExists(
+      client,
+      airlineId,
+      outbound,
+      inbound
+    );
+
+    if (!exists) {
+      break;
+    }
+
+    outboundNumeric += 2;
+    attempts += 1;
+  }
+
+  if (!outbound || !inbound || attempts >= 5000) {
+    const error = new Error("FLIGHT_NUMBER_RANGE_EXHAUSTED");
+    error.code = "FLIGHT_NUMBER_RANGE_EXHAUSTED";
+    throw error;
+  }
+
+  await client.query(
+    `
+    UPDATE public.flight_number_sequences
+    SET
+      iata_code = $2,
+      last_number = $3,
+      updated_at = NOW()
+    WHERE airline_id = $1
+      AND iata_code = $2
+    `,
+    [airlineId, airline.iata, outboundNumeric + 1]
+  );
+
+  return {
+    iata_code: airline.iata,
+    flight_number_out: outbound,
+    flight_number_in: inbound,
+    outbound_numeric: outboundNumeric,
+    inbound_numeric: outboundNumeric + 1,
+    authority: "POSTGRESQL_FLIGHT_NUMBER_AUTHORITY"
+  };
+}
+
+async function ACS_storeFlightNumberAllocations(
+  client,
+  {
+    airlineId,
+    routePlanId,
+    iataCode,
+    flightNumberOut,
+    flightNumberIn,
+    origin,
+    destination
+  }
+) {
+  const result = await client.query(
+    `
+    INSERT INTO public.flight_number_allocations (
+      allocation_uid,
+      airline_id,
+      route_plan_id,
+      schedule_item_id,
+      iata_code,
+      flight_number,
+      direction,
+      origin,
+      destination,
+      created_at,
+      updated_at
+    )
+    VALUES
+      (
+        gen_random_uuid()::TEXT,
+        $1,
+        $2,
+        NULL,
+        $3,
+        $4,
+        'OUTBOUND',
+        $6,
+        $7,
+        NOW(),
+        NOW()
+      ),
+      (
+        gen_random_uuid()::TEXT,
+        $1,
+        $2,
+        NULL,
+        $3,
+        $5,
+        'INBOUND',
+        $7,
+        $6,
+        NOW(),
+        NOW()
+      )
+    RETURNING *
+    `,
+    [
+      airlineId,
+      routePlanId,
+      iataCode,
+      flightNumberOut,
+      flightNumberIn,
+      origin,
+      destination
+    ]
+  );
+
+  return result.rows;
+}
+
+/* ============================================================
+   SLOT AUTHORITY
+   ============================================================ */
 
 async function ACS_lockSlotKey(client, movement) {
   const lockKey = [
@@ -396,84 +643,62 @@ async function ACS_getReservedSlotCount(client, movement) {
   return Number(result.rows[0]?.used || 0);
 }
 
-function ACS_dayIndex(day) {
-  const key = ACS_normalizeWeekday(day);
-
-  return {
-    mon: 0,
-    tue: 1,
-    wed: 2,
-    thu: 3,
-    fri: 4,
-    sat: 5,
-    sun: 6
-  }[key] ?? 0;
-}
-
-function ACS_buildAbsMinutes(day, departure, arrival) {
-  const base = ACS_dayIndex(day) * 1440;
-
-  const depAbsMin = base + ACS_minutesFromHHMM(departure);
-  let arrAbsMin = base + ACS_minutesFromHHMM(arrival);
-
-  if (arrAbsMin <= depAbsMin) {
-    arrAbsMin += 1440;
-  }
-
-  return {
-    depAbsMin,
-    arrAbsMin
-  };
-}
-
 /* ============================================================
    POST /v1/routes/plans
    ============================================================ */
 
 router.post("/routes/plans", requireAuth, async (req, res) => {
   const client = await pool.connect();
+  let transactionStarted = false;
 
   try {
     const airlineId = Number(req.airline_id);
-    const b = req.body || {};
+    const body = req.body || {};
 
-    if (!airlineId || !Number.isInteger(airlineId)) {
+    if (!Number.isInteger(airlineId) || airlineId <= 0) {
       return res.status(401).json({
         ok: false,
         error: "NO_AIRLINE_SESSION"
       });
     }
 
-    const origin = ACS_normalizeIcao(b.origin);
-    const destination = ACS_normalizeIcao(b.destination);
+    const origin = ACS_normalizeIcao(body.origin);
+    const destination = ACS_normalizeIcao(body.destination);
+    const aircraftId = Number(body.aircraft_id || body.aircraftId || 0);
 
-    const aircraftId = Number(b.aircraft_id || b.aircraftId || 0);
-
-    const selectedDaysRaw = Array.isArray(b.selected_days)
-      ? b.selected_days
-      : Array.isArray(b.days)
-        ? b.days
+    const selectedDaysRaw = Array.isArray(body.selected_days)
+      ? body.selected_days
+      : Array.isArray(body.days)
+        ? body.days
         : [];
 
     const selectedDays = [...new Set(
       selectedDaysRaw
         .map(ACS_normalizeWeekday)
-        .filter(day => ["mon", "tue", "wed", "thu", "fri", "sat", "sun"].includes(day))
+        .filter(day => ACS_WEEKDAYS.includes(day))
     )];
 
-    const departure = ACS_normalizeText(b.departure);
-    const arrival = ACS_normalizeText(b.arrival);
+    const departure = ACS_normalizeText(body.departure);
+    const arrival = ACS_normalizeText(body.arrival);
+    const routeType = ACS_normalizeText(
+      body.route_type || "PASSENGER"
+    ).toUpperCase();
 
-    const distanceNm = Math.round(Number(b.distance_nm || b.distanceNM || 0));
-    const blockTimeMin = Math.round(Number(b.block_time_min || b.blockTimeMin || 0));
-    const turnaroundMin = Math.round(Number(b.turnaround_min || b.turnaroundMin || 0));
-    const totalRotationMin = Math.round(Number(b.total_rotation_min || b.totalRotationMin || 0));
+    const distanceNm = Math.round(
+      Number(body.distance_nm || body.distanceNM || 0)
+    );
 
-    const flightNumberOut = ACS_normalizeText(b.flight_number_out || b.flightNumberOut).toUpperCase();
-    const flightNumberIn = ACS_normalizeText(b.flight_number_in || b.flightNumberIn).toUpperCase();
+    const blockTimeMin = Math.round(
+      Number(body.block_time_min || body.blockTimeMin || 0)
+    );
 
-    const routeType = ACS_normalizeText(b.route_type || "PASSENGER").toUpperCase();
+    const turnaroundMin = Math.round(
+      Number(body.turnaround_min || body.turnaroundMin || 0)
+    );
 
+    const totalRotationMin = Math.round(
+      Number(body.total_rotation_min || body.totalRotationMin || 0)
+    );
 
     if (!origin || !destination) {
       return res.status(400).json({
@@ -489,7 +714,7 @@ router.post("/routes/plans", requireAuth, async (req, res) => {
       });
     }
 
-    if (!aircraftId || !Number.isInteger(aircraftId)) {
+    if (!Number.isInteger(aircraftId) || aircraftId <= 0) {
       return res.status(400).json({
         ok: false,
         error: "AIRCRAFT_ID_REQUIRED"
@@ -510,50 +735,51 @@ router.post("/routes/plans", requireAuth, async (req, res) => {
       });
     }
 
-    if (!distanceNm || distanceNm <= 0) {
+    if (!Number.isFinite(distanceNm) || distanceNm <= 0) {
       return res.status(400).json({
         ok: false,
         error: "INVALID_DISTANCE_NM"
       });
     }
 
-    if (!blockTimeMin || blockTimeMin <= 0) {
+    if (!Number.isFinite(blockTimeMin) || blockTimeMin <= 0) {
       return res.status(400).json({
         ok: false,
         error: "INVALID_BLOCK_TIME_MIN"
       });
     }
 
-    if (!flightNumberOut || !flightNumberIn) {
+    if (!Number.isFinite(turnaroundMin) || turnaroundMin < 0) {
       return res.status(400).json({
         ok: false,
-        error: "FLIGHT_NUMBERS_REQUIRED"
+        error: "INVALID_TURNAROUND_MIN"
       });
     }
 
     await client.query("BEGIN");
+    transactionStarted = true;
 
     const officialTime = await ACS_getOfficialSimTime(client);
 
-    const originAirportAuthority =
-      await ACS_getAirportHistoricalAuthority(
-        client,
-        origin,
-        officialTime.sim_year
-      );
+    const originAirport = await ACS_getAirportHistoricalAuthority(
+      client,
+      origin,
+      officialTime.sim_year
+    );
 
-    const destinationAirportAuthority =
-      await ACS_getAirportHistoricalAuthority(
-        client,
-        destination,
-        officialTime.sim_year
-      );
+    const destinationAirport = await ACS_getAirportHistoricalAuthority(
+      client,
+      destination,
+      officialTime.sim_year
+    );
 
-    const originSlotCapacity =
-      originAirportAuthority.slot_capacity;
+    const flightNumbers = await ACS_allocateFlightNumberPair(
+      client,
+      airlineId
+    );
 
-    const destinationSlotCapacity =
-      destinationAirportAuthority.slot_capacity;
+    const flightNumberOut = flightNumbers.flight_number_out;
+    const flightNumberIn = flightNumbers.flight_number_in;
 
     const aircraftResult = await client.query(
       `
@@ -573,19 +799,19 @@ router.post("/routes/plans", requireAuth, async (req, res) => {
         ac.range_nm,
         ac.speed_kts,
         ac.aircraft_category
-      FROM aircraft_fleet af
 
-      LEFT JOIN aircraft_maintenance_status ams
+      FROM public.aircraft_fleet af
+
+      LEFT JOIN public.aircraft_maintenance_status ams
         ON ams.aircraft_id = af.id
 
-      LEFT JOIN aircraft_catalog ac
+      LEFT JOIN public.aircraft_catalog ac
         ON ac.model_key = af.model_key
 
       WHERE af.id = $1
         AND af.airline_id = $2
 
       LIMIT 1
-
       FOR UPDATE OF af
       `,
       [aircraftId, airlineId]
@@ -593,6 +819,7 @@ router.post("/routes/plans", requireAuth, async (req, res) => {
 
     if (!aircraftResult.rows.length) {
       await client.query("ROLLBACK");
+      transactionStarted = false;
 
       return res.status(404).json({
         ok: false,
@@ -602,21 +829,29 @@ router.post("/routes/plans", requireAuth, async (req, res) => {
 
     const aircraft = aircraftResult.rows[0];
 
-    const aircraftStatus = ACS_normalizeText(aircraft.status).toUpperCase();
-    const operationalStatus = ACS_normalizeText(aircraft.operational_status).toUpperCase();
-    const maintenanceStatus = ACS_normalizeText(aircraft.maintenance_status).toUpperCase();
-    const maintenanceControlStatus = ACS_normalizeText(aircraft.maintenance_control_status).toUpperCase();
+    const aircraftStatus =
+      ACS_normalizeText(aircraft.status).toUpperCase();
 
-    const isServiceable =
-      maintenanceStatus === "SERVICEABLE" ||
-      maintenanceControlStatus === "SERVICEABLE";
+    const operationalStatus =
+      ACS_normalizeText(aircraft.operational_status).toUpperCase();
+
+    const maintenanceStatus =
+      ACS_normalizeText(aircraft.maintenance_status).toUpperCase();
+
+    const maintenanceControlStatus =
+      ACS_normalizeText(aircraft.maintenance_control_status).toUpperCase();
+
+    const serviceable =
+      maintenanceStatus === "SERVICEABLE"
+      || maintenanceControlStatus === "SERVICEABLE";
 
     if (
-      aircraftStatus !== "ACTIVE" ||
-      operationalStatus !== "AVAILABLE" ||
-      !isServiceable
+      aircraftStatus !== "ACTIVE"
+      || operationalStatus !== "AVAILABLE"
+      || !serviceable
     ) {
       await client.query("ROLLBACK");
+      transactionStarted = false;
 
       return res.status(409).json({
         ok: false,
@@ -627,27 +862,33 @@ router.post("/routes/plans", requireAuth, async (req, res) => {
           status: aircraft.status,
           operational_status: aircraft.operational_status,
           maintenance_status: aircraft.maintenance_status,
-          maintenance_control_status: aircraft.maintenance_control_status
+          maintenance_control_status:
+            aircraft.maintenance_control_status
         }
       });
     }
 
-    const aircraftRangeNm = Math.round(Number(
-      aircraft.range_nm ||
-      b.aircraft_range_nm ||
-      b.rangeNm ||
-      0
-    ));
+    const aircraftRangeNm = Math.round(
+      Number(
+        aircraft.range_nm
+        || body.aircraft_range_nm
+        || body.rangeNm
+        || 0
+      )
+    );
 
-    const speedKts = Math.round(Number(
-      aircraft.speed_kts ||
-      b.speed_kts ||
-      b.speedKts ||
-      0
-    ));
+    const speedKts = Math.round(
+      Number(
+        aircraft.speed_kts
+        || body.speed_kts
+        || body.speedKts
+        || 0
+      )
+    );
 
-    if (!aircraftRangeNm || aircraftRangeNm <= 0) {
+    if (!Number.isFinite(aircraftRangeNm) || aircraftRangeNm <= 0) {
       await client.query("ROLLBACK");
+      transactionStarted = false;
 
       return res.status(409).json({
         ok: false,
@@ -659,6 +900,7 @@ router.post("/routes/plans", requireAuth, async (req, res) => {
 
     if (rangeMarginNm < 0) {
       await client.query("ROLLBACK");
+      transactionStarted = false;
 
       return res.status(409).json({
         ok: false,
@@ -672,19 +914,19 @@ router.post("/routes/plans", requireAuth, async (req, res) => {
     }
 
     const slotMovements = ACS_buildSlotMovements({
-  origin,
-  destination,
-  selectedDays,
-  departure,
-  arrival,
-  blockTimeMin,
-  turnaroundMin,
-  flightNumberOut,
-  flightNumberIn
-  });
+      origin,
+      destination,
+      selectedDays,
+      departure,
+      blockTimeMin,
+      turnaroundMin,
+      flightNumberOut,
+      flightNumberIn
+    });
 
     if (!slotMovements.length) {
       await client.query("ROLLBACK");
+      transactionStarted = false;
 
       return res.status(400).json({
         ok: false,
@@ -697,13 +939,14 @@ router.post("/routes/plans", requireAuth, async (req, res) => {
 
       const used = await ACS_getReservedSlotCount(client, movement);
 
-      const max =
+      const capacity =
         movement.airport_icao === origin
-          ? originSlotCapacity
-          : destinationSlotCapacity;
+          ? originAirport.slot_capacity
+          : destinationAirport.slot_capacity;
 
-      if (used >= max) {
+      if (used >= capacity) {
         await client.query("ROLLBACK");
+        transactionStarted = false;
 
         return res.status(409).json({
           ok: false,
@@ -714,74 +957,72 @@ router.post("/routes/plans", requireAuth, async (req, res) => {
             time_local: movement.time_local,
             movement_type: movement.movement_type,
             used,
-            max,
-            free: Math.max(0, max - used)
+            max: capacity,
+            free: Math.max(0, capacity - used)
           }
         });
       }
     }
 
-    const originSlotFee =
-      Number(originAirportAuthority.slot_cost_usd);
-
+    const originSlotFee = ACS_roundMoney(originAirport.slot_cost_usd);
     const destinationSlotFee =
-      Number(destinationAirportAuthority.slot_cost_usd);
+      ACS_roundMoney(destinationAirport.slot_cost_usd);
 
-    const totalSlotPrice =
-      Math.round(
-        (
-          (
-            (originSlotFee * 2) +
-            (destinationSlotFee * 2)
-          ) * selectedDays.length
-        ) * 100
-      ) / 100;
-     
-const financeResult = await client.query(
-  `
-  SELECT
-    airline_id,
-    capital,
-    expenses,
-    cost_slots
-  FROM company_finance
-  WHERE airline_id = $1
-  FOR UPDATE
-  `,
-  [airlineId]
-);
+    const totalSlotPrice = ACS_roundMoney(
+      (
+        (originSlotFee * 2)
+        + (destinationSlotFee * 2)
+      ) * selectedDays.length
+    );
 
-if (!financeResult.rows.length) {
-  await client.query("ROLLBACK");
+    const financeResult = await client.query(
+      `
+      SELECT
+        airline_id,
+        capital,
+        expenses,
+        cost_slots
+      FROM public.company_finance
+      WHERE airline_id = $1
+      FOR UPDATE
+      `,
+      [airlineId]
+    );
 
-  return res.status(404).json({
-    ok: false,
-    error: "COMPANY_FINANCE_NOT_FOUND"
-  });
-}
+    if (!financeResult.rows.length) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
 
-const currentCapital = Number(financeResult.rows[0].capital || 0);
-
-if (currentCapital < totalSlotPrice) {
-  await client.query("ROLLBACK");
-
-  return res.status(409).json({
-    ok: false,
-    error: "INSUFFICIENT_CAPITAL_FOR_AIRPORT_SLOT_FEE",
-    finance: {
-      capital: currentCapital,
-      required: totalSlotPrice,
-      missing: totalSlotPrice - currentCapital
+      return res.status(404).json({
+        ok: false,
+        error: "COMPANY_FINANCE_NOT_FOUND"
+      });
     }
-  });
-}
-     
+
+    const currentCapital =
+      Number(financeResult.rows[0].capital || 0);
+
+    if (currentCapital < totalSlotPrice) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(409).json({
+        ok: false,
+        error: "INSUFFICIENT_CAPITAL_FOR_AIRPORT_SLOT_FEE",
+        finance: {
+          capital: currentCapital,
+          required: totalSlotPrice,
+          missing: ACS_roundMoney(totalSlotPrice - currentCapital)
+        }
+      });
+    }
+
     const capabilityCode = "DISPATCHABLE";
     const operationalLimitation = "NONE";
 
     const insertRouteResult = await client.query(
       `
-      INSERT INTO route_plans (
+      INSERT INTO public.route_plans (
         route_uid,
         airline_id,
         origin,
@@ -845,7 +1086,7 @@ if (currentCapital < totalSlotPrice) {
         FALSE,
         '',
         'ACTIVE',
-        'ACS_ROUTE_PLANS_BACKEND_AUTHORITY_V2_0',
+        'ACS_ROUTE_PLANS_BACKEND_AUTHORITY_V2_1',
         NOW(),
         NOW()
       )
@@ -859,10 +1100,18 @@ if (currentCapital < totalSlotPrice) {
         JSON.stringify(selectedDays),
         departure,
         arrival,
-        ACS_normalizeText(aircraft.model_key || b.model_key || b.modelKey).toUpperCase(),
-        ACS_normalizeText(aircraft.aircraft_name || b.aircraft || b.aircraftName),
+        ACS_normalizeText(
+          aircraft.model_key || body.model_key || body.modelKey
+        ).toUpperCase(),
+        ACS_normalizeText(
+          aircraft.aircraft_name
+          || body.aircraft
+          || body.aircraftName
+        ),
         aircraftId,
-        ACS_normalizeText(aircraft.registration || b.registration),
+        ACS_normalizeText(
+          aircraft.registration || body.registration
+        ),
         distanceNm,
         aircraftRangeNm,
         rangeMarginNm,
@@ -877,14 +1126,28 @@ if (currentCapital < totalSlotPrice) {
       ]
     );
 
-    const routePlan = insertRouteResult.rows[0];
+    let routePlan = insertRouteResult.rows[0];
+
+    const flightNumberAllocations =
+      await ACS_storeFlightNumberAllocations(
+        client,
+        {
+          airlineId,
+          routePlanId: routePlan.id,
+          iataCode: flightNumbers.iata_code,
+          flightNumberOut,
+          flightNumberIn,
+          origin,
+          destination
+        }
+      );
 
     const insertedSlots = [];
 
     for (const movement of slotMovements) {
-      const insertSlotResult = await client.query(
+      const result = await client.query(
         `
-        INSERT INTO airport_slot_bookings (
+        INSERT INTO public.airport_slot_bookings (
           airline_id,
           route_plan_id,
           aircraft_id,
@@ -916,7 +1179,7 @@ if (currentCapital < totalSlotPrice) {
           $11,
           $12,
           'RESERVED',
-          'ACS_ROUTE_PLAN_SLOT_RESERVATION_V2_0',
+          'ACS_ROUTE_PLAN_SLOT_RESERVATION_V2_1',
           NOW(),
           NOW()
         )
@@ -930,195 +1193,200 @@ if (currentCapital < totalSlotPrice) {
           movement.movement_type,
           movement.weekday,
           movement.time_local,
-          origin,
-          destination,
+          movement.origin,
+          movement.destination,
           movement.flight_number,
           routePlan.registration,
           routePlan.model_key
         ]
       );
 
-      insertedSlots.push(insertSlotResult.rows[0]);
+      insertedSlots.push(result.rows[0]);
     }
 
     const insertedScheduleItems = [];
 
-for (const day of selectedDays) {
-  const abs = ACS_buildAbsMinutes(day, departure, arrival);
+    for (const day of selectedDays) {
+      const abs = ACS_buildAbsMinutes(day, departure, arrival);
 
-  const scheduleItemResult = await client.query(
-    `
-    INSERT INTO schedule_items (
-      schedule_uid,
-      route_plan_id,
-      route_uid,
-      airline_id,
-      item_type,
-      service_type,
-      origin,
-      destination,
-      selected_day,
-      departure,
-      arrival,
-      model_key,
-      aircraft,
-      aircraft_id,
-      aircraft_registration,
-      flight_number,
-      paired_flight_number,
-      flight_direction,
-      distance_nm,
-      dep_abs_min,
-      arr_abs_min,
-      block_time_min,
-      turnaround_min,
-      status,
-      notes,
-      created_at,
-      updated_at
-    )
-    VALUES (
-      gen_random_uuid()::TEXT,
-      $1,
-      $2,
-      $3,
-      'flight',
-      NULL,
-      $4,
-      $5,
-      $6,
-      $7,
-      $8,
-      $9,
-      $10,
-      $11,
-      $12,
-      $13,
-      $14,
-      'OUTBOUND',
-      $15,
-      $16,
-      $17,
-      $18,
-      $19,
-      'planned',
-      'Created from Route Schedule confirm route',
-      NOW(),
-      NOW()
-    )
-    RETURNING *
-    `,
-    [
-      routePlan.id,
-      routePlan.route_uid,
-      airlineId,
-      origin,
-      destination,
-      day,
-      departure,
-      arrival,
-      routePlan.model_key,
-      routePlan.aircraft,
-      aircraftId,
-      routePlan.registration,
-      flightNumberOut,
-      flightNumberIn,
-      distanceNm,
-      abs.depAbsMin,
-      abs.arrAbsMin,
-      blockTimeMin,
-      turnaroundMin
-    ]
-  );
+      const result = await client.query(
+        `
+        INSERT INTO public.schedule_items (
+          schedule_uid,
+          route_plan_id,
+          route_uid,
+          airline_id,
+          item_type,
+          service_type,
+          origin,
+          destination,
+          selected_day,
+          departure,
+          arrival,
+          model_key,
+          aircraft,
+          aircraft_id,
+          aircraft_registration,
+          flight_number,
+          paired_flight_number,
+          flight_direction,
+          distance_nm,
+          dep_abs_min,
+          arr_abs_min,
+          block_time_min,
+          turnaround_min,
+          status,
+          notes,
+          created_at,
+          updated_at
+        )
+        VALUES (
+          gen_random_uuid()::TEXT,
+          $1,
+          $2,
+          $3,
+          'flight',
+          NULL,
+          $4,
+          $5,
+          $6,
+          $7,
+          $8,
+          $9,
+          $10,
+          $11,
+          $12,
+          $13,
+          $14,
+          'OUTBOUND',
+          $15,
+          $16,
+          $17,
+          $18,
+          $19,
+          'planned',
+          'Created by ACS Route Plans Backend Authority v2.1',
+          NOW(),
+          NOW()
+        )
+        RETURNING *
+        `,
+        [
+          routePlan.id,
+          routePlan.route_uid,
+          airlineId,
+          origin,
+          destination,
+          day,
+          departure,
+          arrival,
+          routePlan.model_key,
+          routePlan.aircraft,
+          aircraftId,
+          routePlan.registration,
+          flightNumberOut,
+          flightNumberIn,
+          distanceNm,
+          abs.depAbsMin,
+          abs.arrAbsMin,
+          blockTimeMin,
+          turnaroundMin
+        ]
+      );
 
-  insertedScheduleItems.push(scheduleItemResult.rows[0]);
-}
+      insertedScheduleItems.push(result.rows[0]);
+    }
 
-let financeLog = null;
+    let financeLog = null;
 
-if (totalSlotPrice > 0) {
-  await client.query(
-    `
-    UPDATE company_finance
-    SET
-      capital = COALESCE(capital, 0) - $2,
-      expenses = COALESCE(expenses, 0) + $2,
-      cost_slots = COALESCE(cost_slots, 0) + $2,
-      updated_at = NOW()
-    WHERE airline_id = $1
-    `,
-    [airlineId, totalSlotPrice]
-  );
+    if (totalSlotPrice > 0) {
+      await client.query(
+        `
+        UPDATE public.company_finance
+        SET
+          capital = COALESCE(capital, 0) - $2,
+          expenses = COALESCE(expenses, 0) + $2,
+          cost_slots = COALESCE(cost_slots, 0) + $2,
+          updated_at = NOW()
+        WHERE airline_id = $1
+        `,
+        [airlineId, totalSlotPrice]
+      );
 
-  const financeLogResult = await client.query(
-    `
-    INSERT INTO finance_log (
-      airline_id,
-      type,
-      source,
-      amount,
-      timestamp,
-      route_plan_id,
-      schedule_item_id,
-      reference_uid,
-      description,
-      created_at
-    )
-    VALUES (
-      $1,
-      'EXPENSE',
-      'AIRPORT SLOT FEE',
-      $2,
-      EXTRACT(EPOCH FROM NOW())::BIGINT * 1000,
-      $3,
-      NULL,
-      $4,
-      $5,
-      NOW()
-    )
-    RETURNING *
-    `,
-    [
-      airlineId,
-      totalSlotPrice,
-      routePlan.id,
-      routePlan.route_uid,
-      `Airport slot fee for route ${origin}-${destination} flights ${flightNumberOut}/${flightNumberIn} — ACS year ${officialTime.sim_year}`
-    ]
-  );
+      const financeLogResult = await client.query(
+        `
+        INSERT INTO public.finance_log (
+          airline_id,
+          type,
+          source,
+          amount,
+          timestamp,
+          route_plan_id,
+          schedule_item_id,
+          reference_uid,
+          description,
+          created_at
+        )
+        VALUES (
+          $1,
+          'EXPENSE',
+          'AIRPORT SLOT FEE',
+          $2,
+          EXTRACT(EPOCH FROM NOW())::BIGINT * 1000,
+          $3,
+          NULL,
+          $4,
+          $5,
+          NOW()
+        )
+        RETURNING *
+        `,
+        [
+          airlineId,
+          totalSlotPrice,
+          routePlan.id,
+          routePlan.route_uid,
+          `Airport slot fee for route ${origin}-${destination} flights ${flightNumberOut}/${flightNumberIn} — ACS year ${officialTime.sim_year}`
+        ]
+      );
 
-  financeLog = financeLogResult.rows[0];
+      financeLog = financeLogResult.rows[0];
 
-  await client.query(
-    `
-    UPDATE route_plans
-    SET
-      origin_slot_price = $1,
-      destination_slot_price = $2,
-      total_slot_price = $3,
-      selected_schedule_cost = $3,
-      finance_applied = TRUE,
-      finance_transaction_id = $4,
-      updated_at = NOW()
-    WHERE id = $5
-    `,
-    [
-      originSlotFee,
-      destinationSlotFee,
-      totalSlotPrice,
-      String(financeLog.id),
-      routePlan.id
-    ]
-  );
-}
-     
+      const updatedRouteResult = await client.query(
+        `
+        UPDATE public.route_plans
+        SET
+          origin_slot_price = $1,
+          destination_slot_price = $2,
+          total_slot_price = $3,
+          selected_schedule_cost = $3,
+          finance_applied = TRUE,
+          finance_transaction_id = $4,
+          updated_at = NOW()
+        WHERE id = $5
+        RETURNING *
+        `,
+        [
+          originSlotFee,
+          destinationSlotFee,
+          totalSlotPrice,
+          String(financeLog.id),
+          routePlan.id
+        ]
+      );
+
+      routePlan = updatedRouteResult.rows[0];
+    }
+
     await client.query("COMMIT");
+    transactionStarted = false;
 
-        return res.status(201).json({
+    return res.status(201).json({
       ok: true,
       endpoint: "ACS_ROUTE_PLAN_CREATE",
-      version: "v2.0",
-      message: "ROUTE_PLAN_CREATED_WITH_HISTORICAL_SLOTS_SCHEDULE_AND_FINANCE",
+      version: "v2.1",
+      message:
+        "ROUTE_PLAN_CREATED_WITH_OFFICIAL_FLIGHT_NUMBERS_HISTORICAL_SLOTS_SCHEDULE_AND_FINANCE",
 
       simulation: {
         current_sim_time: officialTime.current_sim_time_iso,
@@ -1126,37 +1394,39 @@ if (totalSlotPrice > 0) {
         authority: officialTime.authority
       },
 
+      flight_numbers: {
+        iata_code: flightNumbers.iata_code,
+        outbound: flightNumberOut,
+        inbound: flightNumberIn,
+        authority: flightNumbers.authority,
+        allocations: flightNumberAllocations
+      },
+
       airport_authority: {
         origin: {
-          icao: originAirportAuthority.icao,
+          icao: originAirport.icao,
           historical_profile_id:
-            originAirportAuthority.historical_profile_id,
-          era_from: originAirportAuthority.era_from,
-          era_to: originAirportAuthority.era_to,
-          era_label: originAirportAuthority.era_label,
-          slot_capacity:
-            originAirportAuthority.slot_capacity,
-          slot_cost_usd:
-            originAirportAuthority.slot_cost_usd
+            originAirport.historical_profile_id,
+          era_from: originAirport.era_from,
+          era_to: originAirport.era_to,
+          era_label: originAirport.era_label,
+          slot_capacity: originAirport.slot_capacity,
+          slot_cost_usd: originAirport.slot_cost_usd
         },
         destination: {
-          icao: destinationAirportAuthority.icao,
+          icao: destinationAirport.icao,
           historical_profile_id:
-            destinationAirportAuthority.historical_profile_id,
-          era_from: destinationAirportAuthority.era_from,
-          era_to: destinationAirportAuthority.era_to,
-          era_label: destinationAirportAuthority.era_label,
-          slot_capacity:
-            destinationAirportAuthority.slot_capacity,
-          slot_cost_usd:
-            destinationAirportAuthority.slot_cost_usd
+            destinationAirport.historical_profile_id,
+          era_from: destinationAirport.era_from,
+          era_to: destinationAirport.era_to,
+          era_label: destinationAirport.era_label,
+          slot_capacity: destinationAirport.slot_capacity,
+          slot_cost_usd: destinationAirport.slot_cost_usd
         }
       },
 
       route_plan: routePlan,
-
       slot_bookings: insertedSlots,
-
       schedule_items: insertedScheduleItems,
 
       finance: {
@@ -1169,20 +1439,49 @@ if (totalSlotPrice > 0) {
 
       slot_summary: {
         total: insertedSlots.length,
-        dep: insertedSlots.filter(s => s.movement_type === "DEP").length,
-        arr: insertedSlots.filter(s => s.movement_type === "ARR").length
+        dep: insertedSlots.filter(
+          slot => slot.movement_type === "DEP"
+        ).length,
+        arr: insertedSlots.filter(
+          slot => slot.movement_type === "ARR"
+        ).length
       }
     });
 
-  } catch (err) {
-    await client.query("ROLLBACK");
+  } catch (error) {
+    if (transactionStarted) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        console.error(
+          "ACS ROUTE PLAN ROLLBACK ERROR:",
+          rollbackError
+        );
+      }
+    }
 
-    console.error("ACS ROUTE PLAN CREATE ERROR:", err);
+    console.error("ACS ROUTE PLAN CREATE ERROR:", error);
 
-    return res.status(500).json({
+    const knownClientErrors = new Set([
+      "AIRLINE_NOT_FOUND",
+      "AIRLINE_IATA_NOT_CONFIGURED",
+      "AIRPORT_NOT_FOUND",
+      "AIRPORT_HISTORICAL_PROFILE_NOT_FOUND",
+      "INVALID_HISTORICAL_SLOT_CAPACITY",
+      "INVALID_HISTORICAL_SLOT_COST",
+      "FLIGHT_NUMBER_SEQUENCE_NOT_FOUND",
+      "FLIGHT_NUMBER_RANGE_EXHAUSTED",
+      "ACS_WORLD_NOT_FOUND",
+      "ACS_CURRENT_SIM_TIME_INVALID",
+      "ACS_SIM_YEAR_OUT_OF_RANGE"
+    ]);
+
+    const status = knownClientErrors.has(error.code) ? 409 : 500;
+
+    return res.status(status).json({
       ok: false,
-      error: "ROUTE_PLAN_CREATE_FAILED",
-      details: err.message
+      error: error.code || "ROUTE_PLAN_CREATE_FAILED",
+      details: error.message
     });
 
   } finally {
