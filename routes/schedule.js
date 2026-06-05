@@ -1,756 +1,708 @@
 /* ============================================================
-   🟦 ACS SCHEDULE ROUTES — BACKEND AUTHORITY v1.0
+   ACS SCHEDULE ROUTES — POSTGRESQL AUTHORITY v2.0
    ------------------------------------------------------------
    File: routes/schedule.js
-   Purpose:
-   - Manage Route Planning / Schedule backend endpoints
-   - Read/write route_plans
-   - Read/write schedule_items
-   - Use PostgreSQL as authority
-   - Use requireAuth and req.airline_id
-   ------------------------------------------------------------
-   Rules:
-   - NO Finance direct modification
-   - NO Time Engine modification
-   - NO frontend/localStorage authority
+
+   Scope:
+   - Read the authenticated airline schedule context
+   - Assign and unassign aircraft transactionally
+   - Validate ownership, model, dispatchability and conflicts
+
+   Authority:
+   - PostgreSQL only
+   - req.airline_id from requireAuth
+   - No browser persistence
+   - No Finance mutation in this module
+   - No Time Engine mutation in this module
    ============================================================ */
 
 import express from "express";
-import crypto from "crypto";
 import { pool } from "../db/pool.js";
 import { requireAuth } from "../middleware/auth.js";
 
 const router = express.Router();
 
-/* ============================================================
-   🔹 UID HELPERS
-   ============================================================ */
+function ACS_airlineId(req) {
+  const airlineId = Number(req.airline_id);
+  return Number.isInteger(airlineId) && airlineId > 0 ? airlineId : null;
+}
 
-function ACS_generateUid(prefix) {
-  if (crypto.randomUUID) {
-    return `${prefix}_${crypto.randomUUID()}`;
+function ACS_positiveBigInt(value) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 ? number : null;
+}
+
+function ACS_text(value) {
+  return String(value ?? "").trim();
+}
+
+function ACS_modelKey(value) {
+  return ACS_text(value).toLowerCase();
+}
+
+async function ACS_getOfficialSimTime(client) {
+  const result = await client.query(
+    `
+    SELECT acs_get_current_sim_time() AS current_sim_time
+    `
+  );
+
+  const date = new Date(result.rows[0]?.current_sim_time);
+
+  if (Number.isNaN(date.getTime())) {
+    const error = new Error("ACS_CURRENT_SIM_TIME_INVALID");
+    error.code = "ACS_CURRENT_SIM_TIME_INVALID";
+    throw error;
   }
 
-  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  return date.toISOString();
 }
 
-function ACS_normalizeSelectedDays(selectedDays) {
-  if (Array.isArray(selectedDays)) return selectedDays;
-  if (typeof selectedDays === "string" && selectedDays.trim()) {
-    return [selectedDays.trim()];
-  }
-  return [];
-}
+function ACS_sendError(res, error, fallback = "SCHEDULE_OPERATION_FAILED") {
+  const knownStatus = {
+    NO_AIRLINE_SESSION: 401,
+    VALIDATION_ERROR: 400,
+    ROUTE_PLAN_NOT_FOUND: 404,
+    AIRCRAFT_NOT_FOUND: 404,
+    AIRCRAFT_NOT_DISPATCHABLE: 409,
+    AIRCRAFT_MODEL_MISMATCH: 409,
+    AIRCRAFT_SCHEDULE_CONFLICT: 409,
+    ROUTE_HAS_NO_SCHEDULE_ITEMS: 409,
+    ROUTE_ALREADY_UNASSIGNED: 409,
+    ROUTE_OPERATION_LOCKED: 409,
+    ACS_CURRENT_SIM_TIME_INVALID: 409
+  };
 
-function ACS_toNumber(value, fallback = 0) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
+  const code = error.code || fallback;
+  const status = knownStatus[code] || 500;
+
+  return res.status(status).json({
+    ok: false,
+    error: code,
+    details: error.message
+  });
 }
 
 /* ============================================================
-   🟢 GET /v1/schedule/health
-   ------------------------------------------------------------
-   Protected backend health check for Schedule module.
+   GET /v1/schedule/health
    ============================================================ */
 
 router.get("/schedule/health", requireAuth, async (req, res) => {
-  try {
-    return res.json({
-      ok: true,
-      module: "schedule",
-      airline_id: req.airline_id
-    });
-  } catch (error) {
-    console.error("SCHEDULE_HEALTH_ERROR:", error);
+  const airlineId = ACS_airlineId(req);
 
-    return res.status(500).json({
+  if (!airlineId) {
+    return res.status(401).json({
       ok: false,
-      error: "SCHEDULE_ERROR",
-      details: error.message
+      error: "NO_AIRLINE_SESSION"
     });
   }
+
+  return res.json({
+    ok: true,
+    module: "schedule",
+    version: "v2.0",
+    authority: "POSTGRESQL",
+    airline_id: airlineId
+  });
 });
 
 /* ============================================================
-   🟦 GET /v1/schedule
-   ------------------------------------------------------------
-   Returns all route plans for authenticated airline.
-   ============================================================ */
-
-router.get("/schedule", requireAuth, async (req, res) => {
-  try {
-    const { rows } = await pool.query(
-      `
-      SELECT *
-      FROM public.route_plans
-      WHERE airline_id = $1
-      ORDER BY created_at DESC
-      `,
-      [req.airline_id]
-    );
-
-    return res.json({
-      ok: true,
-      route_plans: rows
-    });
-  } catch (error) {
-    console.error("SCHEDULE_ROUTE_PLANS_GET_ERROR:", error);
-
-    return res.status(500).json({
-      ok: false,
-      error: "SCHEDULE_ERROR",
-      details: error.message
-    });
-  }
-});
-
-/* ============================================================
-   🟦 ACS SCHEDULE CONTEXT — BACKEND AUTHORITY v1.0
-   ------------------------------------------------------------
-   Route:
    GET /v1/schedule/context
-
-   Purpose:
-   - Provide one backend-authoritative Schedule context payload
-   - Return route_plans and schedule_items for req.airline_id
-   - No frontend authority
-   - No localStorage authority
-   - No Finance mutation
-   - No Time Engine interaction
+   ------------------------------------------------------------
+   Returns one consistent operational payload for Schedule Table.
    ============================================================ */
 
 router.get("/schedule/context", requireAuth, async (req, res) => {
-  try {
-    const airlineId = req.airline_id;
+  const airlineId = ACS_airlineId(req);
 
-    if (!airlineId) {
-      return res.status(401).json({
-        ok: false,
-        error: "NO_AIRLINE_SESSION",
-        details: "No airline_id found in authenticated session"
-      });
-    }
-
-   const routePlansResult = await pool.query(
-  `
-  SELECT
-    id,
-    route_uid,
-    airline_id,
-    origin,
-    destination,
-    route_type,
-    selected_days,
-    departure,
-    arrival,
-    model_key,
-    aircraft,
-    NULL AS aircraft_registration,
-    distance_nm,
-    NULL AS status,
-    NULL AS notes,
-    created_at,
-    updated_at
-  FROM route_plans
-  WHERE airline_id = $1
-  ORDER BY created_at DESC, id DESC
-  `,
-  [airlineId]
-);
-     
-    const scheduleItemsResult = await pool.query(
-      `
-      SELECT
-        id,
-        schedule_uid,
-        route_plan_id,
-        route_uid,
-        airline_id,
-        item_type,
-        service_type,
-        origin,
-        destination,
-        selected_day,
-        departure,
-        arrival,
-        model_key,
-        aircraft,
-        aircraft_registration,
-        flight_number,
-        distance_nm,
-        status,
-        notes,
-        created_at,
-        updated_at
-      FROM schedule_items
-      WHERE airline_id = $1
-      ORDER BY created_at DESC, id DESC
-      `,
-      [airlineId]
-    );
-
-    return res.json({
-      ok: true,
-      airline_id: airlineId,
-      route_plans: routePlansResult.rows,
-      schedule_items: scheduleItemsResult.rows
-    });
-
-  } catch (err) {
-    console.error("ACS SCHEDULE CONTEXT ERROR:", err);
-
-    return res.status(500).json({
+  if (!airlineId) {
+    return res.status(401).json({
       ok: false,
-      error: "SCHEDULE_CONTEXT_FAILED",
-      details: err.message
+      error: "NO_AIRLINE_SESSION"
     });
   }
-});
 
-/* ============================================================
-   🟨 POST /v1/schedule/route-plan
-   ------------------------------------------------------------
-   Creates one route plan.
-   PostgreSQL is authority.
-   Airline ID comes only from authenticated session.
-   ============================================================ */
-
-router.post("/schedule/route-plan", requireAuth, async (req, res) => {
-  try {
-    const body = req.body || {};
-
-    const origin = String(body.origin || "").trim().toUpperCase();
-    const destination = String(body.destination || "").trim().toUpperCase();
-
-    if (!origin || !destination) {
-      return res.status(400).json({
-        ok: false,
-        error: "VALIDATION_ERROR",
-        details: "origin and destination are required"
-      });
-    }
-
-    const routeUid =
-      body.route_uid ||
-      ACS_generateUid(`route_${origin}_${destination}`);
-
-    const selectedDays = ACS_normalizeSelectedDays(body.selected_days);
-
-    const values = [
-      routeUid,
-      req.airline_id,
-      origin,
-      destination,
-      body.route_type || null,
-      JSON.stringify(selectedDays),
-      body.departure || null,
-      body.arrival || null,
-      body.model_key || null,
-      body.aircraft || null,
-      ACS_toNumber(body.distance_nm),
-      ACS_toNumber(body.passenger_demand_y),
-      ACS_toNumber(body.passenger_demand_c),
-      ACS_toNumber(body.passenger_demand_f),
-      ACS_toNumber(body.demand_value),
-      ACS_toNumber(body.origin_slot_price),
-      ACS_toNumber(body.destination_slot_price),
-      ACS_toNumber(body.total_slot_price),
-      body.aircraft_range_nm === undefined || body.aircraft_range_nm === null
-        ? null
-        : ACS_toNumber(body.aircraft_range_nm),
-      body.range_margin_nm === undefined || body.range_margin_nm === null
-        ? null
-        : ACS_toNumber(body.range_margin_nm),
-      ACS_toNumber(body.payload_penalty_pct),
-      body.capability_code || "PENDING",
-      body.operational_limitation || null,
-      ACS_toNumber(body.setup_cost),
-      ACS_toNumber(body.selected_schedule_cost),
-      body.flight_number_out || null,
-      body.flight_number_in || null,
-      false,
-      null,
-      body.route_state || "planned"
-    ];
-
-    const { rows } = await pool.query(
-      `
-      INSERT INTO public.route_plans (
-        route_uid,
-        airline_id,
-        origin,
-        destination,
-        route_type,
-        selected_days,
-        departure,
-        arrival,
-        model_key,
-        aircraft,
-        distance_nm,
-        passenger_demand_y,
-        passenger_demand_c,
-        passenger_demand_f,
-        demand_value,
-        origin_slot_price,
-        destination_slot_price,
-        total_slot_price,
-        aircraft_range_nm,
-        range_margin_nm,
-        payload_penalty_pct,
-        capability_code,
-        operational_limitation,
-        setup_cost,
-        selected_schedule_cost,
-        flight_number_out,
-        flight_number_in,
-        finance_applied,
-        finance_transaction_id,
-        route_state
-      )
-      VALUES (
-        $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10,
-        $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-        $21, $22, $23, $24, $25, $26, $27, $28, $29, $30
-      )
-      RETURNING *
-      `,
-      values
-    );
-
-    return res.status(201).json({
-      ok: true,
-      route_plan: rows[0]
-    });
-  } catch (error) {
-    console.error("SCHEDULE_ROUTE_PLAN_CREATE_ERROR:", error);
-
-    return res.status(500).json({
-      ok: false,
-      error: "SCHEDULE_ERROR",
-      details: error.message
-    });
-  }
-});
-
-/* ============================================================
-   🟧 POST /v1/schedule/items
-   ------------------------------------------------------------
-   Creates one schedule item.
-   Supports flight and operational service items.
-   Airline ID comes only from authenticated session.
-   ============================================================ */
-
-router.post("/schedule/items", requireAuth, async (req, res) => {
-  try {
-    const body = req.body || {};
-
-    const origin = String(body.origin || "").trim().toUpperCase();
-    const destination = String(body.destination || "").trim().toUpperCase();
-    const selectedDay = String(body.selected_day || "").trim();
-    const departure = String(body.departure || "").trim();
-
-    if (!origin || !destination || !selectedDay || !departure) {
-      return res.status(400).json({
-        ok: false,
-        error: "VALIDATION_ERROR",
-        details: "origin, destination, selected_day and departure are required"
-      });
-    }
-
-    const scheduleUid =
-      body.schedule_uid ||
-      ACS_generateUid(`schedule_${origin}_${destination}`);
-
-    const values = [
-      scheduleUid,
-      body.route_plan_id || null,
-      body.route_uid || null,
-      req.airline_id,
-      body.item_type || "flight",
-      body.service_type || null,
-      origin,
-      destination,
-      selectedDay,
-      departure,
-      body.arrival || null,
-      body.model_key || null,
-      body.aircraft || null,
-      body.aircraft_registration || null,
-      body.flight_number || null,
-      ACS_toNumber(body.distance_nm),
-      body.status || "planned",
-      body.notes || null
-    ];
-
-    const { rows } = await pool.query(
-      `
-      INSERT INTO public.schedule_items (
-        schedule_uid,
-        route_plan_id,
-        route_uid,
-        airline_id,
-        item_type,
-        service_type,
-        origin,
-        destination,
-        selected_day,
-        departure,
-        arrival,
-        model_key,
-        aircraft,
-        aircraft_registration,
-        flight_number,
-        distance_nm,
-        status,
-        notes
-      )
-      VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9,
-        $10, $11, $12, $13, $14, $15, $16, $17, $18
-      )
-      RETURNING *
-      `,
-      values
-    );
-
-    return res.status(201).json({
-      ok: true,
-      schedule_item: rows[0]
-    });
-  } catch (error) {
-    console.error("SCHEDULE_ITEM_CREATE_ERROR:", error);
-
-    return res.status(500).json({
-      ok: false,
-      error: "SCHEDULE_ERROR",
-      details: error.message
-    });
-  }
-});
-
-/* ============================================================
-   🟦 ACS FLIGHT NUMBER ALLOCATION — BACKEND AUTHORITY v1.0
-   ------------------------------------------------------------
-   Route:
-   POST /v1/schedule/flight-number/allocate
-
-   Purpose:
-   - Allocate unique flight numbers per airline IATA code
-   - Use req.airline_id from requireAuth
-   - Use PostgreSQL as authority
-   - No frontend-generated flight numbers
-   - No localStorage authority
-   - No Finance mutation
-   - No Time Engine interaction
-   ============================================================ */
-
-router.post("/schedule/flight-number/allocate", requireAuth, async (req, res) => {
   const client = await pool.connect();
 
   try {
-    const airlineId = req.airline_id;
-    const {
-      route_plan_id,
-      schedule_item_id = null,
-      direction = "OUTBOUND"
-    } = req.body || {};
+    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
 
-    if (!airlineId) {
-      return res.status(401).json({
-        ok: false,
-        error: "NO_AIRLINE_SESSION",
-        details: "No airline_id found in authenticated session"
-      });
-    }
-
-    if (!route_plan_id) {
-      return res.status(400).json({
-        ok: false,
-        error: "VALIDATION_ERROR",
-        details: "route_plan_id is required"
-      });
-    }
-
-    await client.query("BEGIN");
+    const currentSimTime = await ACS_getOfficialSimTime(client);
 
     const airlineResult = await client.query(
       `
       SELECT
         airline_id,
         airline_name,
-        iata,
-        icao
-      FROM airlines
+        UPPER(TRIM(iata)) AS iata,
+        UPPER(TRIM(icao)) AS icao
+      FROM public.airlines
       WHERE airline_id = $1
       LIMIT 1
       `,
       [airlineId]
     );
 
-    if (airlineResult.rows.length === 0) {
-      await client.query("ROLLBACK");
-
-      return res.status(404).json({
-        ok: false,
-        error: "AIRLINE_NOT_FOUND",
-        details: "Authenticated airline was not found"
-      });
-    }
-
-    const airline = airlineResult.rows[0];
-    const iataCode = String(airline.iata || "").trim().toUpperCase();
-
-    if (!iataCode) {
-      await client.query("ROLLBACK");
-
-      return res.status(400).json({
-        ok: false,
-        error: "MISSING_IATA_CODE",
-        details: "Airline does not have an IATA code assigned"
-      });
-    }
-
-    const routePlanResult = await client.query(
+    const fleetResult = await client.query(
       `
       SELECT
-        id,
-        route_uid,
-        airline_id,
-        origin,
-        destination
-      FROM route_plans
-      WHERE id = $1
-        AND airline_id = $2
-      LIMIT 1
+        af.id,
+        af.aircraft_uid,
+        af.airline_id,
+        af.source,
+        af.ownership_type,
+        af.manufacturer,
+        af.model_key,
+        af.aircraft_name,
+        af.registration,
+        af.serial_number,
+        af.status,
+        af.operational_status,
+        af.maintenance_status,
+        af.base_icao,
+        af.current_airport,
+        af.year_built,
+        af.delivery_date,
+        af.entry_into_service_date,
+        af.total_hours,
+        af.total_cycles,
+        af.condition_pct,
+        af.updated_at
+      FROM public.aircraft_fleet af
+      WHERE af.airline_id = $1
+      ORDER BY af.registration NULLS LAST, af.id
       `,
-      [route_plan_id, airlineId]
+      [airlineId]
     );
 
-    if (routePlanResult.rows.length === 0) {
-      await client.query("ROLLBACK");
-
-      return res.status(404).json({
-        ok: false,
-        error: "ROUTE_PLAN_NOT_FOUND",
-        details: "Route plan was not found for this airline"
-      });
-    }
-
-    const routePlan = routePlanResult.rows[0];
-
-    if (schedule_item_id) {
-      const scheduleItemResult = await client.query(
-        `
-        SELECT
-          id,
-          schedule_uid,
-          airline_id,
-          route_plan_id
-        FROM schedule_items
-        WHERE id = $1
-          AND airline_id = $2
-          AND route_plan_id = $3
-        LIMIT 1
-        `,
-        [schedule_item_id, airlineId, route_plan_id]
-      );
-
-      if (scheduleItemResult.rows.length === 0) {
-        await client.query("ROLLBACK");
-
-        return res.status(404).json({
-          ok: false,
-          error: "SCHEDULE_ITEM_NOT_FOUND",
-          details: "Schedule item was not found for this route plan"
-        });
-      }
-    }
-
-    let sequenceResult = await client.query(
+    const routePlansResult = await client.query(
       `
       SELECT
-        id,
-        airline_id,
-        iata_code,
-        last_number
-      FROM flight_number_sequences
-      WHERE airline_id = $1
-        AND iata_code = $2
-      FOR UPDATE
+        rp.id,
+        rp.route_uid,
+        rp.airline_id,
+        rp.origin,
+        rp.destination,
+        rp.route_type,
+        rp.selected_days,
+        rp.departure,
+        rp.arrival,
+        rp.model_key,
+        rp.aircraft,
+        rp.aircraft_id,
+        rp.registration,
+        rp.distance_nm,
+        rp.flight_number_out,
+        rp.flight_number_in,
+        rp.block_time_min,
+        rp.turnaround_min,
+        rp.total_rotation_min,
+        rp.route_state,
+        rp.created_at,
+        rp.updated_at
+      FROM public.route_plans rp
+      WHERE rp.airline_id = $1
+        AND UPPER(COALESCE(rp.route_state, 'ACTIVE')) <> 'CANCELLED'
+      ORDER BY rp.created_at DESC, rp.id DESC
       `,
-      [airlineId, iataCode]
+      [airlineId]
     );
 
-    if (sequenceResult.rows.length === 0) {
-      sequenceResult = await client.query(
-        `
-        INSERT INTO flight_number_sequences (
-          airline_id,
-          iata_code,
-          last_number
-        )
-        VALUES ($1, $2, 0)
-        RETURNING
-          id,
-          airline_id,
-          iata_code,
-          last_number
-        `,
-        [airlineId, iataCode]
-      );
-    }
-
-    const currentLastNumber = Number(sequenceResult.rows[0].last_number || 0);
-    const nextNumber = currentLastNumber + 1;
-    const formattedNumber = String(nextNumber).padStart(3, "0");
-    const flightNumber = `${iataCode}${formattedNumber}`;
-    const allocationUid = crypto.randomUUID();
-
-    await client.query(
+    const scheduleItemsResult = await client.query(
       `
-      UPDATE flight_number_sequences
-      SET
-        last_number = $1,
-        updated_at = now()
-      WHERE airline_id = $2
-        AND iata_code = $3
+      SELECT
+        si.id,
+        si.schedule_uid,
+        si.route_plan_id,
+        si.route_uid,
+        si.airline_id,
+        si.item_type,
+        si.service_type,
+        si.origin,
+        si.destination,
+        si.selected_day,
+        si.departure,
+        si.arrival,
+        si.model_key,
+        si.aircraft,
+        si.aircraft_id,
+        si.aircraft_registration,
+        si.flight_number,
+        si.paired_flight_number,
+        si.flight_direction,
+        si.distance_nm,
+        si.dep_abs_min,
+        si.arr_abs_min,
+        si.block_time_min,
+        si.turnaround_min,
+        si.status,
+        si.notes,
+        si.created_at,
+        si.updated_at
+      FROM public.schedule_items si
+      WHERE si.airline_id = $1
+        AND LOWER(COALESCE(si.status, 'planned')) <> 'cancelled'
+      ORDER BY
+        CASE LOWER(si.selected_day)
+          WHEN 'mon' THEN 1
+          WHEN 'tue' THEN 2
+          WHEN 'wed' THEN 3
+          WHEN 'thu' THEN 4
+          WHEN 'fri' THEN 5
+          WHEN 'sat' THEN 6
+          WHEN 'sun' THEN 7
+          ELSE 8
+        END,
+        COALESCE(si.dep_abs_min, 0),
+        si.id
       `,
-      [nextNumber, airlineId, iataCode]
-    );
-
-    const allocationResult = await client.query(
-      `
-      INSERT INTO flight_number_allocations (
-        allocation_uid,
-        airline_id,
-        route_plan_id,
-        schedule_item_id,
-        iata_code,
-        flight_number,
-        direction,
-        origin,
-        destination
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-      RETURNING
-        id,
-        allocation_uid,
-        airline_id,
-        route_plan_id,
-        schedule_item_id,
-        iata_code,
-        flight_number,
-        direction,
-        origin,
-        destination,
-        created_at,
-        updated_at
-      `,
-      [
-        allocationUid,
-        airlineId,
-        route_plan_id,
-        schedule_item_id,
-        iataCode,
-        flightNumber,
-        direction,
-        routePlan.origin,
-        routePlan.destination
-      ]
+      [airlineId]
     );
 
     await client.query("COMMIT");
 
-    return res.status(201).json({
+    return res.json({
       ok: true,
+      endpoint: "ACS_SCHEDULE_CONTEXT",
+      version: "v2.0",
+      authority: "POSTGRESQL",
       airline_id: airlineId,
-      iata_code: iataCode,
-      flight_number: flightNumber,
-      allocation: allocationResult.rows[0]
+      current_sim_time: currentSimTime,
+      airline: airlineResult.rows[0] || null,
+      fleet: fleetResult.rows,
+      route_plans: routePlansResult.rows,
+      schedule_items: scheduleItemsResult.rows
     });
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      console.error("ACS SCHEDULE CONTEXT ROLLBACK ERROR:", rollbackError);
+    }
 
-  } catch (err) {
-    await client.query("ROLLBACK");
-
-    console.error("ACS FLIGHT NUMBER ALLOCATION ERROR:", err);
-
-    return res.status(500).json({
-      ok: false,
-      error: "FLIGHT_NUMBER_ALLOCATION_FAILED",
-      details: err.message
-    });
-
+    console.error("ACS SCHEDULE CONTEXT ERROR:", error);
+    return ACS_sendError(res, error, "SCHEDULE_CONTEXT_FAILED");
   } finally {
     client.release();
   }
 });
 
-
-
 /* ============================================================
-   🟦 ACS FLIGHT NUMBER ALLOCATIONS LIST — BACKEND AUTHORITY v1.0
+   POST /v1/schedule/assign-aircraft
    ------------------------------------------------------------
-   Route:
-   GET /v1/schedule/flight-number/allocations
-
-   Purpose:
-   - Read flight number allocations for authenticated airline
-   - Use req.airline_id from requireAuth
-   - PostgreSQL is the only authority
-   - No frontend-generated flight numbers
-   - No localStorage authority
-   - No Finance mutation
-   - No Time Engine interaction
+   Body:
+   {
+     "route_plan_id": 123,
+     "aircraft_id": 45
+   }
    ============================================================ */
 
-router.get("/schedule/flight-number/allocations", requireAuth, async (req, res) => {
+router.post("/schedule/assign-aircraft", requireAuth, async (req, res) => {
+  const airlineId = ACS_airlineId(req);
+  const routePlanId = ACS_positiveBigInt(req.body?.route_plan_id);
+  const aircraftId = ACS_positiveBigInt(req.body?.aircraft_id);
+
+  if (!airlineId) {
+    return res.status(401).json({
+      ok: false,
+      error: "NO_AIRLINE_SESSION"
+    });
+  }
+
+  if (!routePlanId || !aircraftId) {
+    return res.status(400).json({
+      ok: false,
+      error: "VALIDATION_ERROR",
+      details: "route_plan_id and aircraft_id are required"
+    });
+  }
+
+  const client = await pool.connect();
+  let transactionStarted = false;
+
   try {
-    const airlineId = req.airline_id;
+    await client.query("BEGIN");
+    transactionStarted = true;
 
-    if (!airlineId) {
-      return res.status(401).json({
-        ok: false,
-        error: "NO_AIRLINE_SESSION",
-        details: "No airline_id found in authenticated session"
-      });
-    }
+    await client.query(
+      `SELECT pg_advisory_xact_lock(hashtext($1))`,
+      [`ACS_SCHEDULE_ASSIGN|${airlineId}|${aircraftId}`]
+    );
 
-    const allocationsResult = await pool.query(
+    const routeResult = await client.query(
       `
       SELECT
         id,
-        allocation_uid,
         airline_id,
-        route_plan_id,
-        schedule_item_id,
-        iata_code,
-        flight_number,
-        direction,
-        origin,
-        destination,
-        created_at,
-        updated_at
-      FROM flight_number_allocations
-      WHERE airline_id = $1
-      ORDER BY created_at DESC, id DESC
+        route_uid,
+        model_key,
+        aircraft_id,
+        registration,
+        route_state
+      FROM public.route_plans
+      WHERE id = $1
+        AND airline_id = $2
+      FOR UPDATE
       `,
-      [airlineId]
+      [routePlanId, airlineId]
     );
+
+    if (!routeResult.rows.length) {
+      const error = new Error("ROUTE_PLAN_NOT_FOUND");
+      error.code = "ROUTE_PLAN_NOT_FOUND";
+      throw error;
+    }
+
+    const routePlan = routeResult.rows[0];
+
+    if (["COMPLETED", "CANCELLED", "IN_PROGRESS"].includes(
+      ACS_text(routePlan.route_state).toUpperCase()
+    )) {
+      const error = new Error("ROUTE_OPERATION_LOCKED");
+      error.code = "ROUTE_OPERATION_LOCKED";
+      throw error;
+    }
+
+    const aircraftResult = await client.query(
+      `
+      SELECT
+        id,
+        airline_id,
+        model_key,
+        aircraft_name,
+        registration,
+        status,
+        operational_status,
+        maintenance_status
+      FROM public.aircraft_fleet
+      WHERE id = $1
+        AND airline_id = $2
+      FOR UPDATE
+      `,
+      [aircraftId, airlineId]
+    );
+
+    if (!aircraftResult.rows.length) {
+      const error = new Error("AIRCRAFT_NOT_FOUND");
+      error.code = "AIRCRAFT_NOT_FOUND";
+      throw error;
+    }
+
+    const aircraft = aircraftResult.rows[0];
+
+    const dispatchable =
+      ACS_text(aircraft.status).toUpperCase() === "ACTIVE" &&
+      ACS_text(aircraft.operational_status).toUpperCase() === "AVAILABLE" &&
+      ACS_text(aircraft.maintenance_status).toUpperCase() === "SERVICEABLE";
+
+    if (!dispatchable) {
+      const error = new Error("AIRCRAFT_NOT_DISPATCHABLE");
+      error.code = "AIRCRAFT_NOT_DISPATCHABLE";
+      throw error;
+    }
+
+    if (ACS_modelKey(routePlan.model_key) !== ACS_modelKey(aircraft.model_key)) {
+      const error = new Error("AIRCRAFT_MODEL_MISMATCH");
+      error.code = "AIRCRAFT_MODEL_MISMATCH";
+      throw error;
+    }
+
+    const targetItemsResult = await client.query(
+      `
+      SELECT
+        id,
+        dep_abs_min,
+        arr_abs_min,
+        selected_day,
+        departure,
+        arrival,
+        status
+      FROM public.schedule_items
+      WHERE route_plan_id = $1
+        AND airline_id = $2
+        AND item_type = 'flight'
+        AND LOWER(COALESCE(status, 'planned')) <> 'cancelled'
+      FOR UPDATE
+      `,
+      [routePlanId, airlineId]
+    );
+
+    if (!targetItemsResult.rows.length) {
+      const error = new Error("ROUTE_HAS_NO_SCHEDULE_ITEMS");
+      error.code = "ROUTE_HAS_NO_SCHEDULE_ITEMS";
+      throw error;
+    }
+
+    const conflictResult = await client.query(
+      `
+      SELECT DISTINCT
+        existing.id,
+        existing.route_plan_id,
+        existing.flight_number,
+        existing.selected_day,
+        existing.departure,
+        existing.arrival
+      FROM public.schedule_items target
+      JOIN public.schedule_items existing
+        ON existing.airline_id = target.airline_id
+       AND existing.aircraft_id = $3
+       AND existing.route_plan_id <> target.route_plan_id
+       AND existing.item_type IN ('flight', 'service')
+       AND LOWER(COALESCE(existing.status, 'planned'))
+           NOT IN ('cancelled', 'completed')
+       AND target.dep_abs_min IS NOT NULL
+       AND target.arr_abs_min IS NOT NULL
+       AND existing.dep_abs_min IS NOT NULL
+       AND existing.arr_abs_min IS NOT NULL
+       AND target.dep_abs_min < existing.arr_abs_min
+       AND existing.dep_abs_min < target.arr_abs_min
+      WHERE target.route_plan_id = $1
+        AND target.airline_id = $2
+        AND target.item_type = 'flight'
+      LIMIT 1
+      `,
+      [routePlanId, airlineId, aircraftId]
+    );
+
+    if (conflictResult.rows.length) {
+      const error = new Error("AIRCRAFT_SCHEDULE_CONFLICT");
+      error.code = "AIRCRAFT_SCHEDULE_CONFLICT";
+      error.conflict = conflictResult.rows[0];
+      throw error;
+    }
+
+    await client.query(
+      `
+      UPDATE public.route_plans
+      SET
+        aircraft_id = $1,
+        registration = $2,
+        aircraft = $3,
+        updated_at = NOW()
+      WHERE id = $4
+        AND airline_id = $5
+      `,
+      [
+        aircraft.id,
+        aircraft.registration,
+        aircraft.aircraft_name,
+        routePlanId,
+        airlineId
+      ]
+    );
+
+    const updatedItemsResult = await client.query(
+      `
+      UPDATE public.schedule_items
+      SET
+        aircraft_id = $1,
+        aircraft_registration = $2,
+        aircraft = $3,
+        status = CASE
+          WHEN LOWER(COALESCE(status, 'planned')) = 'planned'
+            THEN 'assigned'
+          ELSE status
+        END,
+        updated_at = NOW()
+      WHERE route_plan_id = $4
+        AND airline_id = $5
+        AND item_type = 'flight'
+        AND LOWER(COALESCE(status, 'planned')) <> 'cancelled'
+      RETURNING *
+      `,
+      [
+        aircraft.id,
+        aircraft.registration,
+        aircraft.aircraft_name,
+        routePlanId,
+        airlineId
+      ]
+    );
+
+    await client.query("COMMIT");
+    transactionStarted = false;
 
     return res.json({
       ok: true,
-      airline_id: airlineId,
-      allocations: allocationsResult.rows
+      endpoint: "ACS_SCHEDULE_ASSIGN_AIRCRAFT",
+      version: "v2.0",
+      authority: "POSTGRESQL",
+      route_plan_id: routePlanId,
+      aircraft: {
+        id: aircraft.id,
+        registration: aircraft.registration,
+        model_key: aircraft.model_key,
+        aircraft_name: aircraft.aircraft_name
+      },
+      schedule_items: updatedItemsResult.rows
     });
+  } catch (error) {
+    if (transactionStarted) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        console.error("ACS SCHEDULE ASSIGN ROLLBACK ERROR:", rollbackError);
+      }
+    }
 
-  } catch (err) {
-    console.error("ACS FLIGHT NUMBER ALLOCATIONS LIST ERROR:", err);
+    console.error("ACS SCHEDULE ASSIGN ERROR:", error);
 
-    return res.status(500).json({
+    if (error.code === "AIRCRAFT_SCHEDULE_CONFLICT") {
+      return res.status(409).json({
+        ok: false,
+        error: error.code,
+        details: error.message,
+        conflict: error.conflict || null
+      });
+    }
+
+    return ACS_sendError(res, error, "SCHEDULE_ASSIGN_FAILED");
+  } finally {
+    client.release();
+  }
+});
+
+/* ============================================================
+   POST /v1/schedule/unassign-aircraft
+   ------------------------------------------------------------
+   Body:
+   {
+     "route_plan_id": 123
+   }
+   ============================================================ */
+
+router.post("/schedule/unassign-aircraft", requireAuth, async (req, res) => {
+  const airlineId = ACS_airlineId(req);
+  const routePlanId = ACS_positiveBigInt(req.body?.route_plan_id);
+
+  if (!airlineId) {
+    return res.status(401).json({
       ok: false,
-      error: "FLIGHT_NUMBER_ALLOCATIONS_LIST_FAILED",
-      details: err.message
+      error: "NO_AIRLINE_SESSION"
     });
+  }
+
+  if (!routePlanId) {
+    return res.status(400).json({
+      ok: false,
+      error: "VALIDATION_ERROR",
+      details: "route_plan_id is required"
+    });
+  }
+
+  const client = await pool.connect();
+  let transactionStarted = false;
+
+  try {
+    await client.query("BEGIN");
+    transactionStarted = true;
+
+    const routeResult = await client.query(
+      `
+      SELECT
+        id,
+        airline_id,
+        aircraft_id,
+        route_state
+      FROM public.route_plans
+      WHERE id = $1
+        AND airline_id = $2
+      FOR UPDATE
+      `,
+      [routePlanId, airlineId]
+    );
+
+    if (!routeResult.rows.length) {
+      const error = new Error("ROUTE_PLAN_NOT_FOUND");
+      error.code = "ROUTE_PLAN_NOT_FOUND";
+      throw error;
+    }
+
+    const routePlan = routeResult.rows[0];
+
+    if (!routePlan.aircraft_id) {
+      const error = new Error("ROUTE_ALREADY_UNASSIGNED");
+      error.code = "ROUTE_ALREADY_UNASSIGNED";
+      throw error;
+    }
+
+    const lockedItemsResult = await client.query(
+      `
+      SELECT id, status
+      FROM public.schedule_items
+      WHERE route_plan_id = $1
+        AND airline_id = $2
+        AND UPPER(COALESCE(status, 'PLANNED'))
+            IN ('IN_PROGRESS', 'COMPLETED')
+      LIMIT 1
+      `,
+      [routePlanId, airlineId]
+    );
+
+    if (lockedItemsResult.rows.length) {
+      const error = new Error("ROUTE_OPERATION_LOCKED");
+      error.code = "ROUTE_OPERATION_LOCKED";
+      throw error;
+    }
+
+    await client.query(
+      `
+      UPDATE public.route_plans
+      SET
+        aircraft_id = NULL,
+        registration = NULL,
+        updated_at = NOW()
+      WHERE id = $1
+        AND airline_id = $2
+      `,
+      [routePlanId, airlineId]
+    );
+
+    const updatedItemsResult = await client.query(
+      `
+      UPDATE public.schedule_items
+      SET
+        aircraft_id = NULL,
+        aircraft_registration = NULL,
+        status = CASE
+          WHEN LOWER(COALESCE(status, 'planned')) = 'assigned'
+            THEN 'planned'
+          ELSE status
+        END,
+        updated_at = NOW()
+      WHERE route_plan_id = $1
+        AND airline_id = $2
+        AND item_type = 'flight'
+        AND LOWER(COALESCE(status, 'planned')) <> 'cancelled'
+      RETURNING *
+      `,
+      [routePlanId, airlineId]
+    );
+
+    await client.query("COMMIT");
+    transactionStarted = false;
+
+    return res.json({
+      ok: true,
+      endpoint: "ACS_SCHEDULE_UNASSIGN_AIRCRAFT",
+      version: "v2.0",
+      authority: "POSTGRESQL",
+      route_plan_id: routePlanId,
+      schedule_items: updatedItemsResult.rows
+    });
+  } catch (error) {
+    if (transactionStarted) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        console.error("ACS SCHEDULE UNASSIGN ROLLBACK ERROR:", rollbackError);
+      }
+    }
+
+    console.error("ACS SCHEDULE UNASSIGN ERROR:", error);
+    return ACS_sendError(res, error, "SCHEDULE_UNASSIGN_FAILED");
+  } finally {
+    client.release();
   }
 });
 
