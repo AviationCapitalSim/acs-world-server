@@ -1,5 +1,5 @@
 /* ============================================================
-   ACS SCHEDULE ROUTES — POSTGRESQL AUTHORITY v2.0
+   ACS SCHEDULE ROUTES — POSTGRESQL AUTHORITY v2.1
    ------------------------------------------------------------
    File: routes/schedule.js
 
@@ -61,6 +61,7 @@ async function ACS_getOfficialSimTime(client) {
 function ACS_sendError(res, error, fallback = "SCHEDULE_OPERATION_FAILED") {
   const knownStatus = {
     NO_AIRLINE_SESSION: 401,
+    AIRLINE_NOT_FOUND: 404,
     VALIDATION_ERROR: 400,
     ROUTE_PLAN_NOT_FOUND: 404,
     AIRCRAFT_NOT_FOUND: 404,
@@ -100,8 +101,8 @@ router.get("/schedule/health", requireAuth, async (req, res) => {
   return res.json({
     ok: true,
     module: "schedule",
-    version: "v2.0",
-    authority: "POSTGRESQL",
+    version: "v2.1",
+    authority: "POSTGRESQL_SCHEDULE_AUTHORITY",
     airline_id: airlineId
   });
 });
@@ -142,6 +143,12 @@ router.get("/schedule/context", requireAuth, async (req, res) => {
       `,
       [airlineId]
     );
+
+    if (!airlineResult.rows.length) {
+      const error = new Error("AIRLINE_NOT_FOUND");
+      error.code = "AIRLINE_NOT_FOUND";
+      throw error;
+    }
 
     const fleetResult = await client.query(
       `
@@ -261,17 +268,28 @@ router.get("/schedule/context", requireAuth, async (req, res) => {
 
     await client.query("COMMIT");
 
+    res.set({
+      "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+      "Pragma": "no-cache",
+      "Expires": "0"
+    });
+
     return res.json({
       ok: true,
       endpoint: "ACS_SCHEDULE_CONTEXT",
-      version: "v2.0",
-      authority: "POSTGRESQL",
+      version: "v2.1",
+      authority: "POSTGRESQL_SCHEDULE_AUTHORITY",
       airline_id: airlineId,
       current_sim_time: currentSimTime,
-      airline: airlineResult.rows[0] || null,
+      airline: airlineResult.rows[0],
       fleet: fleetResult.rows,
       route_plans: routePlansResult.rows,
-      schedule_items: scheduleItemsResult.rows
+      schedule_items: scheduleItemsResult.rows,
+      counts: {
+        fleet: fleetResult.rows.length,
+        route_plans: routePlansResult.rows.length,
+        schedule_items: scheduleItemsResult.rows.length
+      }
     });
   } catch (error) {
     try {
@@ -525,8 +543,8 @@ router.post("/schedule/assign-aircraft", requireAuth, async (req, res) => {
     return res.json({
       ok: true,
       endpoint: "ACS_SCHEDULE_ASSIGN_AIRCRAFT",
-      version: "v2.0",
-      authority: "POSTGRESQL",
+      version: "v2.1",
+      authority: "POSTGRESQL_SCHEDULE_AUTHORITY",
       route_plan_id: routePlanId,
       aircraft: {
         id: aircraft.id,
@@ -685,8 +703,8 @@ router.post("/schedule/unassign-aircraft", requireAuth, async (req, res) => {
     return res.json({
       ok: true,
       endpoint: "ACS_SCHEDULE_UNASSIGN_AIRCRAFT",
-      version: "v2.0",
-      authority: "POSTGRESQL",
+      version: "v2.1",
+      authority: "POSTGRESQL_SCHEDULE_AUTHORITY",
       route_plan_id: routePlanId,
       schedule_items: updatedItemsResult.rows
     });
