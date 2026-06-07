@@ -287,12 +287,20 @@ router.get("/aircraft/fleet", requireAuth, async (req, res) => {
         ac.speed_kts,
         ac.price_acs_usd,
 
+        ams.a_check_due_date,
+        ams.a_check_status,
+
+        ams.b_check_due_date,
+        ams.b_check_status,
+
         ams.c_check_due_hours,
         ams.c_check_due_cycles,
         ams.c_check_due_date,
         ams.c_check_status,
+
         ams.d_check_due_date,
         ams.d_check_status,
+
         ams.maintenance_control_status,
         ams.maintenance_control_reason,
 
