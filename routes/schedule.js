@@ -865,6 +865,29 @@ router.post(
       let conflict = null;
 
       for (const item of existingItemsResult.rows) {
+        const existingItemType =
+          ACS_text(
+            item.item_type
+          ).toLowerCase();
+
+        const existingServiceType =
+          ACS_text(
+            item.service_type
+          ).toUpperCase();
+
+        /*
+         * B dominates A.
+         * An existing B service does not prevent A from being
+         * placed on the weekly table.
+         */
+        if (
+          checkType === "A_CHECK" &&
+          existingItemType === "service" &&
+          existingServiceType === "B"
+        ) {
+          continue;
+        }
+
         const existingStart =
           Number(item.dep_abs_min);
 
@@ -1247,35 +1270,37 @@ router.post(
       }
 
       /*
-       * A cannot be performed when B is overdue.
-       * Completion of B resets both B and A.
+       * C/D maintenance blocks new A/B programming.
+       *
+       * B in progress does NOT block programming A.
+       * A remains SCHEDULED, creates no charge and does not
+       * change the aircraft maintenance state.
        */
-      if (
+      const aircraftInMaintenance =
+        ACS_text(
+          aircraft.operational_status
+        ).toUpperCase() === "IN_MAINTENANCE";
+
+      const maintenanceReason =
+        ACS_text(
+          aircraft.maintenance_control_reason
+        ).toUpperCase();
+
+      const allowAWhileBInProgress =
         checkType === "A_CHECK" &&
-        bCheckStatus === "OVERDUE"
-      ) {
-        const error =
-          new Error(
-            "This aircraft requires a B-Check. " +
-            "Completion of the B-Check resets both A and B."
-          );
+        aircraftInMaintenance &&
+        (
+          bCheckStatus === "IN_PROGRESS" ||
+          maintenanceReason === "B_CHECK"
+        );
 
-        error.code =
-          "A_CHECK_BLOCKED_BY_OVERDUE_B";
-
-        throw error;
-      }
-
-      /*
-       * Do not start a new A/B event while another
-       * maintenance operation is already active.
-       */
       if (
         cCheckStatus === "IN_PROGRESS" ||
         dCheckStatus === "IN_PROGRESS" ||
-        ACS_text(
-          aircraft.operational_status
-        ).toUpperCase() === "IN_MAINTENANCE"
+        (
+          aircraftInMaintenance &&
+          !allowAWhileBInProgress
+        )
       ) {
         const error =
           new Error(
@@ -1572,6 +1597,28 @@ router.post(
         const item
         of existingItemsResult.rows
       ) {
+        const existingItemType =
+          ACS_text(
+            item.item_type
+          ).toLowerCase();
+
+        const existingServiceType =
+          ACS_text(
+            item.service_type
+          ).toUpperCase();
+
+        /*
+         * B dominates A.
+         * The active B service does not block creation of a
+         * scheduled A service.
+         */
+        if (
+          checkType === "A_CHECK" &&
+          existingItemType === "service" &&
+          existingServiceType === "B"
+        ) {
+          continue;
+        }
 
         const existingStart =
           Number(
@@ -2629,9 +2676,40 @@ router.post(
         const checkType =
           ACS_text(event.check_type).toUpperCase();
 
+        const eventACheckStatus =
+          ACS_text(
+            event.a_check_status
+          ).toUpperCase();
+
+        const eventBCheckStatus =
+          ACS_text(
+            event.b_check_status
+          ).toUpperCase();
+
+        const eventCCheckStatus =
+          ACS_text(
+            event.c_check_status
+          ).toUpperCase();
+
+        const eventDCheckStatus =
+          ACS_text(
+            event.d_check_status
+          ).toUpperCase();
+
         if (
-          ACS_text(event.c_check_status).toUpperCase() === "IN_PROGRESS" ||
-          ACS_text(event.d_check_status).toUpperCase() === "IN_PROGRESS"
+          eventCCheckStatus === "IN_PROGRESS" ||
+          eventDCheckStatus === "IN_PROGRESS"
+        ) {
+          continue;
+        }
+
+        /*
+         * A may remain programmed on the table while B is active,
+         * but it must not start and must not generate a charge.
+         */
+        if (
+          checkType === "A_CHECK" &&
+          eventBCheckStatus === "IN_PROGRESS"
         ) {
           continue;
         }
