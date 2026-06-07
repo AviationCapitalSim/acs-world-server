@@ -1118,22 +1118,26 @@ router.post("/aircraft/fleet/:id/maintenance/start", requireAuth, async (req, re
 });
 
 /* ============================================================
-   🟦 ACS MAINTENANCE RESOLVER — C/D COMPLETION v1.0
+   🟦 ACS MAINTENANCE RESOLVER — A/B/C/D AUTHORITY v1.1
    ------------------------------------------------------------
    Route:
    POST /v1/aircraft/maintenance/resolver
 
    Purpose:
-   - Close expired maintenance events using ACS simulated time
+   - Complete expired maintenance events
+   - Resolve overdue A/B/C/D checks
+   - Apply maintenance priority D > C > B > A
+   - Block dispatch through CHECK_REQUIRED
+   - Use authenticated airline isolation
+   - Use ACS simulated time only
+   - No localStorage
+   - No browser clock
    - No Date.now()
-   - No frontend authority
-   - Uses acs_get_current_sim_time()
-   - D_CHECK resets C/D calendar
-   - C_CHECK resets C calendar only
    ============================================================ */
 
 router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
   const client = await pool.connect();
+  let transactionStarted = false;
 
   try {
     const airlineId = Number(req.airline_id);
@@ -1146,6 +1150,17 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
     }
 
     await client.query("BEGIN");
+    transactionStarted = true;
+
+    /* ============================================================
+       1. COMPLETE FINISHED MAINTENANCE EVENTS
+       ------------------------------------------------------------
+       Hierarchy:
+       D resets D + C + B + A
+       C resets C + B + A
+       B resets B + A
+       A resets A
+       ============================================================ */
 
     const eventsResult = await client.query(
       `
@@ -1157,31 +1172,38 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
         ame.event_status,
         ame.started_at,
         ame.expected_completion_at,
+        ame.scheduled_start_at,
+        ame.scheduled_end_at,
         ame.duration_days,
+        ame.duration_minutes,
         ame.final_cost,
         ame.currency,
+
         af.registration,
         af.aircraft_name,
         af.status,
         af.operational_status,
-        ams.c_check_due_date,
-        ams.c_check_status,
-        ams.d_check_due_date,
-        ams.d_check_status,
+
         acs_get_current_sim_time() AS current_sim_time
-      FROM aircraft_maintenance_events ame
 
-      JOIN aircraft_fleet af
+      FROM public.aircraft_maintenance_events ame
+
+      JOIN public.aircraft_fleet af
         ON af.id = ame.aircraft_id
-
-      LEFT JOIN aircraft_maintenance_status ams
-        ON ams.aircraft_id = ame.aircraft_id
+       AND af.airline_id = ame.airline_id
 
       WHERE ame.airline_id = $1
         AND ame.event_status = 'IN_PROGRESS'
-        AND ame.expected_completion_at <= acs_get_current_sim_time()
+        AND COALESCE(
+              ame.scheduled_end_at,
+              ame.expected_completion_at
+            ) <= acs_get_current_sim_time()
 
-      ORDER BY ame.expected_completion_at ASC
+      ORDER BY
+        COALESCE(
+          ame.scheduled_end_at,
+          ame.expected_completion_at
+        ) ASC
 
       FOR UPDATE OF ame, af
       `,
@@ -1191,126 +1213,158 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
     const completedEvents = [];
 
     for (const event of eventsResult.rows) {
-      const checkType = String(event.check_type || "").toUpperCase();
+      const checkType = String(event.check_type || "")
+        .trim()
+        .toUpperCase();
+
       const aircraftId = Number(event.aircraft_id);
       const completionTime = event.current_sim_time;
 
       await client.query(
         `
-        UPDATE aircraft_maintenance_events
+        UPDATE public.aircraft_maintenance_events
         SET
           event_status = 'COMPLETED',
           completed_at = $2,
           updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
         WHERE id = $1
+          AND airline_id = $3
         `,
-        [event.id, completionTime]
+        [
+          event.id,
+          completionTime,
+          airlineId
+        ]
       );
 
       if (checkType === "D_CHECK") {
-        /*
-          ACS / Airbus OCC Rule:
-          D Check is a major structural service.
-          It resets D, C, B, A logic.
-          In current backend table, C and D are stored here.
-        */
-
         await client.query(
           `
-          UPDATE aircraft_maintenance_status
+          UPDATE public.aircraft_maintenance_status
           SET
+            a_check_due_date = $2::TIMESTAMP + INTERVAL '7 days',
+            a_check_status = 'OPEN',
+
+            b_check_due_date = $2::TIMESTAMP + INTERVAL '30 days',
+            b_check_status = 'OPEN',
+
             c_check_due_date = $2::TIMESTAMP + INTERVAL '12 months',
             c_check_status = 'OPEN',
+
             d_check_due_date = $2::TIMESTAMP + INTERVAL '8 years',
             d_check_status = 'OPEN',
+
             maintenance_control_status = 'SERVICEABLE',
             maintenance_control_reason = NULL,
+
             updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+
           WHERE aircraft_id = $1
+            AND airline_id = $3
           `,
-          [aircraftId, completionTime]
-        );
-
-         await client.query(
-          `
-          UPDATE aircraft_fleet
-          SET
-            status = 'ACTIVE',
-            operational_status = 'AVAILABLE',
-            maintenance_status = 'SERVICEABLE',
-            condition_pct = 100,
-            updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
-          WHERE id = $1
-          `,
-          [aircraftId]
-        );
-
-      } else if (checkType === "C_CHECK") {
-        /*
-          ACS / Airbus OCC Rule:
-          C Check resets C calendar.
-          D Check remains authoritative.
-          If D is still overdue, aircraft returns active but non-dispatchable.
-        */
-
-        const dIsOverdueResult = await client.query(
-          `
-          SELECT
-            CASE
-              WHEN d_check_due_date IS NOT NULL
-               AND d_check_due_date < acs_get_current_sim_time()
-              THEN TRUE
-              ELSE FALSE
-            END AS d_is_overdue
-          FROM aircraft_maintenance_status
-          WHERE aircraft_id = $1
-          `,
-          [aircraftId]
-        );
-
-        const dIsOverdue = dIsOverdueResult.rows[0]?.d_is_overdue === true;
-
-        await client.query(
-          `
-          UPDATE aircraft_maintenance_status
-          SET
-            c_check_due_date = $2::TIMESTAMP + INTERVAL '12 months',
-            c_check_status = 'OPEN',
-            d_check_status = CASE
-              WHEN $3::BOOLEAN = TRUE THEN 'OVERDUE'
-              ELSE d_check_status
-            END,
-            maintenance_control_status = CASE
-              WHEN $3::BOOLEAN = TRUE THEN 'MAINTENANCE_REQUIRED'
-              ELSE 'SERVICEABLE'
-            END,
-            maintenance_control_reason = CASE
-              WHEN $3::BOOLEAN = TRUE THEN 'D_CHECK_OVERDUE'
-              ELSE NULL
-            END,
-            updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
-          WHERE aircraft_id = $1
-          `,
-          [aircraftId, completionTime, dIsOverdue]
-        );
-
-         await client.query(
-          `
-          UPDATE aircraft_fleet
-          SET
-            status = 'ACTIVE',
-            operational_status = 'AVAILABLE',
-            maintenance_status = CASE
-              WHEN $2::BOOLEAN = TRUE THEN 'CHECK_REQUIRED'
-              ELSE 'SERVICEABLE'
-            END,
-            condition_pct = 100,
-            updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
-          WHERE id = $1
-          `,
-          [aircraftId, dIsOverdue]
+          [
+            aircraftId,
+            completionTime,
+            airlineId
+          ]
         );
       }
+
+      if (checkType === "C_CHECK") {
+        await client.query(
+          `
+          UPDATE public.aircraft_maintenance_status
+          SET
+            a_check_due_date = $2::TIMESTAMP + INTERVAL '7 days',
+            a_check_status = 'OPEN',
+
+            b_check_due_date = $2::TIMESTAMP + INTERVAL '30 days',
+            b_check_status = 'OPEN',
+
+            c_check_due_date = $2::TIMESTAMP + INTERVAL '12 months',
+            c_check_status = 'OPEN',
+
+            updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+
+          WHERE aircraft_id = $1
+            AND airline_id = $3
+          `,
+          [
+            aircraftId,
+            completionTime,
+            airlineId
+          ]
+        );
+      }
+
+      if (checkType === "B_CHECK") {
+        await client.query(
+          `
+          UPDATE public.aircraft_maintenance_status
+          SET
+            a_check_due_date = $2::TIMESTAMP + INTERVAL '7 days',
+            a_check_status = 'OPEN',
+
+            b_check_due_date = $2::TIMESTAMP + INTERVAL '30 days',
+            b_check_status = 'OPEN',
+
+            updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+
+          WHERE aircraft_id = $1
+            AND airline_id = $3
+          `,
+          [
+            aircraftId,
+            completionTime,
+            airlineId
+          ]
+        );
+      }
+
+      if (checkType === "A_CHECK") {
+        await client.query(
+          `
+          UPDATE public.aircraft_maintenance_status
+          SET
+            a_check_due_date = $2::TIMESTAMP + INTERVAL '7 days',
+            a_check_status = 'OPEN',
+
+            updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+
+          WHERE aircraft_id = $1
+            AND airline_id = $3
+          `,
+          [
+            aircraftId,
+            completionTime,
+            airlineId
+          ]
+        );
+      }
+
+      await client.query(
+        `
+        UPDATE public.aircraft_fleet
+        SET
+          status = 'ACTIVE',
+          operational_status = 'AVAILABLE',
+          maintenance_status = 'SERVICEABLE',
+          condition_pct = CASE
+            WHEN $3 = 'D_CHECK' THEN 100
+            WHEN $3 = 'C_CHECK' THEN GREATEST(condition_pct, 95)
+            ELSE condition_pct
+          END,
+          updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+
+        WHERE id = $1
+          AND airline_id = $2
+        `,
+        [
+          aircraftId,
+          airlineId,
+          checkType
+        ]
+      );
 
       completedEvents.push({
         event_id: event.id,
@@ -1322,18 +1376,342 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
       });
     }
 
+    /* ============================================================
+       2. RESOLVE OVERDUE CHECKS
+       ------------------------------------------------------------
+       Visual / operational priority:
+       D > C > B > A
+
+       A higher active check covers lower checks:
+       D covers C/B/A
+       C covers B/A
+       B covers A
+       ============================================================ */
+
+    const overdueResult = await client.query(
+      `
+      WITH active_events AS (
+        SELECT
+          ame.aircraft_id,
+
+          BOOL_OR(
+            ame.event_status = 'IN_PROGRESS'
+            AND ame.check_type = 'D_CHECK'
+          ) AS d_in_progress,
+
+          BOOL_OR(
+            ame.event_status = 'IN_PROGRESS'
+            AND ame.check_type = 'C_CHECK'
+          ) AS c_in_progress,
+
+          BOOL_OR(
+            ame.event_status = 'IN_PROGRESS'
+            AND ame.check_type = 'B_CHECK'
+          ) AS b_in_progress,
+
+          BOOL_OR(
+            ame.event_status = 'IN_PROGRESS'
+            AND ame.check_type = 'A_CHECK'
+          ) AS a_in_progress
+
+        FROM public.aircraft_maintenance_events ame
+
+        WHERE ame.airline_id = $1
+          AND ame.event_status = 'IN_PROGRESS'
+
+        GROUP BY ame.aircraft_id
+      ),
+
+      maintenance_state AS (
+        SELECT
+          ams.aircraft_id,
+          ams.airline_id,
+
+          COALESCE(ae.d_in_progress, FALSE) AS d_in_progress,
+          COALESCE(ae.c_in_progress, FALSE) AS c_in_progress,
+          COALESCE(ae.b_in_progress, FALSE) AS b_in_progress,
+          COALESCE(ae.a_in_progress, FALSE) AS a_in_progress,
+
+          CASE
+            WHEN COALESCE(ae.d_in_progress, FALSE) = TRUE
+              THEN FALSE
+
+            WHEN ams.d_check_due_date IS NOT NULL
+             AND ams.d_check_due_date <= acs_get_current_sim_time()
+              THEN TRUE
+
+            ELSE FALSE
+          END AS d_overdue,
+
+          CASE
+            WHEN COALESCE(ae.d_in_progress, FALSE) = TRUE
+              THEN FALSE
+
+            WHEN COALESCE(ae.c_in_progress, FALSE) = TRUE
+              THEN FALSE
+
+            WHEN ams.c_check_due_date IS NOT NULL
+             AND ams.c_check_due_date <= acs_get_current_sim_time()
+              THEN TRUE
+
+            ELSE FALSE
+          END AS c_overdue,
+
+          CASE
+            WHEN COALESCE(ae.d_in_progress, FALSE) = TRUE
+              THEN FALSE
+
+            WHEN COALESCE(ae.c_in_progress, FALSE) = TRUE
+              THEN FALSE
+
+            WHEN COALESCE(ae.b_in_progress, FALSE) = TRUE
+              THEN FALSE
+
+            WHEN ams.b_check_due_date IS NOT NULL
+             AND ams.b_check_due_date <= acs_get_current_sim_time()
+              THEN TRUE
+
+            ELSE FALSE
+          END AS b_overdue,
+
+          CASE
+            WHEN COALESCE(ae.d_in_progress, FALSE) = TRUE
+              THEN FALSE
+
+            WHEN COALESCE(ae.c_in_progress, FALSE) = TRUE
+              THEN FALSE
+
+            WHEN COALESCE(ae.b_in_progress, FALSE) = TRUE
+              THEN FALSE
+
+            WHEN COALESCE(ae.a_in_progress, FALSE) = TRUE
+              THEN FALSE
+
+            WHEN ams.a_check_due_date IS NOT NULL
+             AND ams.a_check_due_date <= acs_get_current_sim_time()
+              THEN TRUE
+
+            ELSE FALSE
+          END AS a_overdue
+
+        FROM public.aircraft_maintenance_status ams
+
+        LEFT JOIN active_events ae
+          ON ae.aircraft_id = ams.aircraft_id
+
+        WHERE ams.airline_id = $1
+      ),
+
+      resolved_priority AS (
+        SELECT
+          ms.*,
+
+          CASE
+            WHEN ms.d_in_progress THEN 'D_CHECK'
+            WHEN ms.c_in_progress THEN 'C_CHECK'
+            WHEN ms.b_in_progress THEN 'B_CHECK'
+            WHEN ms.a_in_progress THEN 'A_CHECK'
+
+            WHEN ms.d_overdue THEN 'D_CHECK_OVERDUE'
+            WHEN ms.c_overdue THEN 'C_CHECK_OVERDUE'
+            WHEN ms.b_overdue THEN 'B_CHECK_OVERDUE'
+            WHEN ms.a_overdue THEN 'A_CHECK_OVERDUE'
+
+            ELSE NULL
+          END AS dominant_reason
+
+        FROM maintenance_state ms
+      )
+
+      UPDATE public.aircraft_maintenance_status ams
+
+      SET
+        d_check_status = CASE
+          WHEN rp.d_in_progress THEN 'IN_PROGRESS'
+          WHEN rp.d_overdue THEN 'OVERDUE'
+          WHEN UPPER(COALESCE(ams.d_check_status, '')) IN (
+            'OVERDUE',
+            'IN_PROGRESS'
+          )
+            THEN 'OPEN'
+          ELSE ams.d_check_status
+        END,
+
+        c_check_status = CASE
+          WHEN rp.d_in_progress THEN 'OPEN'
+          WHEN rp.c_in_progress THEN 'IN_PROGRESS'
+          WHEN rp.c_overdue THEN 'OVERDUE'
+          WHEN UPPER(COALESCE(ams.c_check_status, '')) IN (
+            'OVERDUE',
+            'IN_PROGRESS'
+          )
+            THEN 'OPEN'
+          ELSE ams.c_check_status
+        END,
+
+        b_check_status = CASE
+          WHEN rp.d_in_progress
+            OR rp.c_in_progress
+            THEN 'OPEN'
+
+          WHEN rp.b_in_progress
+            THEN 'IN_PROGRESS'
+
+          WHEN rp.b_overdue
+            THEN 'OVERDUE'
+
+          WHEN UPPER(COALESCE(ams.b_check_status, '')) IN (
+            'OVERDUE',
+            'IN_PROGRESS'
+          )
+            THEN 'OPEN'
+
+          ELSE ams.b_check_status
+        END,
+
+        a_check_status = CASE
+          WHEN rp.d_in_progress
+            OR rp.c_in_progress
+            OR rp.b_in_progress
+            THEN 'OPEN'
+
+          WHEN rp.a_in_progress
+            THEN 'IN_PROGRESS'
+
+          WHEN rp.a_overdue
+            THEN 'OVERDUE'
+
+          WHEN UPPER(COALESCE(ams.a_check_status, '')) IN (
+            'OVERDUE',
+            'IN_PROGRESS'
+          )
+            THEN 'OPEN'
+
+          ELSE ams.a_check_status
+        END,
+
+        maintenance_control_status = CASE
+          WHEN rp.d_in_progress
+            OR rp.c_in_progress
+            OR rp.b_in_progress
+            OR rp.a_in_progress
+            THEN 'IN_MAINTENANCE'
+
+          WHEN rp.d_overdue
+            OR rp.c_overdue
+            OR rp.b_overdue
+            OR rp.a_overdue
+            THEN 'MAINTENANCE_REQUIRED'
+
+          ELSE 'SERVICEABLE'
+        END,
+
+        maintenance_control_reason = rp.dominant_reason,
+
+        updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+
+      FROM resolved_priority rp
+
+      WHERE ams.aircraft_id = rp.aircraft_id
+        AND ams.airline_id = rp.airline_id
+
+      RETURNING
+        ams.aircraft_id,
+        ams.airline_id,
+        ams.registration,
+        ams.aircraft_name,
+
+        ams.a_check_status,
+        ams.b_check_status,
+        ams.c_check_status,
+        ams.d_check_status,
+
+        ams.maintenance_control_status,
+        ams.maintenance_control_reason
+      `,
+      [airlineId]
+    );
+
+    /* ============================================================
+       3. SYNCHRONIZE AIRCRAFT FLEET DISPATCHABILITY
+       ------------------------------------------------------------
+       CHECK_REQUIRED blocks aircraft assignment because Schedule
+       Table requires maintenance_status = SERVICEABLE.
+       ============================================================ */
+
+    const fleetSyncResult = await client.query(
+      `
+      UPDATE public.aircraft_fleet af
+
+      SET
+        maintenance_status = CASE
+          WHEN ams.maintenance_control_status = 'MAINTENANCE_REQUIRED'
+            THEN 'CHECK_REQUIRED'
+
+          WHEN ams.maintenance_control_status = 'IN_MAINTENANCE'
+            THEN 'CHECK_REQUIRED'
+
+          ELSE 'SERVICEABLE'
+        END,
+
+        updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+
+      FROM public.aircraft_maintenance_status ams
+
+      WHERE af.id = ams.aircraft_id
+        AND af.airline_id = $1
+        AND ams.airline_id = $1
+
+      RETURNING
+        af.id AS aircraft_id,
+        af.airline_id,
+        af.registration,
+        af.aircraft_name,
+        af.status,
+        af.operational_status,
+        af.maintenance_status
+      `,
+      [airlineId]
+    );
+
     await client.query("COMMIT");
+    transactionStarted = false;
 
     return res.json({
       ok: true,
       endpoint: "ACS_MAINTENANCE_RESOLVER",
-      version: "v1.0",
+      version: "v1.1",
+
+      authority: {
+        time: "acs_get_current_sim_time",
+        maintenance_status: "aircraft_maintenance_status",
+        maintenance_events: "aircraft_maintenance_events",
+        fleet: "aircraft_fleet"
+      },
+
+      airline_id: airlineId,
+
+      overdue_sync_count: overdueResult.rows.length,
+      overdue_sync: overdueResult.rows,
+
+      fleet_sync_count: fleetSyncResult.rows.length,
+      fleet_sync: fleetSyncResult.rows,
+
       completed_count: completedEvents.length,
       completed_events: completedEvents
     });
 
   } catch (err) {
-    await client.query("ROLLBACK");
+    if (transactionStarted) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        console.error(
+          "ACS MAINTENANCE RESOLVER ROLLBACK ERROR:",
+          rollbackError
+        );
+      }
+    }
 
     console.error("ACS MAINTENANCE RESOLVER ERROR:", err);
 
