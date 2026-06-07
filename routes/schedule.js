@@ -388,37 +388,63 @@ router.get("/schedule/context", requireAuth, async (req, res) => {
     }
 
     const fleetResult = await client.query(
-      `
-      SELECT
-        af.id,
-        af.aircraft_uid,
-        af.airline_id,
-        af.source,
-        af.ownership_type,
-        af.manufacturer,
-        af.model_key,
-        af.aircraft_name,
-        af.registration,
-        af.serial_number,
-        af.status,
-        af.operational_status,
-        af.maintenance_status,
-        af.base_icao,
-        af.current_airport,
-        af.year_built,
-        af.delivery_date,
-        af.entry_into_service_date,
-        af.total_hours,
-        af.total_cycles,
-        af.condition_pct,
-        af.updated_at
-      FROM public.aircraft_fleet af
-      WHERE af.airline_id = $1
-      ORDER BY af.registration NULLS LAST, af.id
-      `,
-      [airlineId]
-    );
+  `
+  SELECT
+    af.id,
+    af.aircraft_uid,
+    af.airline_id,
+    af.source,
+    af.ownership_type,
+    af.manufacturer,
+    af.model_key,
+    af.aircraft_name,
+    af.registration,
+    af.serial_number,
 
+    af.status,
+    af.operational_status,
+    af.maintenance_status,
+
+    af.base_icao,
+    af.current_airport,
+    af.year_built,
+    af.delivery_date,
+    af.entry_into_service_date,
+    af.total_hours,
+    af.total_cycles,
+    af.condition_pct,
+    af.updated_at,
+
+    ams.a_check_due_date,
+    ams.a_check_status,
+
+    ams.b_check_due_date,
+    ams.b_check_status,
+
+    ams.c_check_due_date,
+    ams.c_check_status,
+
+    ams.d_check_due_date,
+    ams.d_check_status,
+
+    ams.maintenance_control_status,
+    ams.maintenance_control_reason
+
+  FROM public.aircraft_fleet af
+
+  LEFT JOIN public.aircraft_maintenance_status ams
+    ON ams.aircraft_id = af.id
+   AND ams.airline_id = af.airline_id
+
+  WHERE af.airline_id = $1
+
+  ORDER BY
+    af.registration NULLS LAST,
+    af.id
+  `,
+  [airlineId]
+);
+     
     const routePlansResult = await client.query(
       `
       SELECT
