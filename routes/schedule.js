@@ -40,6 +40,237 @@ function ACS_modelKey(value) {
   return ACS_text(value).toLowerCase();
 }
 
+/* ============================================================
+   ACS A/B MAINTENANCE QUOTE HELPERS
+   ------------------------------------------------------------
+   Authority:
+   - PostgreSQL simulated year
+   - aircraft_maintenance_policy
+   - Weekly Schedule Table timeline
+   - No Date.now()
+   - No browser clock
+   ============================================================ */
+
+const ACS_WEEK_MINUTES = 7 * 24 * 60;
+
+const ACS_SCHEDULE_DAY_INDEX = Object.freeze({
+  mon: 0,
+  tue: 1,
+  wed: 2,
+  thu: 3,
+  fri: 4,
+  sat: 5,
+  sun: 6
+});
+
+function ACS_normalizeCheckType(value) {
+  const checkType = ACS_text(value).toUpperCase();
+
+  if (checkType === "A" || checkType === "A_CHECK") {
+    return "A_CHECK";
+  }
+
+  if (checkType === "B" || checkType === "B_CHECK") {
+    return "B_CHECK";
+  }
+
+  return null;
+}
+
+function ACS_checkDisplayName(checkType) {
+  return checkType === "B_CHECK" ? "B-Check" : "A-Check";
+}
+
+function ACS_normalizeScheduleDay(value) {
+  const day = ACS_text(value).toLowerCase();
+
+  return Object.prototype.hasOwnProperty.call(
+    ACS_SCHEDULE_DAY_INDEX,
+    day
+  )
+    ? day
+    : null;
+}
+
+function ACS_parseScheduleTime(value) {
+  const text = ACS_text(value);
+
+  if (!/^\d{2}:\d{2}$/.test(text)) {
+    return null;
+  }
+
+  const [hoursText, minutesText] = text.split(":");
+  const hours = Number(hoursText);
+  const minutes = Number(minutesText);
+
+  if (
+    !Number.isInteger(hours) ||
+    !Number.isInteger(minutes) ||
+    hours < 0 ||
+    hours > 23 ||
+    minutes < 0 ||
+    minutes > 59
+  ) {
+    return null;
+  }
+
+  return {
+    text,
+    minutes: (hours * 60) + minutes
+  };
+}
+
+function ACS_formatScheduleMinute(value) {
+  const normalized =
+    ((Number(value) % 1440) + 1440) % 1440;
+
+  const hours = Math.floor(normalized / 60);
+  const minutes = normalized % 60;
+
+  return (
+    `${String(hours).padStart(2, "0")}:` +
+    `${String(minutes).padStart(2, "0")}`
+  );
+}
+
+function ACS_absoluteScheduleMinute(day, timeMinutes) {
+  return (
+    ACS_SCHEDULE_DAY_INDEX[day] * 1440 +
+    Number(timeMinutes)
+  );
+}
+
+function ACS_intervalSegments(startValue, endValue) {
+  let start = Number(startValue);
+  let end = Number(endValue);
+
+  if (!Number.isFinite(start) || !Number.isFinite(end)) {
+    return [];
+  }
+
+  if (end <= start) {
+    end += ACS_WEEK_MINUTES;
+  }
+
+  const duration = end - start;
+
+  if (duration >= ACS_WEEK_MINUTES) {
+    return [[0, ACS_WEEK_MINUTES]];
+  }
+
+  const normalizedStart =
+    ((start % ACS_WEEK_MINUTES) + ACS_WEEK_MINUTES) %
+    ACS_WEEK_MINUTES;
+
+  const normalizedEnd = normalizedStart + duration;
+
+  if (normalizedEnd <= ACS_WEEK_MINUTES) {
+    return [[normalizedStart, normalizedEnd]];
+  }
+
+  return [
+    [normalizedStart, ACS_WEEK_MINUTES],
+    [0, normalizedEnd - ACS_WEEK_MINUTES]
+  ];
+}
+
+function ACS_intervalsOverlap(
+  proposedStart,
+  proposedEnd,
+  existingStart,
+  existingEnd
+) {
+  const proposedSegments =
+    ACS_intervalSegments(proposedStart, proposedEnd);
+
+  const existingSegments =
+    ACS_intervalSegments(existingStart, existingEnd);
+
+  return proposedSegments.some(([proposedFrom, proposedTo]) =>
+    existingSegments.some(([existingFrom, existingTo]) =>
+      proposedFrom < existingTo &&
+      existingFrom < proposedTo
+    )
+  );
+}
+
+function ACS_resolveAircraftSizeClass(aircraft) {
+  const category =
+    ACS_text(aircraft?.aircraft_category).toUpperCase();
+
+  const aircraftName =
+    ACS_text(aircraft?.aircraft_name).toUpperCase();
+
+  const seats = Number(aircraft?.seats || 0);
+
+  if (
+    category.includes("WIDEBODY") ||
+    aircraftName.includes("747") ||
+    aircraftName.includes("DC-10") ||
+    aircraftName.includes("L-1011") ||
+    aircraftName.includes("A300") ||
+    aircraftName.includes("A310") ||
+    seats >= 220
+  ) {
+    return "HEAVY";
+  }
+
+  if (
+    category.includes("NARROWBODY") ||
+    category.includes("REGIONAL") ||
+    aircraftName.includes("707") ||
+    aircraftName.includes("720") ||
+    aircraftName.includes("727") ||
+    aircraftName.includes("737") ||
+    aircraftName.includes("DC-8") ||
+    aircraftName.includes("DC-9") ||
+    aircraftName.includes("CONSTELLATION") ||
+    aircraftName.includes("DC-6") ||
+    aircraftName.includes("DC-7") ||
+    seats >= 80
+  ) {
+    return "MEDIUM";
+  }
+
+  return "LIGHT";
+}
+
+function ACS_resolveMaintenanceFactors(aircraft, policy) {
+  const conditionPct = Number(aircraft?.condition_pct || 80);
+  const totalHours = Number(aircraft?.total_hours || 0);
+  const totalCycles = Number(aircraft?.total_cycles || 0);
+
+  let conditionFactor =
+    Number(policy?.condition_factor_good || 1);
+
+  if (conditionPct < 70) {
+    conditionFactor =
+      Number(policy?.condition_factor_low || 1.25);
+  } else if (conditionPct < 85) {
+    conditionFactor =
+      Number(policy?.condition_factor_medium || 1.12);
+  }
+
+  let usageFactor =
+    Number(policy?.usage_factor_normal || 1);
+
+  if (totalHours > 20000 || totalCycles > 12000) {
+    usageFactor =
+      Number(policy?.usage_factor_high || 1.18);
+  } else if (totalHours > 10000 || totalCycles > 6000) {
+    usageFactor =
+      Number(policy?.usage_factor_medium || 1.10);
+  }
+
+  return {
+    condition_pct: conditionPct,
+    total_hours: totalHours,
+    total_cycles: totalCycles,
+    condition_factor: conditionFactor,
+    usage_factor: usageFactor
+  };
+}
+
 async function ACS_getOfficialSimTime(client) {
   const result = await client.query(
     `
@@ -310,6 +541,448 @@ router.get("/schedule/context", requireAuth, async (req, res) => {
     client.release();
   }
 });
+
+/* ============================================================
+   POST /v1/schedule/maintenance/quote
+   ------------------------------------------------------------
+   Body:
+   {
+     "aircraft_id": 45,
+     "check_type": "A_CHECK",
+     "selected_day": "mon",
+     "start_time": "10:00"
+   }
+
+   Purpose:
+   - Calculate A/B duration and cost
+   - Validate weekly flight/service conflicts
+   - No maintenance creation
+   - No finance charge
+   - No aircraft mutation
+   - PostgreSQL / ACS Time Authority only
+   ============================================================ */
+
+router.post(
+  "/schedule/maintenance/quote",
+  requireAuth,
+  async (req, res) => {
+    const airlineId = ACS_airlineId(req);
+    const aircraftId =
+      ACS_positiveBigInt(req.body?.aircraft_id);
+
+    const checkType =
+      ACS_normalizeCheckType(req.body?.check_type);
+
+    const selectedDay =
+      ACS_normalizeScheduleDay(req.body?.selected_day);
+
+    const startTime =
+      ACS_parseScheduleTime(req.body?.start_time);
+
+    if (!airlineId) {
+      return res.status(401).json({
+        ok: false,
+        error: "NO_AIRLINE_SESSION"
+      });
+    }
+
+    if (!aircraftId) {
+      return res.status(400).json({
+        ok: false,
+        error: "VALIDATION_ERROR",
+        details: "aircraft_id is required"
+      });
+    }
+
+    if (!checkType) {
+      return res.status(400).json({
+        ok: false,
+        error: "MAINTENANCE_CHECK_TYPE_INVALID",
+        allowed_values: ["A_CHECK", "B_CHECK"]
+      });
+    }
+
+    if (!selectedDay) {
+      return res.status(400).json({
+        ok: false,
+        error: "MAINTENANCE_DAY_INVALID",
+        allowed_values: [
+          "mon",
+          "tue",
+          "wed",
+          "thu",
+          "fri",
+          "sat",
+          "sun"
+        ]
+      });
+    }
+
+    if (!startTime) {
+      return res.status(400).json({
+        ok: false,
+        error: "MAINTENANCE_TIME_INVALID",
+        format: "HH:MM"
+      });
+    }
+
+    const client = await pool.connect();
+
+    try {
+      await client.query(
+        "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY"
+      );
+
+      const aircraftResult = await client.query(
+        `
+        SELECT
+          af.id,
+          af.airline_id,
+          af.registration,
+          af.aircraft_name,
+          af.manufacturer,
+          af.model_key,
+          af.status,
+          af.operational_status,
+          af.maintenance_status,
+          af.total_hours,
+          af.total_cycles,
+          af.condition_pct,
+          af.current_value,
+          af.purchase_price,
+          af.currency,
+
+          ac.aircraft_category,
+          ac.seats,
+          ac.price_acs_usd,
+
+          EXTRACT(
+            YEAR FROM acs_get_current_sim_time()
+          )::INTEGER AS sim_year,
+
+          acs_get_current_sim_time() AS current_sim_time
+
+        FROM public.aircraft_fleet af
+
+        LEFT JOIN public.aircraft_catalog ac
+          ON ac.model_key = af.model_key
+
+        WHERE af.id = $1
+          AND af.airline_id = $2
+
+        LIMIT 1
+        `,
+        [aircraftId, airlineId]
+      );
+
+      if (!aircraftResult.rows.length) {
+        const error = new Error("AIRCRAFT_NOT_FOUND");
+        error.code = "AIRCRAFT_NOT_FOUND";
+        throw error;
+      }
+
+      const aircraft = aircraftResult.rows[0];
+      const sizeClass =
+        ACS_resolveAircraftSizeClass(aircraft);
+
+      const policyResult = await client.query(
+        `
+        SELECT
+          policy_code,
+          aircraft_size_class,
+          aircraft_category,
+          era_start_year,
+          era_end_year,
+
+          a_check_interval_days,
+          b_check_interval_days,
+          a_check_duration_minutes,
+          b_check_duration_minutes,
+          a_check_cost_rate,
+          b_check_cost_rate,
+
+          condition_factor_low,
+          condition_factor_medium,
+          condition_factor_good,
+          usage_factor_high,
+          usage_factor_medium,
+          usage_factor_normal
+
+        FROM public.aircraft_maintenance_policy
+
+        WHERE is_active = TRUE
+          AND aircraft_size_class = $1
+          AND aircraft_category = 'ANY'
+          AND era_start_year <= $2
+          AND era_end_year >= $2
+
+        ORDER BY era_start_year DESC
+        LIMIT 1
+        `,
+        [sizeClass, Number(aircraft.sim_year)]
+      );
+
+      if (!policyResult.rows.length) {
+        const error = new Error(
+          "MAINTENANCE_POLICY_NOT_FOUND"
+        );
+
+        error.code = "MAINTENANCE_POLICY_NOT_FOUND";
+        throw error;
+      }
+
+      const policy = policyResult.rows[0];
+
+      const durationMinutes =
+        checkType === "B_CHECK"
+          ? Number(policy.b_check_duration_minutes)
+          : Number(policy.a_check_duration_minutes);
+
+      const costRate =
+        checkType === "B_CHECK"
+          ? Number(policy.b_check_cost_rate)
+          : Number(policy.a_check_cost_rate);
+
+      if (
+        !Number.isFinite(durationMinutes) ||
+        durationMinutes <= 0 ||
+        !Number.isFinite(costRate) ||
+        costRate <= 0
+      ) {
+        const error = new Error(
+          "MAINTENANCE_COST_RATE_INVALID"
+        );
+
+        error.code = "MAINTENANCE_COST_RATE_INVALID";
+        throw error;
+      }
+
+      const factors =
+        ACS_resolveMaintenanceFactors(aircraft, policy);
+
+      const aircraftValue = Math.round(
+        Number(
+          aircraft.current_value ||
+          aircraft.purchase_price ||
+          aircraft.price_acs_usd ||
+          0
+        )
+      );
+
+      const estimatedCost =
+        aircraftValue > 0
+          ? Math.round(
+              aircraftValue *
+              costRate *
+              factors.condition_factor *
+              factors.usage_factor
+            )
+          : 0;
+
+      if (estimatedCost <= 0) {
+        const error = new Error(
+          "MAINTENANCE_COST_RATE_INVALID"
+        );
+
+        error.code = "MAINTENANCE_COST_RATE_INVALID";
+        throw error;
+      }
+
+      const proposedStartAbs =
+        ACS_absoluteScheduleMinute(
+          selectedDay,
+          startTime.minutes
+        );
+
+      const proposedEndAbs =
+        proposedStartAbs + durationMinutes;
+
+      const endTimeText =
+        ACS_formatScheduleMinute(proposedEndAbs);
+
+      const existingItemsResult = await client.query(
+        `
+        SELECT
+          id,
+          item_type,
+          service_type,
+          selected_day,
+          departure,
+          arrival,
+          flight_number,
+          dep_abs_min,
+          arr_abs_min,
+          turnaround_min,
+          status
+
+        FROM public.schedule_items
+
+        WHERE airline_id = $1
+          AND aircraft_id = $2
+          AND item_type IN ('flight', 'service')
+          AND LOWER(COALESCE(status, 'planned'))
+              NOT IN ('cancelled', 'completed')
+
+        ORDER BY dep_abs_min, id
+        `,
+        [airlineId, aircraftId]
+      );
+
+      let conflict = null;
+
+      for (const item of existingItemsResult.rows) {
+        const existingStart =
+          Number(item.dep_abs_min);
+
+        let existingEnd =
+          Number(item.arr_abs_min);
+
+        if (
+          !Number.isFinite(existingStart) ||
+          !Number.isFinite(existingEnd)
+        ) {
+          continue;
+        }
+
+        if (
+          ACS_text(item.item_type).toLowerCase() ===
+          "flight"
+        ) {
+          existingEnd += Number(
+            item.turnaround_min || 0
+          );
+        }
+
+        if (
+          ACS_intervalsOverlap(
+            proposedStartAbs,
+            proposedEndAbs,
+            existingStart,
+            existingEnd
+          )
+        ) {
+          conflict = item;
+          break;
+        }
+      }
+
+      if (conflict) {
+        await client.query("ROLLBACK");
+
+        const checkLabel =
+          ACS_checkDisplayName(checkType);
+
+        const conflictItemType =
+          ACS_text(conflict.item_type).toLowerCase();
+
+        if (conflictItemType === "flight") {
+          const flightNumber =
+            ACS_text(conflict.flight_number) ||
+            "UNNUMBERED";
+
+          return res.status(409).json({
+            ok: false,
+            error: "MAINTENANCE_SCHEDULE_CONFLICT",
+            message:
+              `⚠ Schedule Conflict\n` +
+              `${checkLabel} ${startTime.text}–${endTimeText} ` +
+              `overlaps flight ${flightNumber} ` +
+              `${ACS_text(conflict.departure)}–` +
+              `${ACS_text(conflict.arrival)}.`,
+            conflict
+          });
+        }
+
+        return res.status(409).json({
+          ok: false,
+          error: "MAINTENANCE_SCHEDULE_CONFLICT",
+          conflict
+        });
+      }
+
+      await client.query("COMMIT");
+
+      return res.json({
+        ok: true,
+        endpoint: "ACS_SCHEDULE_MAINTENANCE_QUOTE",
+        version: "v1.0",
+        authority: {
+          schedule: "schedule_items",
+          fleet: "aircraft_fleet",
+          policy: "aircraft_maintenance_policy",
+          time: "acs_get_current_sim_time"
+        },
+
+        aircraft: {
+          id: aircraft.id,
+          registration: aircraft.registration,
+          aircraft_name: aircraft.aircraft_name,
+          model_key: aircraft.model_key,
+          size_class: sizeClass,
+          current_value: aircraftValue,
+          currency: aircraft.currency || "USD"
+        },
+
+        maintenance: {
+          check_type: checkType,
+          display_name:
+            ACS_checkDisplayName(checkType),
+
+          selected_day: selectedDay,
+          start_time: startTime.text,
+          end_time: endTimeText,
+
+          dep_abs_min: proposedStartAbs,
+          arr_abs_min: proposedEndAbs,
+
+          duration_minutes: durationMinutes,
+          estimated_cost: estimatedCost,
+          currency: aircraft.currency || "USD"
+        },
+
+        policy: {
+          policy_code: policy.policy_code,
+          era_start_year:
+            Number(policy.era_start_year),
+          era_end_year:
+            Number(policy.era_end_year),
+          cost_rate: costRate,
+          condition_factor:
+            factors.condition_factor,
+          usage_factor:
+            factors.usage_factor
+        },
+
+        current_sim_time: aircraft.current_sim_time,
+        conflict: null
+      });
+
+    } catch (error) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        console.error(
+          "ACS MAINTENANCE QUOTE ROLLBACK ERROR:",
+          rollbackError
+        );
+      }
+
+      console.error(
+        "ACS SCHEDULE MAINTENANCE QUOTE ERROR:",
+        error
+      );
+
+      return ACS_sendError(
+        res,
+        error,
+        "MAINTENANCE_QUOTE_FAILED"
+      );
+
+    } finally {
+      client.release();
+    }
+  }
+);
 
 /* ============================================================
    POST /v1/schedule/assign-aircraft
