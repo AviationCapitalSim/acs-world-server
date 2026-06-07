@@ -308,6 +308,11 @@ function ACS_sendError(res, error, fallback = "SCHEDULE_OPERATION_FAILED") {
     MAINTENANCE_POLICY_NOT_FOUND: 409,
     MAINTENANCE_COST_RATE_INVALID: 409,
     MAINTENANCE_SCHEDULE_CONFLICT: 409,
+    MAINTENANCE_ALREADY_SCHEDULED: 409,
+    MAINTENANCE_EVENT_IN_PROGRESS: 409,
+    MAINTENANCE_STATUS_NOT_ESTABLISHED: 409,
+    COMPANY_FINANCE_NOT_FOUND: 409,
+    INSUFFICIENT_CAPITAL_FOR_MAINTENANCE: 409,
     ACS_CURRENT_SIM_TIME_INVALID: 409
   };
 
@@ -1002,6 +1007,982 @@ router.post(
         res,
         error,
         "MAINTENANCE_QUOTE_FAILED"
+      );
+
+    } finally {
+      client.release();
+    }
+  }
+);
+
+
+/* ============================================================
+   POST /v1/schedule/maintenance
+   ------------------------------------------------------------
+   Schedules A/B maintenance for the exact selected ACS day/time.
+   Programming does not start maintenance, charge finance or
+   change aircraft technical status before the scheduled time.
+   ============================================================ */
+
+router.post(
+  "/schedule/maintenance",
+  requireAuth,
+  async (req, res) => {
+    const airlineId = ACS_airlineId(req);
+    const aircraftId = ACS_positiveBigInt(req.body?.aircraft_id);
+    const checkType = ACS_normalizeCheckType(req.body?.check_type);
+    const selectedDay = ACS_normalizeScheduleDay(req.body?.selected_day);
+    const startTime = ACS_parseScheduleTime(req.body?.start_time);
+
+    if (!airlineId) {
+      return res.status(401).json({ ok: false, error: "NO_AIRLINE_SESSION" });
+    }
+
+    if (!aircraftId) {
+      return res.status(400).json({
+        ok: false,
+        error: "VALIDATION_ERROR",
+        details: "aircraft_id is required"
+      });
+    }
+
+    if (!checkType) {
+      return res.status(400).json({
+        ok: false,
+        error: "MAINTENANCE_CHECK_TYPE_INVALID",
+        allowed_values: ["A_CHECK", "B_CHECK"]
+      });
+    }
+
+    if (!selectedDay) {
+      return res.status(400).json({
+        ok: false,
+        error: "MAINTENANCE_DAY_INVALID"
+      });
+    }
+
+    if (!startTime) {
+      return res.status(400).json({
+        ok: false,
+        error: "MAINTENANCE_TIME_INVALID",
+        format: "HH:MM"
+      });
+    }
+
+    const client = await pool.connect();
+    let transactionStarted = false;
+
+    try {
+      await client.query("BEGIN");
+      transactionStarted = true;
+
+      await client.query(
+        `SELECT pg_advisory_xact_lock(hashtext($1))`,
+        [`ACS_SCHEDULE_MAINTENANCE|${airlineId}|${aircraftId}`]
+      );
+
+      const aircraftResult = await client.query(
+        `
+        SELECT
+          af.id,
+          af.airline_id,
+          af.registration,
+          af.aircraft_name,
+          af.manufacturer,
+          af.model_key,
+          af.status,
+          af.operational_status,
+          af.maintenance_status,
+          af.base_icao,
+          af.current_airport,
+          af.total_hours,
+          af.total_cycles,
+          af.condition_pct,
+          af.current_value,
+          af.purchase_price,
+          af.currency,
+
+          ac.aircraft_category,
+          ac.seats,
+          ac.price_acs_usd,
+
+          ams.a_check_status,
+          ams.b_check_status,
+          ams.c_check_status,
+          ams.d_check_status,
+
+          EXTRACT(
+            YEAR FROM acs_get_current_sim_time()
+          )::INTEGER AS sim_year
+
+        FROM public.aircraft_fleet af
+
+        LEFT JOIN public.aircraft_catalog ac
+          ON ac.model_key = af.model_key
+
+        JOIN public.aircraft_maintenance_status ams
+          ON ams.aircraft_id = af.id
+         AND ams.airline_id = af.airline_id
+
+        WHERE af.id = $1
+          AND af.airline_id = $2
+
+        LIMIT 1
+        FOR UPDATE OF af, ams
+        `,
+        [aircraftId, airlineId]
+      );
+
+      if (!aircraftResult.rows.length) {
+        const error = new Error("AIRCRAFT_NOT_FOUND");
+        error.code = "AIRCRAFT_NOT_FOUND";
+        throw error;
+      }
+
+      const aircraft = aircraftResult.rows[0];
+
+      if (
+        ACS_text(aircraft.a_check_status).toUpperCase() === "NOT_ESTABLISHED" ||
+        ACS_text(aircraft.b_check_status).toUpperCase() === "NOT_ESTABLISHED"
+      ) {
+        const error = new Error("MAINTENANCE_STATUS_NOT_ESTABLISHED");
+        error.code = "MAINTENANCE_STATUS_NOT_ESTABLISHED";
+        throw error;
+      }
+
+      if (
+        ACS_text(aircraft.c_check_status).toUpperCase() === "IN_PROGRESS" ||
+        ACS_text(aircraft.d_check_status).toUpperCase() === "IN_PROGRESS" ||
+        ACS_text(aircraft.operational_status).toUpperCase() === "IN_MAINTENANCE"
+      ) {
+        const error = new Error("MAINTENANCE_EVENT_IN_PROGRESS");
+        error.code = "MAINTENANCE_EVENT_IN_PROGRESS";
+        throw error;
+      }
+
+      const duplicateResult = await client.query(
+        `
+        SELECT id, event_uid, check_type, event_status,
+               scheduled_start_at, scheduled_end_at
+        FROM public.aircraft_maintenance_events
+        WHERE airline_id = $1
+          AND aircraft_id = $2
+          AND check_type = $3
+          AND event_status IN ('SCHEDULED', 'IN_PROGRESS')
+        LIMIT 1
+        FOR UPDATE
+        `,
+        [airlineId, aircraftId, checkType]
+      );
+
+      if (duplicateResult.rows.length) {
+        const error = new Error("MAINTENANCE_ALREADY_SCHEDULED");
+        error.code = "MAINTENANCE_ALREADY_SCHEDULED";
+        error.event = duplicateResult.rows[0];
+        throw error;
+      }
+
+      const sizeClass = ACS_resolveAircraftSizeClass(aircraft);
+
+      const policyResult = await client.query(
+        `
+        SELECT
+          policy_code,
+          aircraft_size_class,
+          aircraft_category,
+          era_start_year,
+          era_end_year,
+          a_check_interval_days,
+          b_check_interval_days,
+          a_check_duration_minutes,
+          b_check_duration_minutes,
+          a_check_cost_rate,
+          b_check_cost_rate,
+          condition_factor_low,
+          condition_factor_medium,
+          condition_factor_good,
+          usage_factor_high,
+          usage_factor_medium,
+          usage_factor_normal
+        FROM public.aircraft_maintenance_policy
+        WHERE is_active = TRUE
+          AND aircraft_size_class = $1
+          AND aircraft_category = 'ANY'
+          AND era_start_year <= $2
+          AND era_end_year >= $2
+        ORDER BY era_start_year DESC
+        LIMIT 1
+        `,
+        [sizeClass, Number(aircraft.sim_year)]
+      );
+
+      if (!policyResult.rows.length) {
+        const error = new Error("MAINTENANCE_POLICY_NOT_FOUND");
+        error.code = "MAINTENANCE_POLICY_NOT_FOUND";
+        throw error;
+      }
+
+      const policy = policyResult.rows[0];
+
+      const durationMinutes =
+        checkType === "B_CHECK"
+          ? Number(policy.b_check_duration_minutes)
+          : Number(policy.a_check_duration_minutes);
+
+      const costRate =
+        checkType === "B_CHECK"
+          ? Number(policy.b_check_cost_rate)
+          : Number(policy.a_check_cost_rate);
+
+      if (
+        !Number.isFinite(durationMinutes) ||
+        durationMinutes <= 0 ||
+        !Number.isFinite(costRate) ||
+        costRate <= 0
+      ) {
+        const error = new Error("MAINTENANCE_COST_RATE_INVALID");
+        error.code = "MAINTENANCE_COST_RATE_INVALID";
+        throw error;
+      }
+
+      const factors = ACS_resolveMaintenanceFactors(aircraft, policy);
+
+      const aircraftValue = Math.round(
+        Number(
+          aircraft.current_value ||
+          aircraft.purchase_price ||
+          aircraft.price_acs_usd ||
+          0
+        )
+      );
+
+      const estimatedCost =
+        aircraftValue > 0
+          ? Math.round(
+              aircraftValue *
+              costRate *
+              factors.condition_factor *
+              factors.usage_factor
+            )
+          : 0;
+
+      if (estimatedCost <= 0) {
+        const error = new Error("MAINTENANCE_COST_RATE_INVALID");
+        error.code = "MAINTENANCE_COST_RATE_INVALID";
+        throw error;
+      }
+
+      const proposedStartAbs =
+        ACS_absoluteScheduleMinute(selectedDay, startTime.minutes);
+
+      const proposedEndAbs =
+        proposedStartAbs + durationMinutes;
+
+      const endTimeText =
+        ACS_formatScheduleMinute(proposedEndAbs);
+
+      const existingItemsResult = await client.query(
+        `
+        SELECT
+          id,
+          item_type,
+          service_type,
+          selected_day,
+          departure,
+          arrival,
+          flight_number,
+          dep_abs_min,
+          arr_abs_min,
+          turnaround_min,
+          status
+        FROM public.schedule_items
+        WHERE airline_id = $1
+          AND aircraft_id = $2
+          AND item_type IN ('flight', 'service')
+          AND LOWER(COALESCE(status, 'planned'))
+              NOT IN ('cancelled', 'completed')
+        ORDER BY dep_abs_min, id
+        FOR UPDATE
+        `,
+        [airlineId, aircraftId]
+      );
+
+      let conflict = null;
+
+      for (const item of existingItemsResult.rows) {
+        const existingStart = Number(item.dep_abs_min);
+        let existingEnd = Number(item.arr_abs_min);
+
+        if (
+          !Number.isFinite(existingStart) ||
+          !Number.isFinite(existingEnd)
+        ) {
+          continue;
+        }
+
+        if (ACS_text(item.item_type).toLowerCase() === "flight") {
+          existingEnd += Number(item.turnaround_min || 0);
+        }
+
+        if (
+          ACS_intervalsOverlap(
+            proposedStartAbs,
+            proposedEndAbs,
+            existingStart,
+            existingEnd
+          )
+        ) {
+          conflict = item;
+          break;
+        }
+      }
+
+      if (conflict) {
+        const error = new Error("MAINTENANCE_SCHEDULE_CONFLICT");
+        error.code = "MAINTENANCE_SCHEDULE_CONFLICT";
+        error.conflict = conflict;
+
+        if (ACS_text(conflict.item_type).toLowerCase() === "flight") {
+          error.message =
+            `⚠ Schedule Conflict\n` +
+            `${ACS_checkDisplayName(checkType)} ` +
+            `${startTime.text}–${endTimeText} ` +
+            `overlaps flight ` +
+            `${ACS_text(conflict.flight_number) || "UNNUMBERED"} ` +
+            `${ACS_text(conflict.departure)}–` +
+            `${ACS_text(conflict.arrival)}.`;
+        }
+
+        throw error;
+      }
+
+      const dayToIso = {
+        mon: 1,
+        tue: 2,
+        wed: 3,
+        thu: 4,
+        fri: 5,
+        sat: 6,
+        sun: 7
+      };
+
+      const windowResult = await client.query(
+        `
+        WITH authority AS (
+          SELECT
+            acs_get_current_sim_time() AS current_sim_time,
+            EXTRACT(
+              ISODOW FROM acs_get_current_sim_time()
+            )::INTEGER AS current_iso_day
+        ),
+        proposed AS (
+          SELECT
+            current_sim_time,
+            date_trunc('day', current_sim_time)
+            +
+            (
+              (($1::INTEGER - current_iso_day + 7) % 7)
+              * INTERVAL '1 day'
+            )
+            +
+            ($2::INTEGER * INTERVAL '1 minute')
+            AS candidate_start
+          FROM authority
+        )
+        SELECT
+          CASE
+            WHEN candidate_start <= current_sim_time
+              THEN candidate_start + INTERVAL '7 days'
+            ELSE candidate_start
+          END AS scheduled_start_at,
+          (
+            CASE
+              WHEN candidate_start <= current_sim_time
+                THEN candidate_start + INTERVAL '7 days'
+              ELSE candidate_start
+            END
+          ) + ($3::INTEGER * INTERVAL '1 minute')
+          AS scheduled_end_at
+        FROM proposed
+        `,
+        [
+          dayToIso[selectedDay],
+          startTime.minutes,
+          durationMinutes
+        ]
+      );
+
+      const scheduledStartAt =
+        windowResult.rows[0]?.scheduled_start_at;
+
+      const scheduledEndAt =
+        windowResult.rows[0]?.scheduled_end_at;
+
+      const location =
+        ACS_text(
+          aircraft.current_airport ||
+          aircraft.base_icao ||
+          "MAINT"
+        ).toUpperCase();
+
+      const serviceType =
+        checkType === "B_CHECK" ? "B" : "A";
+
+      const scheduleItemResult = await client.query(
+        `
+        INSERT INTO public.schedule_items (
+          schedule_uid,
+          route_plan_id,
+          route_uid,
+          airline_id,
+          item_type,
+          service_type,
+          origin,
+          destination,
+          selected_day,
+          departure,
+          arrival,
+          model_key,
+          aircraft,
+          aircraft_registration,
+          flight_number,
+          distance_nm,
+          status,
+          notes,
+          aircraft_id,
+          dep_abs_min,
+          arr_abs_min,
+          block_time_min,
+          turnaround_min,
+          flight_direction,
+          paired_flight_number,
+          created_at,
+          updated_at
+        )
+        VALUES (
+          gen_random_uuid()::TEXT,
+          NULL,
+          NULL,
+          $1,
+          'service',
+          $2,
+          $3,
+          $3,
+          $4,
+          $5,
+          $6,
+          $7,
+          $8,
+          $9,
+          NULL,
+          0,
+          'scheduled',
+          $10,
+          $11,
+          $12,
+          $13,
+          $14,
+          0,
+          NULL,
+          NULL,
+          (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
+          (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+        )
+        RETURNING *
+        `,
+        [
+          airlineId,
+          serviceType,
+          location,
+          selectedDay,
+          startTime.text,
+          endTimeText,
+          aircraft.model_key,
+          aircraft.aircraft_name,
+          aircraft.registration,
+          JSON.stringify({
+            source: "ACS_SCHEDULE_MAINTENANCE_V1",
+            check_type: checkType,
+            policy_code: policy.policy_code,
+            scheduled_start_at: scheduledStartAt,
+            scheduled_end_at: scheduledEndAt
+          }),
+          aircraftId,
+          proposedStartAbs,
+          proposedEndAbs,
+          durationMinutes
+        ]
+      );
+
+      const scheduleItem = scheduleItemResult.rows[0];
+      const durationDays = Math.floor(durationMinutes / 1440);
+
+      const eventResult = await client.query(
+        `
+        INSERT INTO public.aircraft_maintenance_events (
+          airline_id,
+          aircraft_id,
+          check_type,
+          event_status,
+          started_at,
+          expected_completion_at,
+          completed_at,
+          duration_days,
+          duration_minutes,
+          scheduled_start_at,
+          scheduled_end_at,
+          schedule_item_id,
+          estimated_cost,
+          final_cost,
+          currency,
+          finance_charged,
+          finance_log_id,
+          notes,
+          created_at,
+          updated_at
+        )
+        VALUES (
+          $1,
+          $2,
+          $3,
+          'SCHEDULED',
+          $4,
+          $5,
+          NULL,
+          $6,
+          $7,
+          $4,
+          $5,
+          $8,
+          $9,
+          NULL,
+          $10,
+          FALSE,
+          NULL,
+          $11,
+          (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
+          (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+        )
+        RETURNING *
+        `,
+        [
+          airlineId,
+          aircraftId,
+          checkType,
+          scheduledStartAt,
+          scheduledEndAt,
+          durationDays,
+          durationMinutes,
+          scheduleItem.id,
+          estimatedCost,
+          aircraft.currency || "USD",
+          JSON.stringify({
+            source: "ACS_SCHEDULE_MAINTENANCE_V1",
+            policy_code: policy.policy_code,
+            size_class: sizeClass,
+            aircraft_value: aircraftValue,
+            cost_rate: costRate,
+            condition_factor: factors.condition_factor,
+            usage_factor: factors.usage_factor
+          })
+        ]
+      );
+
+      await client.query("COMMIT");
+      transactionStarted = false;
+
+      return res.status(201).json({
+        ok: true,
+        endpoint: "ACS_SCHEDULE_CREATE_MAINTENANCE",
+        version: "v1.0",
+        authority: "POSTGRESQL_SCHEDULE_AUTHORITY",
+        airline_id: airlineId,
+        action: "MAINTENANCE_SCHEDULED",
+        aircraft: {
+          id: aircraft.id,
+          registration: aircraft.registration,
+          aircraft_name: aircraft.aircraft_name,
+          model_key: aircraft.model_key
+        },
+        maintenance: {
+          check_type: checkType,
+          selected_day: selectedDay,
+          start_time: startTime.text,
+          end_time: endTimeText,
+          scheduled_start_at: scheduledStartAt,
+          scheduled_end_at: scheduledEndAt,
+          duration_minutes: durationMinutes,
+          estimated_cost: estimatedCost,
+          currency: aircraft.currency || "USD"
+        },
+        schedule_item: scheduleItem,
+        event: eventResult.rows[0],
+        finance: {
+          charged: false,
+          charge_timing: "AT_SCHEDULED_START"
+        }
+      });
+
+    } catch (error) {
+      if (transactionStarted) {
+        try {
+          await client.query("ROLLBACK");
+        } catch (rollbackError) {
+          console.error(
+            "ACS SCHEDULE MAINTENANCE ROLLBACK ERROR:",
+            rollbackError
+          );
+        }
+      }
+
+      console.error(
+        "ACS SCHEDULE CREATE MAINTENANCE ERROR:",
+        error
+      );
+
+      if (error.code === "MAINTENANCE_SCHEDULE_CONFLICT") {
+        return res.status(409).json({
+          ok: false,
+          error: error.code,
+          details: error.message,
+          message: error.message,
+          conflict: error.conflict || null
+        });
+      }
+
+      if (error.code === "MAINTENANCE_ALREADY_SCHEDULED") {
+        return res.status(409).json({
+          ok: false,
+          error: error.code,
+          event: error.event || null
+        });
+      }
+
+      return ACS_sendError(
+        res,
+        error,
+        "MAINTENANCE_CREATE_FAILED"
+      );
+
+    } finally {
+      client.release();
+    }
+  }
+);
+
+/* ============================================================
+   POST /v1/schedule/maintenance/resolver
+   ------------------------------------------------------------
+   Starts scheduled A/B maintenance only when programmed ACS time
+   has arrived. B has priority over A at the same operational time.
+   ============================================================ */
+
+router.post(
+  "/schedule/maintenance/resolver",
+  requireAuth,
+  async (req, res) => {
+    const airlineId = ACS_airlineId(req);
+
+    if (!airlineId) {
+      return res.status(401).json({
+        ok: false,
+        error: "NO_AIRLINE_SESSION"
+      });
+    }
+
+    const client = await pool.connect();
+    let transactionStarted = false;
+
+    try {
+      await client.query("BEGIN");
+      transactionStarted = true;
+
+      const dueEventsResult = await client.query(
+        `
+        SELECT
+          ame.id,
+          ame.event_uid,
+          ame.aircraft_id,
+          ame.check_type,
+          ame.estimated_cost,
+          ame.currency,
+          ame.schedule_item_id,
+          ame.scheduled_start_at,
+          ame.scheduled_end_at,
+          af.registration,
+          af.aircraft_name,
+          ams.a_check_status,
+          ams.b_check_status,
+          ams.c_check_status,
+          ams.d_check_status
+        FROM public.aircraft_maintenance_events ame
+        JOIN public.aircraft_fleet af
+          ON af.id = ame.aircraft_id
+         AND af.airline_id = ame.airline_id
+        JOIN public.aircraft_maintenance_status ams
+          ON ams.aircraft_id = ame.aircraft_id
+         AND ams.airline_id = ame.airline_id
+        WHERE ame.airline_id = $1
+          AND ame.event_status = 'SCHEDULED'
+          AND ame.check_type IN ('A_CHECK', 'B_CHECK')
+          AND ame.scheduled_start_at
+              <= acs_get_current_sim_time()
+        ORDER BY
+          ame.scheduled_start_at,
+          CASE ame.check_type
+            WHEN 'B_CHECK' THEN 1
+            WHEN 'A_CHECK' THEN 2
+            ELSE 3
+          END,
+          ame.id
+        FOR UPDATE OF ame, af, ams
+        `,
+        [airlineId]
+      );
+
+      const startedEvents = [];
+
+      for (const event of dueEventsResult.rows) {
+        const checkType =
+          ACS_text(event.check_type).toUpperCase();
+
+        if (
+          ACS_text(event.c_check_status).toUpperCase() === "IN_PROGRESS" ||
+          ACS_text(event.d_check_status).toUpperCase() === "IN_PROGRESS"
+        ) {
+          continue;
+        }
+
+        if (
+          checkType === "A_CHECK" &&
+          dueEventsResult.rows.some(other =>
+            Number(other.aircraft_id) === Number(event.aircraft_id) &&
+            ACS_text(other.check_type).toUpperCase() === "B_CHECK" &&
+            Number(other.id) !== Number(event.id)
+          )
+        ) {
+          continue;
+        }
+
+        const cost = Math.round(
+          Number(event.estimated_cost || 0)
+        );
+
+        const financeResult = await client.query(
+          `
+          SELECT capital
+          FROM public.company_finance
+          WHERE airline_id = $1
+          FOR UPDATE
+          `,
+          [airlineId]
+        );
+
+        if (!financeResult.rows.length) {
+          const error = new Error("COMPANY_FINANCE_NOT_FOUND");
+          error.code = "COMPANY_FINANCE_NOT_FOUND";
+          throw error;
+        }
+
+        const capital = Math.round(
+          Number(financeResult.rows[0].capital || 0)
+        );
+
+        if (capital < cost) {
+          const error = new Error(
+            "INSUFFICIENT_CAPITAL_FOR_MAINTENANCE"
+          );
+          error.code = "INSUFFICIENT_CAPITAL_FOR_MAINTENANCE";
+          error.capital = capital;
+          error.required = cost;
+          throw error;
+        }
+
+        const financeLogResult = await client.query(
+          `
+          INSERT INTO public.finance_log (
+            airline_id,
+            type,
+            source,
+            amount,
+            timestamp,
+            schedule_item_id,
+            reference_uid,
+            description
+          )
+          VALUES (
+            $1,
+            'EXPENSE',
+            $2,
+            $3,
+            (
+              EXTRACT(
+                EPOCH FROM acs_get_current_sim_time()
+              ) * 1000
+            )::BIGINT,
+            $4,
+            $5,
+            $6
+          )
+          RETURNING id
+          `,
+          [
+            airlineId,
+            `AIRCRAFT ${checkType} — ` +
+              `${event.registration || "UNREGISTERED"} ` +
+              `${event.aircraft_name}`,
+            cost,
+            event.schedule_item_id,
+            String(event.event_uid),
+            `${ACS_checkDisplayName(checkType)} ` +
+              `started from Schedule Table`
+          ]
+        );
+
+        const financeLogId =
+          financeLogResult.rows[0].id;
+
+        await client.query(
+          `
+          UPDATE public.company_finance
+          SET
+            capital = COALESCE(capital, 0) - $2,
+            expenses = COALESCE(expenses, 0) + $2,
+            profit = COALESCE(profit, 0) - $2,
+            cost_maintenance =
+              COALESCE(cost_maintenance, 0) + $2,
+            updated_at =
+              (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+          WHERE airline_id = $1
+          `,
+          [airlineId, cost]
+        );
+
+        await client.query(
+          `
+          UPDATE public.aircraft_maintenance_events
+          SET
+            event_status = 'IN_PROGRESS',
+            started_at = scheduled_start_at,
+            expected_completion_at = scheduled_end_at,
+            finance_charged = TRUE,
+            finance_log_id = $2,
+            final_cost = estimated_cost,
+            updated_at =
+              (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+          WHERE id = $1
+            AND airline_id = $3
+          `,
+          [event.id, financeLogId, airlineId]
+        );
+
+        await client.query(
+          `
+          UPDATE public.schedule_items
+          SET
+            status = 'in_progress',
+            updated_at =
+              (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+          WHERE id = $1
+            AND airline_id = $2
+          `,
+          [event.schedule_item_id, airlineId]
+        );
+
+        await client.query(
+          `
+          UPDATE public.aircraft_maintenance_status
+          SET
+            a_check_status = CASE
+              WHEN $2 = 'A_CHECK' THEN 'IN_PROGRESS'
+              ELSE a_check_status
+            END,
+            b_check_status = CASE
+              WHEN $2 = 'B_CHECK' THEN 'IN_PROGRESS'
+              ELSE b_check_status
+            END,
+            maintenance_control_status = 'IN_MAINTENANCE',
+            maintenance_control_reason = $2,
+            updated_at =
+              (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+          WHERE aircraft_id = $1
+            AND airline_id = $3
+          `,
+          [event.aircraft_id, checkType, airlineId]
+        );
+
+        await client.query(
+          `
+          UPDATE public.aircraft_fleet
+          SET
+            status = 'MAINTENANCE',
+            operational_status = 'IN_MAINTENANCE',
+            maintenance_status = 'CHECK_REQUIRED',
+            updated_at =
+              (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+          WHERE id = $1
+            AND airline_id = $2
+          `,
+          [event.aircraft_id, airlineId]
+        );
+
+        startedEvents.push({
+          event_id: event.id,
+          aircraft_id: event.aircraft_id,
+          registration: event.registration,
+          check_type: checkType,
+          started_at: event.scheduled_start_at,
+          expected_completion_at: event.scheduled_end_at,
+          charged_amount: cost
+        });
+      }
+
+      await client.query("COMMIT");
+      transactionStarted = false;
+
+      return res.json({
+        ok: true,
+        endpoint: "ACS_SCHEDULE_MAINTENANCE_RESOLVER",
+        version: "v1.0",
+        authority: "POSTGRESQL_SCHEDULE_AUTHORITY",
+        airline_id: airlineId,
+        started_count: startedEvents.length,
+        started_events: startedEvents
+      });
+
+    } catch (error) {
+      if (transactionStarted) {
+        try {
+          await client.query("ROLLBACK");
+        } catch (rollbackError) {
+          console.error(
+            "ACS SCHEDULE MAINTENANCE RESOLVER ROLLBACK ERROR:",
+            rollbackError
+          );
+        }
+      }
+
+      console.error(
+        "ACS SCHEDULE MAINTENANCE RESOLVER ERROR:",
+        error
+      );
+
+      if (
+        error.code ===
+        "INSUFFICIENT_CAPITAL_FOR_MAINTENANCE"
+      ) {
+        return res.status(409).json({
+          ok: false,
+          error: error.code,
+          capital: error.capital,
+          required: error.required
+        });
+      }
+
+      return ACS_sendError(
+        res,
+        error,
+        "MAINTENANCE_RESOLVER_FAILED"
       );
 
     } finally {
