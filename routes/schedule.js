@@ -865,29 +865,6 @@ router.post(
       let conflict = null;
 
       for (const item of existingItemsResult.rows) {
-        const existingItemType =
-          ACS_text(
-            item.item_type
-          ).toLowerCase();
-
-        const existingServiceType =
-          ACS_text(
-            item.service_type
-          ).toUpperCase();
-
-        /*
-         * B dominates A.
-         * An existing B service does not prevent A from being
-         * placed on the weekly table.
-         */
-        if (
-          checkType === "A_CHECK" &&
-          existingItemType === "service" &&
-          existingServiceType === "B"
-        ) {
-          continue;
-        }
-
         const existingStart =
           Number(item.dep_abs_min);
 
@@ -1270,37 +1247,35 @@ router.post(
       }
 
       /*
-       * C/D maintenance blocks new A/B programming.
-       *
-       * B in progress does NOT block programming A.
-       * A remains SCHEDULED, creates no charge and does not
-       * change the aircraft maintenance state.
+       * A cannot be performed when B is overdue.
+       * Completion of B resets both B and A.
        */
-      const aircraftInMaintenance =
-        ACS_text(
-          aircraft.operational_status
-        ).toUpperCase() === "IN_MAINTENANCE";
-
-      const maintenanceReason =
-        ACS_text(
-          aircraft.maintenance_control_reason
-        ).toUpperCase();
-
-      const allowAWhileBInProgress =
+      if (
         checkType === "A_CHECK" &&
-        aircraftInMaintenance &&
-        (
-          bCheckStatus === "IN_PROGRESS" ||
-          maintenanceReason === "B_CHECK"
-        );
+        bCheckStatus === "OVERDUE"
+      ) {
+        const error =
+          new Error(
+            "This aircraft requires a B-Check. " +
+            "Completion of the B-Check resets both A and B."
+          );
 
+        error.code =
+          "A_CHECK_BLOCKED_BY_OVERDUE_B";
+
+        throw error;
+      }
+
+      /*
+       * Do not start a new A/B event while another
+       * maintenance operation is already active.
+       */
       if (
         cCheckStatus === "IN_PROGRESS" ||
         dCheckStatus === "IN_PROGRESS" ||
-        (
-          aircraftInMaintenance &&
-          !allowAWhileBInProgress
-        )
+        ACS_text(
+          aircraft.operational_status
+        ).toUpperCase() === "IN_MAINTENANCE"
       ) {
         const error =
           new Error(
@@ -1597,28 +1572,6 @@ router.post(
         const item
         of existingItemsResult.rows
       ) {
-        const existingItemType =
-          ACS_text(
-            item.item_type
-          ).toLowerCase();
-
-        const existingServiceType =
-          ACS_text(
-            item.service_type
-          ).toUpperCase();
-
-        /*
-         * B dominates A.
-         * The active B service does not block creation of a
-         * scheduled A service.
-         */
-        if (
-          checkType === "A_CHECK" &&
-          existingItemType === "service" &&
-          existingServiceType === "B"
-        ) {
-          continue;
-        }
 
         const existingStart =
           Number(
@@ -2603,8 +2556,12 @@ router.post(
 /* ============================================================
    POST /v1/schedule/maintenance/resolver
    ------------------------------------------------------------
-   Starts scheduled A/B maintenance only when programmed ACS time
-   has arrived. B has priority over A at the same operational time.
+   ACS A/B maintenance lifecycle authority:
+   1. Completes IN_PROGRESS events whose ACS completion time arrived.
+   2. Resets A/B cycles only when the maintenance is COMPLETED.
+   3. Cancels pending A when B is completed (B satisfies A).
+   4. Starts due SCHEDULED events and charges them only once.
+   PostgreSQL / Railway authority only.
    ============================================================ */
 
 router.post(
@@ -2627,6 +2584,280 @@ router.post(
       await client.query("BEGIN");
       transactionStarted = true;
 
+      /* ========================================================
+         PHASE 1 — COMPLETE A/B EVENTS
+         Cycles start only when the aircraft exits maintenance.
+         ======================================================== */
+
+      const completionResult = await client.query(
+        `
+        SELECT
+          ame.id,
+          ame.event_uid,
+          ame.aircraft_id,
+          ame.check_type,
+          ame.schedule_item_id,
+          ame.expected_completion_at,
+          af.registration,
+          af.aircraft_name
+        FROM public.aircraft_maintenance_events ame
+        JOIN public.aircraft_fleet af
+          ON af.id = ame.aircraft_id
+         AND af.airline_id = ame.airline_id
+        JOIN public.aircraft_maintenance_status ams
+          ON ams.aircraft_id = ame.aircraft_id
+         AND ams.airline_id = ame.airline_id
+        WHERE ame.airline_id = $1
+          AND ame.event_status = 'IN_PROGRESS'
+          AND ame.check_type IN ('A_CHECK', 'B_CHECK')
+          AND ame.expected_completion_at
+              <= acs_get_current_sim_time()
+        ORDER BY
+          ame.expected_completion_at,
+          CASE ame.check_type
+            WHEN 'B_CHECK' THEN 1
+            WHEN 'A_CHECK' THEN 2
+            ELSE 3
+          END,
+          ame.id
+        FOR UPDATE OF ame, af, ams
+        `,
+        [airlineId]
+      );
+
+      const completedEvents = [];
+
+      for (const event of completionResult.rows) {
+        const checkType =
+          ACS_text(event.check_type).toUpperCase();
+
+        const completedEventResult = await client.query(
+          `
+          UPDATE public.aircraft_maintenance_events
+          SET
+            event_status = 'COMPLETED',
+            completed_at = acs_get_current_sim_time(),
+            updated_at =
+              (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+          WHERE id = $1
+            AND airline_id = $2
+            AND event_status = 'IN_PROGRESS'
+          RETURNING
+            id,
+            event_uid,
+            aircraft_id,
+            check_type,
+            completed_at,
+            schedule_item_id
+          `,
+          [event.id, airlineId]
+        );
+
+        if (!completedEventResult.rows.length) {
+          continue;
+        }
+
+        const completedEvent =
+          completedEventResult.rows[0];
+
+        await client.query(
+          `
+          UPDATE public.schedule_items
+          SET
+            status = 'completed',
+            updated_at =
+              (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+          WHERE id = $1
+            AND airline_id = $2
+          `,
+          [completedEvent.schedule_item_id, airlineId]
+        );
+
+        /*
+         * B satisfies A.
+         * Any A that was only waiting on the weekly table is cancelled
+         * when B is completed. It has not been charged.
+         */
+        if (checkType === "B_CHECK") {
+          await client.query(
+            `
+            WITH cancelled_a AS (
+              UPDATE public.aircraft_maintenance_events
+              SET
+                event_status = 'CANCELLED',
+                updated_at =
+                  (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
+                notes = notes
+              WHERE airline_id = $1
+                AND aircraft_id = $2
+                AND check_type = 'A_CHECK'
+                AND event_status = 'SCHEDULED'
+              RETURNING schedule_item_id
+            )
+            UPDATE public.schedule_items si
+            SET
+              status = 'cancelled',
+              updated_at =
+                (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+            FROM cancelled_a ca
+            WHERE si.id = ca.schedule_item_id
+              AND si.airline_id = $1
+            `,
+            [airlineId, completedEvent.aircraft_id]
+          );
+        }
+
+        const statusUpdateResult = await client.query(
+          `
+          UPDATE public.aircraft_maintenance_status
+          SET
+            a_check_status = CASE
+              WHEN $3 = 'A_CHECK' THEN 'OPEN'
+              WHEN $3 = 'B_CHECK' THEN 'OPEN'
+              ELSE a_check_status
+            END,
+
+            a_check_due_date = CASE
+              WHEN $3 IN ('A_CHECK', 'B_CHECK')
+                THEN acs_get_current_sim_time()
+                     + INTERVAL '7 days'
+              ELSE a_check_due_date
+            END,
+
+            b_check_status = CASE
+              WHEN $3 = 'B_CHECK' THEN 'OPEN'
+              ELSE b_check_status
+            END,
+
+            b_check_due_date = CASE
+              WHEN $3 = 'B_CHECK'
+                THEN acs_get_current_sim_time()
+                     + INTERVAL '30 days'
+              ELSE b_check_due_date
+            END,
+
+            maintenance_control_status = CASE
+              WHEN UPPER(COALESCE(d_check_status, '')) = 'IN_PROGRESS'
+                THEN 'IN_MAINTENANCE'
+              WHEN UPPER(COALESCE(c_check_status, '')) = 'IN_PROGRESS'
+                THEN 'IN_MAINTENANCE'
+              WHEN UPPER(COALESCE(d_check_status, '')) = 'OVERDUE'
+                THEN 'UNSERVICEABLE'
+              WHEN UPPER(COALESCE(c_check_status, '')) = 'OVERDUE'
+                THEN 'UNSERVICEABLE'
+              WHEN
+                $3 = 'A_CHECK'
+                AND UPPER(COALESCE(b_check_status, '')) = 'OVERDUE'
+                THEN 'UNSERVICEABLE'
+              ELSE 'SERVICEABLE'
+            END,
+
+            maintenance_control_reason = CASE
+              WHEN UPPER(COALESCE(d_check_status, '')) = 'IN_PROGRESS'
+                THEN 'D_CHECK'
+              WHEN UPPER(COALESCE(c_check_status, '')) = 'IN_PROGRESS'
+                THEN 'C_CHECK'
+              WHEN UPPER(COALESCE(d_check_status, '')) = 'OVERDUE'
+                THEN 'D_CHECK_OVERDUE'
+              WHEN UPPER(COALESCE(c_check_status, '')) = 'OVERDUE'
+                THEN 'C_CHECK_OVERDUE'
+              WHEN
+                $3 = 'A_CHECK'
+                AND UPPER(COALESCE(b_check_status, '')) = 'OVERDUE'
+                THEN 'B_CHECK_OVERDUE'
+              ELSE NULL
+            END,
+
+            updated_at =
+              (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+
+          WHERE aircraft_id = $1
+            AND airline_id = $2
+
+          RETURNING
+            a_check_status,
+            a_check_due_date,
+            b_check_status,
+            b_check_due_date,
+            c_check_status,
+            d_check_status,
+            maintenance_control_status,
+            maintenance_control_reason
+          `,
+          [
+            completedEvent.aircraft_id,
+            airlineId,
+            checkType
+          ]
+        );
+
+        const technicalState =
+          statusUpdateResult.rows[0] || {};
+
+        const cStatus =
+          ACS_text(
+            technicalState.c_check_status
+          ).toUpperCase();
+
+        const dStatus =
+          ACS_text(
+            technicalState.d_check_status
+          ).toUpperCase();
+
+        const higherCheckInProgress =
+          cStatus === "IN_PROGRESS" ||
+          dStatus === "IN_PROGRESS";
+
+        await client.query(
+          `
+          UPDATE public.aircraft_fleet
+          SET
+            status = CASE
+              WHEN $3::BOOLEAN THEN 'MAINTENANCE'
+              ELSE 'ACTIVE'
+            END,
+
+            operational_status = CASE
+              WHEN $3::BOOLEAN THEN 'IN_MAINTENANCE'
+              ELSE 'AVAILABLE'
+            END,
+
+            maintenance_status = CASE
+              WHEN $3::BOOLEAN THEN 'CHECK_REQUIRED'
+              ELSE 'SERVICEABLE'
+            END,
+
+            updated_at =
+              (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+
+          WHERE id = $1
+            AND airline_id = $2
+          `,
+          [
+            completedEvent.aircraft_id,
+            airlineId,
+            higherCheckInProgress
+          ]
+        );
+
+        completedEvents.push({
+          event_id: completedEvent.id,
+          aircraft_id: completedEvent.aircraft_id,
+          registration: event.registration,
+          check_type: checkType,
+          completed_at: completedEvent.completed_at,
+          a_check_due_date:
+            technicalState.a_check_due_date || null,
+          b_check_due_date:
+            technicalState.b_check_due_date || null
+        });
+      }
+
+      /* ========================================================
+         PHASE 2 — START DUE A/B EVENTS
+         B has priority. Finance is charged only at real start.
+         ======================================================== */
+
       const dueEventsResult = await client.query(
         `
         SELECT
@@ -2639,8 +2870,10 @@ router.post(
           ame.schedule_item_id,
           ame.scheduled_start_at,
           ame.scheduled_end_at,
+          ame.finance_charged,
           af.registration,
           af.aircraft_name,
+          af.operational_status,
           ams.a_check_status,
           ams.b_check_status,
           ams.c_check_status,
@@ -2676,40 +2909,34 @@ router.post(
         const checkType =
           ACS_text(event.check_type).toUpperCase();
 
-        const eventACheckStatus =
-          ACS_text(
-            event.a_check_status
-          ).toUpperCase();
+        const cStatus =
+          ACS_text(event.c_check_status).toUpperCase();
 
-        const eventBCheckStatus =
-          ACS_text(
-            event.b_check_status
-          ).toUpperCase();
+        const dStatus =
+          ACS_text(event.d_check_status).toUpperCase();
 
-        const eventCCheckStatus =
-          ACS_text(
-            event.c_check_status
-          ).toUpperCase();
-
-        const eventDCheckStatus =
-          ACS_text(
-            event.d_check_status
-          ).toUpperCase();
+        const bStatus =
+          ACS_text(event.b_check_status).toUpperCase();
 
         if (
-          eventCCheckStatus === "IN_PROGRESS" ||
-          eventDCheckStatus === "IN_PROGRESS"
+          cStatus === "IN_PROGRESS" ||
+          dStatus === "IN_PROGRESS"
         ) {
           continue;
         }
 
         /*
-         * A may remain programmed on the table while B is active,
-         * but it must not start and must not generate a charge.
+         * A may remain visible as SCHEDULED while B is active,
+         * but it cannot start or charge. B will cancel it at completion.
          */
         if (
           checkType === "A_CHECK" &&
-          eventBCheckStatus === "IN_PROGRESS"
+          (
+            bStatus === "IN_PROGRESS" ||
+            ACS_text(
+              event.operational_status
+            ).toUpperCase() === "IN_MAINTENANCE"
+          )
         ) {
           continue;
         }
@@ -2722,6 +2949,10 @@ router.post(
             Number(other.id) !== Number(event.id)
           )
         ) {
+          continue;
+        }
+
+        if (event.finance_charged === true) {
           continue;
         }
 
@@ -2740,8 +2971,12 @@ router.post(
         );
 
         if (!financeResult.rows.length) {
-          const error = new Error("COMPANY_FINANCE_NOT_FOUND");
-          error.code = "COMPANY_FINANCE_NOT_FOUND";
+          const error =
+            new Error("COMPANY_FINANCE_NOT_FOUND");
+
+          error.code =
+            "COMPANY_FINANCE_NOT_FOUND";
+
           throw error;
         }
 
@@ -2750,12 +2985,17 @@ router.post(
         );
 
         if (capital < cost) {
-          const error = new Error(
-            "INSUFFICIENT_CAPITAL_FOR_MAINTENANCE"
-          );
-          error.code = "INSUFFICIENT_CAPITAL_FOR_MAINTENANCE";
+          const error =
+            new Error(
+              "INSUFFICIENT_CAPITAL_FOR_MAINTENANCE"
+            );
+
+          error.code =
+            "INSUFFICIENT_CAPITAL_FOR_MAINTENANCE";
+
           error.capital = capital;
           error.required = cost;
+
           throw error;
         }
 
@@ -2803,7 +3043,7 @@ router.post(
         const financeLogId =
           financeLogResult.rows[0].id;
 
-        await client.query(
+        const financeUpdateResult = await client.query(
           `
           UPDATE public.company_finance
           SET
@@ -2815,17 +3055,33 @@ router.post(
             updated_at =
               (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
           WHERE airline_id = $1
+          RETURNING airline_id
           `,
           [airlineId, cost]
         );
 
-        await client.query(
+        if (!financeUpdateResult.rows.length) {
+          const error =
+            new Error("COMPANY_FINANCE_NOT_FOUND");
+
+          error.code =
+            "COMPANY_FINANCE_NOT_FOUND";
+
+          throw error;
+        }
+
+        const startedEventResult = await client.query(
           `
           UPDATE public.aircraft_maintenance_events
           SET
             event_status = 'IN_PROGRESS',
-            started_at = scheduled_start_at,
-            expected_completion_at = scheduled_end_at,
+            started_at = acs_get_current_sim_time(),
+            expected_completion_at =
+              acs_get_current_sim_time()
+              + (duration_minutes * INTERVAL '1 minute'),
+            scheduled_end_at =
+              acs_get_current_sim_time()
+              + (duration_minutes * INTERVAL '1 minute'),
             finance_charged = TRUE,
             finance_log_id = $2,
             final_cost = estimated_cost,
@@ -2833,9 +3089,32 @@ router.post(
               (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
           WHERE id = $1
             AND airline_id = $3
+            AND event_status = 'SCHEDULED'
+            AND finance_charged = FALSE
+          RETURNING
+            id,
+            aircraft_id,
+            check_type,
+            started_at,
+            expected_completion_at
           `,
           [event.id, financeLogId, airlineId]
         );
+
+        if (!startedEventResult.rows.length) {
+          const error =
+            new Error(
+              "MAINTENANCE_FINANCE_STATE_CONFLICT"
+            );
+
+          error.code =
+            "MAINTENANCE_FINANCE_STATE_CONFLICT";
+
+          throw error;
+        }
+
+        const startedEvent =
+          startedEventResult.rows[0];
 
         await client.query(
           `
@@ -2858,14 +3137,18 @@ router.post(
               WHEN $2 = 'A_CHECK' THEN 'IN_PROGRESS'
               ELSE a_check_status
             END,
+
             b_check_status = CASE
               WHEN $2 = 'B_CHECK' THEN 'IN_PROGRESS'
               ELSE b_check_status
             END,
+
             maintenance_control_status = 'IN_MAINTENANCE',
             maintenance_control_reason = $2,
+
             updated_at =
               (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+
           WHERE aircraft_id = $1
             AND airline_id = $3
           `,
@@ -2888,12 +3171,13 @@ router.post(
         );
 
         startedEvents.push({
-          event_id: event.id,
-          aircraft_id: event.aircraft_id,
+          event_id: startedEvent.id,
+          aircraft_id: startedEvent.aircraft_id,
           registration: event.registration,
           check_type: checkType,
-          started_at: event.scheduled_start_at,
-          expected_completion_at: event.scheduled_end_at,
+          started_at: startedEvent.started_at,
+          expected_completion_at:
+            startedEvent.expected_completion_at,
           charged_amount: cost
         });
       }
@@ -2903,10 +3187,14 @@ router.post(
 
       return res.json({
         ok: true,
-        endpoint: "ACS_SCHEDULE_MAINTENANCE_RESOLVER",
-        version: "v1.0",
-        authority: "POSTGRESQL_SCHEDULE_AUTHORITY",
+        endpoint:
+          "ACS_SCHEDULE_MAINTENANCE_RESOLVER",
+        version: "v2.2",
+        authority:
+          "POSTGRESQL_SCHEDULE_AUTHORITY",
         airline_id: airlineId,
+        completed_count: completedEvents.length,
+        completed_events: completedEvents,
         started_count: startedEvents.length,
         started_events: startedEvents
       });
@@ -2917,7 +3205,8 @@ router.post(
           await client.query("ROLLBACK");
         } catch (rollbackError) {
           console.error(
-            "ACS SCHEDULE MAINTENANCE RESOLVER ROLLBACK ERROR:",
+            "ACS SCHEDULE MAINTENANCE RESOLVER " +
+            "ROLLBACK ERROR:",
             rollbackError
           );
         }
