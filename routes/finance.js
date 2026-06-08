@@ -279,7 +279,7 @@ router.get("/finance/log", requireAuth, async (req,res)=>{
       SELECT *
       FROM finance_log
       WHERE airline_id = $1
-      ORDER BY timestamp DESC
+      ORDER BY id DESC
       LIMIT 50
       `,
       [airlineId]
