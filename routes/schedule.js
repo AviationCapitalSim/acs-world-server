@@ -3146,8 +3146,8 @@ router.patch(
       scheduled_start_at = $3,
       scheduled_end_at = $4,
 
-      started_at = NULL,
-      expected_completion_at = NULL,
+      started_at = $3,
+      expected_completion_at = $4,
       completed_at = NULL,
 
       updated_at =
@@ -3665,7 +3665,6 @@ router.patch(
           SET
             event_status = 'CANCELLED',
 
-            expected_completion_at = NULL,
             completed_at = NULL,
 
             updated_at =
