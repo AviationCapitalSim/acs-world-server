@@ -1267,35 +1267,56 @@ router.post(
       }
 
       /*
-       * Do not start a new A/B event while another
-       * maintenance operation is already active.
-       */
-      if (
-        cCheckStatus === "IN_PROGRESS" ||
-        dCheckStatus === "IN_PROGRESS" ||
-        ACS_text(
-          aircraft.operational_status
-        ).toUpperCase() === "IN_MAINTENANCE"
-      ) {
-        const error =
-          new Error(
-            "MAINTENANCE_EVENT_IN_PROGRESS"
-          );
+ * ACS OCC RULE:
+ * An A-Check or B-Check may be programmed while another
+ * maintenance check is already in progress.
+ *
+ * The new service remains SCHEDULED.
+ * It does not start, does not charge and does not change
+ * the aircraft's current maintenance status.
+ */
+const aircraftInMaintenance =
+  ACS_text(
+    aircraft.operational_status
+  ).toUpperCase() === "IN_MAINTENANCE";
 
-        error.code =
-          "MAINTENANCE_EVENT_IN_PROGRESS";
+const activeCheckInProgress =
+  aCheckStatus === "IN_PROGRESS" ||
+  bCheckStatus === "IN_PROGRESS" ||
+  cCheckStatus === "IN_PROGRESS" ||
+  dCheckStatus === "IN_PROGRESS";
 
-        throw error;
-      }
+const allowABProgrammingDuringMaintenance =
+  ["A_CHECK", "B_CHECK"].includes(checkType) &&
+  aircraftInMaintenance &&
+  activeCheckInProgress;
+
+if (
+  aircraftInMaintenance &&
+  !allowABProgrammingDuringMaintenance
+) {
+  const error =
+    new Error(
+      "MAINTENANCE_EVENT_IN_PROGRESS"
+    );
+
+  error.code =
+    "MAINTENANCE_EVENT_IN_PROGRESS";
+
+  throw error;
+}
 
       /*
        * This is the ACS overdue rule:
        * an overdue B enters maintenance immediately.
        */
+       
       const immediateStart =
-        checkType === "B_CHECK" &&
-        bCheckStatus === "OVERDUE";
-
+      checkType === "B_CHECK" &&
+      bCheckStatus === "OVERDUE" &&
+      aircraftInMaintenance === false &&
+      activeCheckInProgress === false;
+       
       /* ========================================================
          DUPLICATE PROTECTION
          ======================================================== */
