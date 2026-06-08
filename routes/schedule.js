@@ -1309,26 +1309,29 @@ router.post(
         throw error;
       }
 
-      /*
-       * A cannot be performed when B is overdue.
-       * Completion of B resets both B and A.
-       */
-      if (
-        checkType === "A_CHECK" &&
-        bCheckStatus === "OVERDUE"
-      ) {
-        const error =
-          new Error(
-            "This aircraft requires a B-Check. " +
-            "Completion of the B-Check resets both A and B."
-          );
+      const higherCheckControlsAircraft =
+  cCheckStatus === "IN_PROGRESS" ||
+  dCheckStatus === "IN_PROGRESS" ||
+  cCheckStatus === "OVERDUE" ||
+  dCheckStatus === "OVERDUE";
 
-        error.code =
-          "A_CHECK_BLOCKED_BY_OVERDUE_B";
+if (
+  checkType === "A_CHECK" &&
+  bCheckStatus === "OVERDUE" &&
+  !higherCheckControlsAircraft
+) {
+  const error =
+    new Error(
+      "This aircraft requires a B-Check. " +
+      "Completion of the B-Check resets both A and B."
+    );
 
-        throw error;
-      }
+  error.code =
+    "A_CHECK_BLOCKED_BY_OVERDUE_B";
 
+  throw error;
+}
+       
       /*
  * ACS OCC RULE:
  * An A-Check or B-Check may be programmed while another
@@ -1356,8 +1359,11 @@ const higherCheckOverdue =
 const allowABProgrammingDuringMaintenance =
   ["A_CHECK", "B_CHECK"].includes(checkType) &&
   (
-    activeCheckInProgress ||
-    higherCheckOverdue
+    (
+      aircraftInMaintenance &&
+      activeCheckInProgress
+    ) ||
+    higherCheckControlsAircraft
   );
 
 if (
@@ -1381,11 +1387,11 @@ if (
        */
        
       const immediateStart =
-      checkType === "B_CHECK" &&
-      bCheckStatus === "OVERDUE" &&
-      aircraftInMaintenance === false &&
-      activeCheckInProgress === false &&
-      higherCheckOverdue === false;
+  checkType === "B_CHECK" &&
+  bCheckStatus === "OVERDUE" &&
+  aircraftInMaintenance === false &&
+  activeCheckInProgress === false &&
+  higherCheckControlsAircraft === false;
        
       /* ========================================================
          DUPLICATE PROTECTION
