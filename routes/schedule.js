@@ -3008,45 +3008,65 @@ router.patch(
          ======================================================== */
 
       const scheduleUpdateResult =
-        await client.query(
-          `
-          UPDATE public.schedule_items
+  await client.query(
+    `
+    UPDATE public.schedule_items
 
-          SET
-            selected_day = $3,
-            departure = $4,
-            arrival = $5,
-            dep_abs_min = $6,
-            arr_abs_min = $7,
+    SET
+      selected_day = $3,
+      departure = $4,
+      arrival = $5,
+      dep_abs_min = $6,
+      arr_abs_min = $7,
 
-            notes = jsonb_build_object(
-              'source',
-              'ACS_SCHEDULE_MAINTENANCE_EDIT_V1',
+      status = 'scheduled',
 
-              'check_type',
-              $8::TEXT,
+      notes = jsonb_build_object(
+        'source',
+        'ACS_SCHEDULE_MAINTENANCE_EDIT_V2',
 
-              'selected_day',
-              $3::TEXT,
+        'check_type',
+        $8::TEXT,
 
-              'scheduled_start_at',
-              $9::TIMESTAMP,
+        'selected_day',
+        $3::TEXT,
 
-              'scheduled_end_at',
-              $10::TIMESTAMP
-            )::TEXT,
+        'scheduled_start_at',
+        $9::TIMESTAMP,
 
-            updated_at =
-              (
-                CURRENT_TIMESTAMP
-                AT TIME ZONE 'UTC'
-              )
+        'scheduled_end_at',
+        $10::TIMESTAMP,
 
-          WHERE id = $1
-            AND airline_id = $2
+        'edited_from_status',
+        $11::TEXT
+      )::TEXT,
 
-          RETURNING *
-          `,
+      updated_at =
+        (
+          CURRENT_TIMESTAMP
+          AT TIME ZONE 'UTC'
+        )
+
+    WHERE id = $1
+      AND airline_id = $2
+
+    RETURNING *
+    `,
+    [
+      scheduleItemId,
+      airlineId,
+      selectedDay,
+      startTime.text,
+      endTimeText,
+      proposedStartAbs,
+      proposedEndAbs,
+      original.check_type,
+      scheduledStartAt,
+      scheduledEndAt,
+      original.event_status
+    ]
+  );
+       
           [
             scheduleItemId,
             airlineId,
@@ -3067,35 +3087,43 @@ router.patch(
          ======================================================== */
 
       const eventUpdateResult =
-        await client.query(
-          `
-          UPDATE public.aircraft_maintenance_events
+  await client.query(
+    `
+    UPDATE public.aircraft_maintenance_events
 
-          SET
-            scheduled_start_at = $3,
-            scheduled_end_at = $4,
+    SET
+      event_status = 'SCHEDULED',
 
-            expected_completion_at = CASE
-              WHEN event_status = 'IN_PROGRESS'
-                THEN $4
-              ELSE expected_completion_at
-            END,
+      scheduled_start_at = $3,
+      scheduled_end_at = $4,
 
-            updated_at =
-              (
-                CURRENT_TIMESTAMP
-                AT TIME ZONE 'UTC'
-              )
+      started_at = NULL,
+      expected_completion_at = NULL,
+      completed_at = NULL,
 
-          WHERE id = $1
-            AND airline_id = $2
-            AND event_status IN (
-              'SCHEDULED',
-              'IN_PROGRESS'
-            )
+      updated_at =
+        (
+          CURRENT_TIMESTAMP
+          AT TIME ZONE 'UTC'
+        )
 
-          RETURNING *
-          `,
+    WHERE id = $1
+      AND airline_id = $2
+      AND event_status IN (
+        'SCHEDULED',
+        'IN_PROGRESS'
+      )
+
+    RETURNING *
+    `,
+    [
+      original.event_id,
+      airlineId,
+      scheduledStartAt,
+      scheduledEndAt
+    ]
+  );
+       
           [
             original.event_id,
             airlineId,
@@ -3119,6 +3147,229 @@ router.patch(
         throw error;
       }
 
+      /*
+ * If the edited maintenance was already IN_PROGRESS,
+ * stop the current execution and restore the aircraft
+ * to its correct technical state.
+ *
+ * Finance remains untouched.
+ */
+if (
+  ACS_text(
+    original.event_status
+  ).toUpperCase() === "IN_PROGRESS"
+) {
+
+  const technicalStateResult =
+    await client.query(
+      `
+      UPDATE public.aircraft_maintenance_status
+
+      SET
+        a_check_status = CASE
+          WHEN $3 = 'A_CHECK'
+            THEN CASE
+              WHEN a_check_due_date
+                   <= acs_get_current_sim_time()
+                THEN 'OVERDUE'
+              ELSE 'OPEN'
+            END
+          ELSE a_check_status
+        END,
+
+        b_check_status = CASE
+          WHEN $3 = 'B_CHECK'
+            THEN CASE
+              WHEN b_check_due_date
+                   <= acs_get_current_sim_time()
+                THEN 'OVERDUE'
+              ELSE 'OPEN'
+            END
+          ELSE b_check_status
+        END,
+
+        maintenance_control_status = CASE
+          WHEN UPPER(
+            COALESCE(
+              d_check_status,
+              ''
+            )
+          ) = 'IN_PROGRESS'
+            THEN 'IN_MAINTENANCE'
+
+          WHEN UPPER(
+            COALESCE(
+              c_check_status,
+              ''
+            )
+          ) = 'IN_PROGRESS'
+            THEN 'IN_MAINTENANCE'
+
+          WHEN UPPER(
+            COALESCE(
+              d_check_status,
+              ''
+            )
+          ) = 'OVERDUE'
+            THEN 'UNSERVICEABLE'
+
+          WHEN UPPER(
+            COALESCE(
+              c_check_status,
+              ''
+            )
+          ) = 'OVERDUE'
+            THEN 'UNSERVICEABLE'
+
+          WHEN
+            $3 = 'B_CHECK'
+            AND b_check_due_date
+                <= acs_get_current_sim_time()
+            THEN 'UNSERVICEABLE'
+
+          WHEN
+            $3 = 'A_CHECK'
+            AND a_check_due_date
+                <= acs_get_current_sim_time()
+            THEN 'UNSERVICEABLE'
+
+          ELSE 'SERVICEABLE'
+        END,
+
+        maintenance_control_reason = CASE
+          WHEN UPPER(
+            COALESCE(
+              d_check_status,
+              ''
+            )
+          ) = 'IN_PROGRESS'
+            THEN 'D_CHECK'
+
+          WHEN UPPER(
+            COALESCE(
+              c_check_status,
+              ''
+            )
+          ) = 'IN_PROGRESS'
+            THEN 'C_CHECK'
+
+          WHEN UPPER(
+            COALESCE(
+              d_check_status,
+              ''
+            )
+          ) = 'OVERDUE'
+            THEN 'D_CHECK_OVERDUE'
+
+          WHEN UPPER(
+            COALESCE(
+              c_check_status,
+              ''
+            )
+          ) = 'OVERDUE'
+            THEN 'C_CHECK_OVERDUE'
+
+          WHEN
+            $3 = 'B_CHECK'
+            AND b_check_due_date
+                <= acs_get_current_sim_time()
+            THEN 'B_CHECK_OVERDUE'
+
+          WHEN
+            $3 = 'A_CHECK'
+            AND a_check_due_date
+                <= acs_get_current_sim_time()
+            THEN 'A_CHECK_OVERDUE'
+
+          ELSE NULL
+        END,
+
+        updated_at =
+          (
+            CURRENT_TIMESTAMP
+            AT TIME ZONE 'UTC'
+          )
+
+      WHERE aircraft_id = $1
+        AND airline_id = $2
+
+      RETURNING
+        a_check_status,
+        b_check_status,
+        c_check_status,
+        d_check_status,
+        maintenance_control_status,
+        maintenance_control_reason
+      `,
+      [
+        original.aircraft_id,
+        airlineId,
+        original.check_type
+      ]
+    );
+
+  const technicalState =
+    technicalStateResult.rows[0] || {};
+
+  const stillInMaintenance =
+    ACS_text(
+      technicalState.maintenance_control_status
+    ).toUpperCase() === "IN_MAINTENANCE";
+
+  const stillUnserviceable =
+    ACS_text(
+      technicalState.maintenance_control_status
+    ).toUpperCase() === "UNSERVICEABLE";
+
+  await client.query(
+    `
+    UPDATE public.aircraft_fleet
+
+    SET
+      status = CASE
+        WHEN $3::BOOLEAN
+          THEN 'MAINTENANCE'
+        ELSE 'ACTIVE'
+      END,
+
+      operational_status = CASE
+        WHEN $3::BOOLEAN
+          THEN 'IN_MAINTENANCE'
+
+        WHEN $4::BOOLEAN
+          THEN 'UNAVAILABLE'
+
+        ELSE 'AVAILABLE'
+      END,
+
+      maintenance_status = CASE
+        WHEN $3::BOOLEAN
+          THEN 'CHECK_REQUIRED'
+
+        WHEN $4::BOOLEAN
+          THEN 'CHECK_REQUIRED'
+
+        ELSE 'SERVICEABLE'
+      END,
+
+      updated_at =
+        (
+          CURRENT_TIMESTAMP
+          AT TIME ZONE 'UTC'
+        )
+
+    WHERE id = $1
+      AND airline_id = $2
+    `,
+    [
+      original.aircraft_id,
+      airlineId,
+      stillInMaintenance,
+      stillUnserviceable
+    ]
+  );
+}
+       
       await client.query("COMMIT");
       transactionStarted = false;
 
