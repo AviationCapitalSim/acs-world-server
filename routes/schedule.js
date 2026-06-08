@@ -2893,53 +2893,77 @@ router.patch(
          ======================================================== */
 
       const existingItemsResult =
-        await client.query(
-          `
-          SELECT
-            id,
-            item_type,
-            service_type,
-            selected_day,
-            departure,
-            arrival,
-            flight_number,
-            dep_abs_min,
-            arr_abs_min,
-            turnaround_min,
-            status
+  await client.query(
+    `
+    SELECT
+      si.id,
+      si.item_type,
+      si.service_type,
+      si.selected_day,
+      si.departure,
+      si.arrival,
+      si.flight_number,
+      si.dep_abs_min,
+      si.arr_abs_min,
+      si.turnaround_min,
+      si.status,
+      ame.event_status
 
-          FROM public.schedule_items
+    FROM public.schedule_items si
 
-          WHERE airline_id = $1
-            AND aircraft_id = $2
-            AND id <> $3
-            AND item_type IN (
-              'flight',
-              'service'
+    LEFT JOIN public.aircraft_maintenance_events ame
+      ON ame.schedule_item_id = si.id
+     AND ame.airline_id = si.airline_id
+     AND ame.aircraft_id = si.aircraft_id
+
+    WHERE si.airline_id = $1
+      AND si.aircraft_id = $2
+      AND si.id <> $3
+
+      AND si.item_type IN (
+        'flight',
+        'service'
+      )
+
+      AND LOWER(
+        COALESCE(
+          si.status,
+          'planned'
+        )
+      ) NOT IN (
+        'cancelled',
+        'completed'
+      )
+
+      AND (
+        si.item_type = 'flight'
+        OR (
+          si.item_type = 'service'
+          AND UPPER(
+            COALESCE(
+              ame.event_status,
+              ''
             )
-            AND LOWER(
-              COALESCE(
-                status,
-                'planned'
-              )
-            ) NOT IN (
-              'cancelled',
-              'completed'
-            )
+          ) IN (
+            'SCHEDULED',
+            'IN_PROGRESS'
+          )
+        )
+      )
 
-          ORDER BY
-            dep_abs_min,
-            id
+    ORDER BY
+      si.dep_abs_min,
+      si.id
 
-          FOR UPDATE
-          `,
-          [
-            airlineId,
-            original.aircraft_id,
-            scheduleItemId
-          ]
-        );
-
+    FOR UPDATE OF si
+    `,
+    [
+      airlineId,
+      original.aircraft_id,
+      scheduleItemId
+    ]
+  );
+       
       let conflict = null;
 
       for (
