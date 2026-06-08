@@ -3110,14 +3110,6 @@ router.patch(
     ]
   );
        
-          [
-            original.event_id,
-            airlineId,
-            scheduledStartAt,
-            scheduledEndAt
-          ]
-        );
-
       if (
         !scheduleUpdateResult.rows.length ||
         !eventUpdateResult.rows.length
