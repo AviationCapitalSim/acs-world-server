@@ -3067,20 +3067,6 @@ router.patch(
     ]
   );
        
-          [
-            scheduleItemId,
-            airlineId,
-            selectedDay,
-            startTime.text,
-            endTimeText,
-            proposedStartAbs,
-            proposedEndAbs,
-            original.check_type,
-            scheduledStartAt,
-            scheduledEndAt
-          ]
-        );
-
       /* ========================================================
          UPDATE SAME MAINTENANCE EVENT
          Finance identity and status remain unchanged.
