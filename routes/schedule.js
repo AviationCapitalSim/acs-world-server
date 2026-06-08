@@ -292,39 +292,45 @@ async function ACS_getOfficialSimTime(client) {
 function ACS_sendError(res, error, fallback = "SCHEDULE_OPERATION_FAILED") {
    
   const knownStatus = {
-    NO_AIRLINE_SESSION: 401,
-    AIRLINE_NOT_FOUND: 404,
-    VALIDATION_ERROR: 400,
-    ROUTE_PLAN_NOT_FOUND: 404,
-    AIRCRAFT_NOT_FOUND: 404,
-    AIRCRAFT_NOT_DISPATCHABLE: 409,
-    AIRCRAFT_MODEL_MISMATCH: 409,
-    AIRCRAFT_SCHEDULE_CONFLICT: 409,
-    ROUTE_HAS_NO_SCHEDULE_ITEMS: 409,
-    ROUTE_ALREADY_UNASSIGNED: 409,
-    ROUTE_OPERATION_LOCKED: 409,
-    MAINTENANCE_CHECK_TYPE_INVALID: 400,
-    MAINTENANCE_DAY_INVALID: 400,
-    MAINTENANCE_TIME_INVALID: 400,
-    MAINTENANCE_POLICY_NOT_FOUND: 409,
-    MAINTENANCE_COST_RATE_INVALID: 409,
-    MAINTENANCE_SCHEDULE_CONFLICT: 409,
-    MAINTENANCE_ALREADY_SCHEDULED: 409,
-    MAINTENANCE_EVENT_IN_PROGRESS: 409,
-    A_CHECK_BLOCKED_BY_OVERDUE_B: 409,
-    MAINTENANCE_STATUS_NOT_ESTABLISHED: 409,
-    COMPANY_FINANCE_NOT_FOUND: 409,
-    INSUFFICIENT_CAPITAL_FOR_MAINTENANCE: 409,
-    MAINTENANCE_FINANCE_STATE_CONFLICT: 409,
-    MAINTENANCE_EVENT_NOT_EDITABLE: 409,
-    MAINTENANCE_DURATION_INVALID: 409,
-    MAINTENANCE_EDIT_STATE_CONFLICT: 409,
-    MAINTENANCE_EVENT_NOT_FOUND: 404,
-    MAINTENANCE_EVENT_ALREADY_STARTED: 409,
-    MAINTENANCE_REMOVE_FINANCE_CONFLICT: 409,
-    MAINTENANCE_REMOVE_STATE_CONFLICT: 409,
-    ACS_CURRENT_SIM_TIME_INVALID: 409
-  };
+  NO_AIRLINE_SESSION: 401,
+  AIRLINE_NOT_FOUND: 404,
+  VALIDATION_ERROR: 400,
+  ROUTE_PLAN_NOT_FOUND: 404,
+  AIRCRAFT_NOT_FOUND: 404,
+  AIRCRAFT_NOT_DISPATCHABLE: 409,
+  AIRCRAFT_MODEL_MISMATCH: 409,
+  AIRCRAFT_SCHEDULE_CONFLICT: 409,
+  ROUTE_HAS_NO_SCHEDULE_ITEMS: 409,
+  ROUTE_ALREADY_UNASSIGNED: 409,
+  ROUTE_OPERATION_LOCKED: 409,
+
+  MAINTENANCE_CHECK_TYPE_INVALID: 400,
+  MAINTENANCE_DAY_INVALID: 400,
+  MAINTENANCE_TIME_INVALID: 400,
+  MAINTENANCE_POLICY_NOT_FOUND: 409,
+  MAINTENANCE_COST_RATE_INVALID: 409,
+  MAINTENANCE_SCHEDULE_CONFLICT: 409,
+  MAINTENANCE_ALREADY_SCHEDULED: 409,
+  MAINTENANCE_EVENT_IN_PROGRESS: 409,
+  A_CHECK_BLOCKED_BY_OVERDUE_B: 409,
+  MAINTENANCE_STATUS_NOT_ESTABLISHED: 409,
+
+  COMPANY_FINANCE_NOT_FOUND: 409,
+  INSUFFICIENT_CAPITAL_FOR_MAINTENANCE: 409,
+  MAINTENANCE_FINANCE_STATE_CONFLICT: 409,
+
+  MAINTENANCE_EVENT_NOT_EDITABLE: 409,
+  MAINTENANCE_DURATION_INVALID: 409,
+  MAINTENANCE_EDIT_STATE_CONFLICT: 409,
+
+  MAINTENANCE_EVENT_NOT_FOUND: 404,
+  MAINTENANCE_EVENT_NOT_REMOVABLE: 409,
+  MAINTENANCE_EVENT_ALREADY_STARTED: 409,
+  MAINTENANCE_REMOVE_FINANCE_CONFLICT: 409,
+  MAINTENANCE_REMOVE_STATE_CONFLICT: 409,
+
+  ACS_CURRENT_SIM_TIME_INVALID: 409
+};
 
   const code = error.code || fallback;
   const status = knownStatus[code] || 500;
@@ -3455,17 +3461,16 @@ if (
 /* ============================================================
    PATCH /v1/schedule/maintenance/:scheduleItemId/remove
    ------------------------------------------------------------
-   ACS AIRBUS OCC — REMOVE SCHEDULED A/B MAINTENANCE
+   ACS AIRBUS OCC — REMOVE A/B MAINTENANCE
 
    Rules:
-   - Removes the service from the active weekly schedule.
-   - Preserves PostgreSQL operational history.
-   - schedule_items.status -> cancelled.
-   - aircraft_maintenance_events.event_status -> CANCELLED.
-   - Only applies to SCHEDULED and uncharged maintenance.
-   - Does not alter aircraft technical status.
-   - Does not alter Company Finance.
-   - Does not create refunds or finance_log entries.
+   - SCHEDULED may be cancelled.
+   - IN_PROGRESS may be stopped and cancelled.
+   - COMPLETED maintenance is immutable technical history.
+   - No physical DELETE.
+   - No refund.
+   - Existing finance_log remains untouched.
+   - Aircraft technical condition is recalculated.
    ============================================================ */
 
 router.patch(
@@ -3516,10 +3521,6 @@ router.patch(
           `ACS_REMOVE_MAINTENANCE|${airlineId}|${scheduleItemId}`
         ]
       );
-
-      /* ========================================================
-         LOCK SCHEDULED SERVICE + EVENT
-         ======================================================== */
 
       const maintenanceResult =
         await client.query(
@@ -3577,47 +3578,27 @@ router.patch(
       const maintenance =
         maintenanceResult.rows[0];
 
-      /*
-       * This first REMOVE implementation is intentionally
-       * restricted to maintenance that has not started.
-       *
-       * An active maintenance event requires a separate
-       * operational cancellation workflow.
-       */
-      if (
+      const originalEventStatus =
         ACS_text(
           maintenance.event_status
-        ).toUpperCase() !== "SCHEDULED"
-      ) {
-        const error =
-          new Error(
-            "MAINTENANCE_EVENT_ALREADY_STARTED"
-          );
-
-        error.code =
-          "MAINTENANCE_EVENT_ALREADY_STARTED";
-
-        throw error;
-      }
+        ).toUpperCase();
 
       if (
-        maintenance.finance_charged === true ||
-        maintenance.finance_log_id !== null
+        ![
+          "SCHEDULED",
+          "IN_PROGRESS"
+        ].includes(originalEventStatus)
       ) {
         const error =
           new Error(
-            "MAINTENANCE_REMOVE_FINANCE_CONFLICT"
+            "MAINTENANCE_EVENT_NOT_REMOVABLE"
           );
 
         error.code =
-          "MAINTENANCE_REMOVE_FINANCE_CONFLICT";
+          "MAINTENANCE_EVENT_NOT_REMOVABLE";
 
         throw error;
       }
-
-      /* ========================================================
-         CANCEL SAME MAINTENANCE EVENT
-         ======================================================== */
 
       const eventUpdateResult =
         await client.query(
@@ -3627,6 +3608,9 @@ router.patch(
           SET
             event_status = 'CANCELLED',
 
+            expected_completion_at = NULL,
+            completed_at = NULL,
+
             updated_at =
               (
                 CURRENT_TIMESTAMP
@@ -3635,8 +3619,10 @@ router.patch(
 
           WHERE id = $1
             AND airline_id = $2
-            AND event_status = 'SCHEDULED'
-            AND finance_charged = FALSE
+            AND event_status IN (
+              'SCHEDULED',
+              'IN_PROGRESS'
+            )
 
           RETURNING
             id,
@@ -3666,10 +3652,6 @@ router.patch(
         throw error;
       }
 
-      /* ========================================================
-         REMOVE CHIP FROM ACTIVE WEEKLY SCHEDULE
-         ======================================================== */
-
       const scheduleUpdateResult =
         await client.query(
           `
@@ -3691,7 +3673,10 @@ router.patch(
                 status,
                 'scheduled'
               )
-            ) = 'scheduled'
+            ) IN (
+              'scheduled',
+              'in_progress'
+            )
 
           RETURNING *
           `,
@@ -3713,6 +3698,223 @@ router.patch(
         throw error;
       }
 
+      /*
+       * Only an active event requires technical-state restoration.
+       * Finance remains unchanged and no refund is generated.
+       */
+      if (originalEventStatus === "IN_PROGRESS") {
+
+        const technicalStateResult =
+          await client.query(
+            `
+            UPDATE public.aircraft_maintenance_status
+
+            SET
+              a_check_status = CASE
+                WHEN $3 = 'A_CHECK'
+                  THEN CASE
+                    WHEN a_check_due_date
+                         <= acs_get_current_sim_time()
+                      THEN 'OVERDUE'
+                    ELSE 'OPEN'
+                  END
+                ELSE a_check_status
+              END,
+
+              b_check_status = CASE
+                WHEN $3 = 'B_CHECK'
+                  THEN CASE
+                    WHEN b_check_due_date
+                         <= acs_get_current_sim_time()
+                      THEN 'OVERDUE'
+                    ELSE 'OPEN'
+                  END
+                ELSE b_check_status
+              END,
+
+              maintenance_control_status = CASE
+                WHEN UPPER(
+                  COALESCE(
+                    d_check_status,
+                    ''
+                  )
+                ) = 'IN_PROGRESS'
+                  THEN 'IN_MAINTENANCE'
+
+                WHEN UPPER(
+                  COALESCE(
+                    c_check_status,
+                    ''
+                  )
+                ) = 'IN_PROGRESS'
+                  THEN 'IN_MAINTENANCE'
+
+                WHEN UPPER(
+                  COALESCE(
+                    d_check_status,
+                    ''
+                  )
+                ) = 'OVERDUE'
+                  THEN 'UNSERVICEABLE'
+
+                WHEN UPPER(
+                  COALESCE(
+                    c_check_status,
+                    ''
+                  )
+                ) = 'OVERDUE'
+                  THEN 'UNSERVICEABLE'
+
+                WHEN
+                  $3 = 'B_CHECK'
+                  AND b_check_due_date
+                      <= acs_get_current_sim_time()
+                  THEN 'UNSERVICEABLE'
+
+                WHEN
+                  $3 = 'A_CHECK'
+                  AND a_check_due_date
+                      <= acs_get_current_sim_time()
+                  THEN 'UNSERVICEABLE'
+
+                ELSE 'SERVICEABLE'
+              END,
+
+              maintenance_control_reason = CASE
+                WHEN UPPER(
+                  COALESCE(
+                    d_check_status,
+                    ''
+                  )
+                ) = 'IN_PROGRESS'
+                  THEN 'D_CHECK'
+
+                WHEN UPPER(
+                  COALESCE(
+                    c_check_status,
+                    ''
+                  )
+                ) = 'IN_PROGRESS'
+                  THEN 'C_CHECK'
+
+                WHEN UPPER(
+                  COALESCE(
+                    d_check_status,
+                    ''
+                  )
+                ) = 'OVERDUE'
+                  THEN 'D_CHECK_OVERDUE'
+
+                WHEN UPPER(
+                  COALESCE(
+                    c_check_status,
+                    ''
+                  )
+                ) = 'OVERDUE'
+                  THEN 'C_CHECK_OVERDUE'
+
+                WHEN
+                  $3 = 'B_CHECK'
+                  AND b_check_due_date
+                      <= acs_get_current_sim_time()
+                  THEN 'B_CHECK_OVERDUE'
+
+                WHEN
+                  $3 = 'A_CHECK'
+                  AND a_check_due_date
+                      <= acs_get_current_sim_time()
+                  THEN 'A_CHECK_OVERDUE'
+
+                ELSE NULL
+              END,
+
+              updated_at =
+                (
+                  CURRENT_TIMESTAMP
+                  AT TIME ZONE 'UTC'
+                )
+
+            WHERE aircraft_id = $1
+              AND airline_id = $2
+
+            RETURNING
+              a_check_status,
+              b_check_status,
+              c_check_status,
+              d_check_status,
+              maintenance_control_status,
+              maintenance_control_reason
+            `,
+            [
+              maintenance.aircraft_id,
+              airlineId,
+              maintenance.check_type
+            ]
+          );
+
+        const technicalState =
+          technicalStateResult.rows[0] || {};
+
+        const controlStatus =
+          ACS_text(
+            technicalState.maintenance_control_status
+          ).toUpperCase();
+
+        const aircraftStillInMaintenance =
+          controlStatus === "IN_MAINTENANCE";
+
+        const aircraftUnserviceable =
+          controlStatus === "UNSERVICEABLE";
+
+        await client.query(
+          `
+          UPDATE public.aircraft_fleet
+
+          SET
+            status = CASE
+              WHEN $3::BOOLEAN
+                THEN 'MAINTENANCE'
+              ELSE 'ACTIVE'
+            END,
+
+            operational_status = CASE
+              WHEN $3::BOOLEAN
+                THEN 'IN_MAINTENANCE'
+
+              WHEN $4::BOOLEAN
+                THEN 'UNAVAILABLE'
+
+              ELSE 'AVAILABLE'
+            END,
+
+            maintenance_status = CASE
+              WHEN $3::BOOLEAN
+                THEN 'CHECK_REQUIRED'
+
+              WHEN $4::BOOLEAN
+                THEN 'CHECK_REQUIRED'
+
+              ELSE 'SERVICEABLE'
+            END,
+
+            updated_at =
+              (
+                CURRENT_TIMESTAMP
+                AT TIME ZONE 'UTC'
+              )
+
+          WHERE id = $1
+            AND airline_id = $2
+          `,
+          [
+            maintenance.aircraft_id,
+            airlineId,
+            aircraftStillInMaintenance,
+            aircraftUnserviceable
+          ]
+        );
+      }
+
       await client.query("COMMIT");
       transactionStarted = false;
 
@@ -3723,7 +3925,7 @@ router.patch(
           "ACS_SCHEDULE_REMOVE_MAINTENANCE",
 
         version:
-          "v1.0",
+          "v2.0",
 
         authority:
           "POSTGRESQL_SCHEDULE_AUTHORITY",
@@ -3733,6 +3935,17 @@ router.patch(
 
         action:
           "MAINTENANCE_REMOVED",
+
+        previous_event_status:
+          originalEventStatus,
+
+        finance: {
+          refund_created: false,
+          original_charge_preserved:
+            maintenance.finance_charged === true,
+          finance_log_id:
+            maintenance.finance_log_id
+        },
 
         schedule_item:
           scheduleUpdateResult.rows[0],
