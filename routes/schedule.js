@@ -318,7 +318,11 @@ function ACS_sendError(res, error, fallback = "SCHEDULE_OPERATION_FAILED") {
     MAINTENANCE_FINANCE_STATE_CONFLICT: 409,
     MAINTENANCE_EVENT_NOT_EDITABLE: 409,
     MAINTENANCE_DURATION_INVALID: 409,
-    MAINTENANCE_EDIT_STATE_CONFLICT: 409,    
+    MAINTENANCE_EDIT_STATE_CONFLICT: 409,
+    MAINTENANCE_EVENT_NOT_FOUND: 404,
+    MAINTENANCE_EVENT_ALREADY_STARTED: 409,
+    MAINTENANCE_REMOVE_FINANCE_CONFLICT: 409,
+    MAINTENANCE_REMOVE_STATE_CONFLICT: 409,
     ACS_CURRENT_SIM_TIME_INVALID: 409
   };
 
@@ -3211,6 +3215,328 @@ router.patch(
         res,
         error,
         "MAINTENANCE_EDIT_FAILED"
+      );
+
+    } finally {
+      client.release();
+    }
+  }
+);
+
+/* ============================================================
+   PATCH /v1/schedule/maintenance/:scheduleItemId/remove
+   ------------------------------------------------------------
+   ACS AIRBUS OCC — REMOVE SCHEDULED A/B MAINTENANCE
+
+   Rules:
+   - Removes the service from the active weekly schedule.
+   - Preserves PostgreSQL operational history.
+   - schedule_items.status -> cancelled.
+   - aircraft_maintenance_events.event_status -> CANCELLED.
+   - Only applies to SCHEDULED and uncharged maintenance.
+   - Does not alter aircraft technical status.
+   - Does not alter Company Finance.
+   - Does not create refunds or finance_log entries.
+   ============================================================ */
+
+router.patch(
+  "/schedule/maintenance/:scheduleItemId/remove",
+  requireAuth,
+  async (req, res) => {
+
+    const airlineId =
+      ACS_airlineId(req);
+
+    const scheduleItemId =
+      ACS_positiveBigInt(
+        req.params.scheduleItemId
+      );
+
+    if (!airlineId) {
+      return res.status(401).json({
+        ok: false,
+        error: "NO_AIRLINE_SESSION"
+      });
+    }
+
+    if (!scheduleItemId) {
+      return res.status(400).json({
+        ok: false,
+        error: "VALIDATION_ERROR",
+        details: "scheduleItemId is required"
+      });
+    }
+
+    const client =
+      await pool.connect();
+
+    let transactionStarted = false;
+
+    try {
+
+      await client.query("BEGIN");
+      transactionStarted = true;
+
+      await client.query(
+        `
+        SELECT pg_advisory_xact_lock(
+          hashtext($1)
+        )
+        `,
+        [
+          `ACS_REMOVE_MAINTENANCE|${airlineId}|${scheduleItemId}`
+        ]
+      );
+
+      /* ========================================================
+         LOCK SCHEDULED SERVICE + EVENT
+         ======================================================== */
+
+      const maintenanceResult =
+        await client.query(
+          `
+          SELECT
+            si.id AS schedule_item_id,
+            si.aircraft_id,
+            si.service_type,
+            si.status AS schedule_status,
+
+            ame.id AS event_id,
+            ame.event_uid,
+            ame.check_type,
+            ame.event_status,
+            ame.finance_charged,
+            ame.finance_log_id
+
+          FROM public.schedule_items si
+
+          JOIN public.aircraft_maintenance_events ame
+            ON ame.schedule_item_id = si.id
+           AND ame.airline_id = si.airline_id
+           AND ame.aircraft_id = si.aircraft_id
+
+          WHERE si.id = $1
+            AND si.airline_id = $2
+            AND si.item_type = 'service'
+            AND ame.check_type IN (
+              'A_CHECK',
+              'B_CHECK'
+            )
+
+          LIMIT 1
+
+          FOR UPDATE OF si, ame
+          `,
+          [
+            scheduleItemId,
+            airlineId
+          ]
+        );
+
+      if (!maintenanceResult.rows.length) {
+        const error =
+          new Error(
+            "MAINTENANCE_EVENT_NOT_FOUND"
+          );
+
+        error.code =
+          "MAINTENANCE_EVENT_NOT_FOUND";
+
+        throw error;
+      }
+
+      const maintenance =
+        maintenanceResult.rows[0];
+
+      /*
+       * This first REMOVE implementation is intentionally
+       * restricted to maintenance that has not started.
+       *
+       * An active maintenance event requires a separate
+       * operational cancellation workflow.
+       */
+      if (
+        ACS_text(
+          maintenance.event_status
+        ).toUpperCase() !== "SCHEDULED"
+      ) {
+        const error =
+          new Error(
+            "MAINTENANCE_EVENT_ALREADY_STARTED"
+          );
+
+        error.code =
+          "MAINTENANCE_EVENT_ALREADY_STARTED";
+
+        throw error;
+      }
+
+      if (
+        maintenance.finance_charged === true ||
+        maintenance.finance_log_id !== null
+      ) {
+        const error =
+          new Error(
+            "MAINTENANCE_REMOVE_FINANCE_CONFLICT"
+          );
+
+        error.code =
+          "MAINTENANCE_REMOVE_FINANCE_CONFLICT";
+
+        throw error;
+      }
+
+      /* ========================================================
+         CANCEL SAME MAINTENANCE EVENT
+         ======================================================== */
+
+      const eventUpdateResult =
+        await client.query(
+          `
+          UPDATE public.aircraft_maintenance_events
+
+          SET
+            event_status = 'CANCELLED',
+
+            updated_at =
+              (
+                CURRENT_TIMESTAMP
+                AT TIME ZONE 'UTC'
+              )
+
+          WHERE id = $1
+            AND airline_id = $2
+            AND event_status = 'SCHEDULED'
+            AND finance_charged = FALSE
+
+          RETURNING
+            id,
+            event_uid,
+            aircraft_id,
+            check_type,
+            event_status,
+            schedule_item_id,
+            finance_charged,
+            finance_log_id
+          `,
+          [
+            maintenance.event_id,
+            airlineId
+          ]
+        );
+
+      if (!eventUpdateResult.rows.length) {
+        const error =
+          new Error(
+            "MAINTENANCE_REMOVE_STATE_CONFLICT"
+          );
+
+        error.code =
+          "MAINTENANCE_REMOVE_STATE_CONFLICT";
+
+        throw error;
+      }
+
+      /* ========================================================
+         REMOVE CHIP FROM ACTIVE WEEKLY SCHEDULE
+         ======================================================== */
+
+      const scheduleUpdateResult =
+        await client.query(
+          `
+          UPDATE public.schedule_items
+
+          SET
+            status = 'cancelled',
+
+            updated_at =
+              (
+                CURRENT_TIMESTAMP
+                AT TIME ZONE 'UTC'
+              )
+
+          WHERE id = $1
+            AND airline_id = $2
+            AND LOWER(
+              COALESCE(
+                status,
+                'scheduled'
+              )
+            ) = 'scheduled'
+
+          RETURNING *
+          `,
+          [
+            scheduleItemId,
+            airlineId
+          ]
+        );
+
+      if (!scheduleUpdateResult.rows.length) {
+        const error =
+          new Error(
+            "MAINTENANCE_REMOVE_STATE_CONFLICT"
+          );
+
+        error.code =
+          "MAINTENANCE_REMOVE_STATE_CONFLICT";
+
+        throw error;
+      }
+
+      await client.query("COMMIT");
+      transactionStarted = false;
+
+      return res.json({
+        ok: true,
+
+        endpoint:
+          "ACS_SCHEDULE_REMOVE_MAINTENANCE",
+
+        version:
+          "v1.0",
+
+        authority:
+          "POSTGRESQL_SCHEDULE_AUTHORITY",
+
+        airline_id:
+          airlineId,
+
+        action:
+          "MAINTENANCE_REMOVED",
+
+        schedule_item:
+          scheduleUpdateResult.rows[0],
+
+        event:
+          eventUpdateResult.rows[0]
+      });
+
+    } catch (error) {
+
+      if (transactionStarted) {
+        try {
+          await client.query(
+            "ROLLBACK"
+          );
+        } catch (rollbackError) {
+          console.error(
+            "ACS REMOVE MAINTENANCE " +
+            "ROLLBACK ERROR:",
+            rollbackError
+          );
+        }
+      }
+
+      console.error(
+        "ACS REMOVE MAINTENANCE ERROR:",
+        error
+      );
+
+      return ACS_sendError(
+        res,
+        error,
+        "MAINTENANCE_REMOVE_FAILED"
       );
 
     } finally {
