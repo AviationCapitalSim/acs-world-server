@@ -2575,6 +2575,648 @@ if (
 );
 
 /* ============================================================
+   PATCH /v1/schedule/maintenance/:scheduleItemId
+   ------------------------------------------------------------
+   ACS AIRBUS OCC — EDIT A/B MAINTENANCE
+
+   Rules:
+   - Updates the same schedule_item.
+   - Updates the same maintenance event.
+   - Never creates a second event.
+   - Never creates a finance_log.
+   - Never charges Company Finance.
+   - Preserves SCHEDULED or IN_PROGRESS status.
+   - Preserves finance_charged and finance_log_id.
+   ============================================================ */
+
+router.patch(
+  "/schedule/maintenance/:scheduleItemId",
+  requireAuth,
+  async (req, res) => {
+
+    const airlineId =
+      ACS_airlineId(req);
+
+    const scheduleItemId =
+      ACS_positiveBigInt(
+        req.params.scheduleItemId
+      );
+
+    const selectedDay =
+      ACS_normalizeScheduleDay(
+        req.body?.selected_day
+      );
+
+    const startTime =
+      ACS_parseScheduleTime(
+        req.body?.start_time
+      );
+
+    if (!airlineId) {
+      return res.status(401).json({
+        ok: false,
+        error: "NO_AIRLINE_SESSION"
+      });
+    }
+
+    if (!scheduleItemId) {
+      return res.status(400).json({
+        ok: false,
+        error: "VALIDATION_ERROR",
+        details: "scheduleItemId is required"
+      });
+    }
+
+    if (!selectedDay) {
+      return res.status(400).json({
+        ok: false,
+        error: "MAINTENANCE_DAY_INVALID"
+      });
+    }
+
+    if (!startTime) {
+      return res.status(400).json({
+        ok: false,
+        error: "MAINTENANCE_TIME_INVALID",
+        format: "HH:MM"
+      });
+    }
+
+    const client =
+      await pool.connect();
+
+    let transactionStarted = false;
+
+    try {
+
+      await client.query("BEGIN");
+      transactionStarted = true;
+
+      await client.query(
+        `
+        SELECT pg_advisory_xact_lock(
+          hashtext($1)
+        )
+        `,
+        [
+          `ACS_EDIT_MAINTENANCE|${airlineId}|${scheduleItemId}`
+        ]
+      );
+
+      /* ========================================================
+         LOCK ORIGINAL SERVICE + EVENT
+         ======================================================== */
+
+      const originalResult =
+        await client.query(
+          `
+          SELECT
+            si.id AS schedule_item_id,
+            si.airline_id,
+            si.aircraft_id,
+            si.service_type,
+            si.selected_day,
+            si.departure,
+            si.arrival,
+            si.dep_abs_min,
+            si.arr_abs_min,
+            si.status AS schedule_status,
+
+            ame.id AS event_id,
+            ame.event_uid,
+            ame.check_type,
+            ame.event_status,
+            ame.duration_minutes,
+            ame.started_at,
+            ame.completed_at,
+            ame.finance_charged,
+            ame.finance_log_id,
+            ame.estimated_cost,
+            ame.final_cost,
+            ame.currency
+
+          FROM public.schedule_items si
+
+          JOIN public.aircraft_maintenance_events ame
+            ON ame.schedule_item_id = si.id
+           AND ame.airline_id = si.airline_id
+           AND ame.aircraft_id = si.aircraft_id
+
+          WHERE si.id = $1
+            AND si.airline_id = $2
+            AND si.item_type = 'service'
+            AND ame.check_type IN (
+              'A_CHECK',
+              'B_CHECK'
+            )
+            AND ame.event_status IN (
+              'SCHEDULED',
+              'IN_PROGRESS'
+            )
+
+          LIMIT 1
+
+          FOR UPDATE OF si, ame
+          `,
+          [
+            scheduleItemId,
+            airlineId
+          ]
+        );
+
+      if (!originalResult.rows.length) {
+        const error =
+          new Error(
+            "MAINTENANCE_EVENT_NOT_EDITABLE"
+          );
+
+        error.code =
+          "MAINTENANCE_EVENT_NOT_EDITABLE";
+
+        throw error;
+      }
+
+      const original =
+        originalResult.rows[0];
+
+      const durationMinutes =
+        Number(
+          original.duration_minutes || 0
+        );
+
+      if (
+        !Number.isFinite(durationMinutes) ||
+        durationMinutes <= 0
+      ) {
+        const error =
+          new Error(
+            "MAINTENANCE_DURATION_INVALID"
+          );
+
+        error.code =
+          "MAINTENANCE_DURATION_INVALID";
+
+        throw error;
+      }
+
+      const proposedStartAbs =
+        ACS_absoluteScheduleMinute(
+          selectedDay,
+          startTime.minutes
+        );
+
+      const proposedEndAbs =
+        proposedStartAbs +
+        durationMinutes;
+
+      const endTimeText =
+        ACS_formatScheduleMinute(
+          proposedEndAbs
+        );
+
+      /* ========================================================
+         CONFLICT VALIDATION — EXCLUDES ORIGINAL SERVICE
+         ======================================================== */
+
+      const existingItemsResult =
+        await client.query(
+          `
+          SELECT
+            id,
+            item_type,
+            service_type,
+            selected_day,
+            departure,
+            arrival,
+            flight_number,
+            dep_abs_min,
+            arr_abs_min,
+            turnaround_min,
+            status
+
+          FROM public.schedule_items
+
+          WHERE airline_id = $1
+            AND aircraft_id = $2
+            AND id <> $3
+            AND item_type IN (
+              'flight',
+              'service'
+            )
+            AND LOWER(
+              COALESCE(
+                status,
+                'planned'
+              )
+            ) NOT IN (
+              'cancelled',
+              'completed'
+            )
+
+          ORDER BY
+            dep_abs_min,
+            id
+
+          FOR UPDATE
+          `,
+          [
+            airlineId,
+            original.aircraft_id,
+            scheduleItemId
+          ]
+        );
+
+      let conflict = null;
+
+      for (
+        const item
+        of existingItemsResult.rows
+      ) {
+
+        const existingStart =
+          Number(
+            item.dep_abs_min
+          );
+
+        let existingEnd =
+          Number(
+            item.arr_abs_min
+          );
+
+        if (
+          !Number.isFinite(existingStart) ||
+          !Number.isFinite(existingEnd)
+        ) {
+          continue;
+        }
+
+        if (
+          ACS_text(
+            item.item_type
+          ).toLowerCase() === "flight"
+        ) {
+          existingEnd +=
+            Number(
+              item.turnaround_min || 0
+            );
+        }
+
+        if (
+          ACS_intervalsOverlap(
+            proposedStartAbs,
+            proposedEndAbs,
+            existingStart,
+            existingEnd
+          )
+        ) {
+          conflict = item;
+          break;
+        }
+      }
+
+      if (conflict) {
+        const error =
+          new Error(
+            "MAINTENANCE_SCHEDULE_CONFLICT"
+          );
+
+        error.code =
+          "MAINTENANCE_SCHEDULE_CONFLICT";
+
+        error.conflict =
+          conflict;
+
+        throw error;
+      }
+
+      /* ========================================================
+         CALCULATE NEW ABSOLUTE ACS WINDOW
+         ======================================================== */
+
+      const dayToIso = {
+        mon: 1,
+        tue: 2,
+        wed: 3,
+        thu: 4,
+        fri: 5,
+        sat: 6,
+        sun: 7
+      };
+
+      const windowResult =
+        await client.query(
+          `
+          WITH authority AS (
+            SELECT
+              acs_get_current_sim_time()
+                AS current_sim_time,
+
+              EXTRACT(
+                ISODOW
+                FROM acs_get_current_sim_time()
+              )::INTEGER
+                AS current_iso_day
+          ),
+
+          proposed AS (
+            SELECT
+              current_sim_time,
+
+              date_trunc(
+                'day',
+                current_sim_time
+              )
+              +
+              (
+                (
+                  (
+                    $1::INTEGER -
+                    current_iso_day +
+                    7
+                  ) % 7
+                )
+                * INTERVAL '1 day'
+              )
+              +
+              (
+                $2::INTEGER *
+                INTERVAL '1 minute'
+              )
+              AS candidate_start
+
+            FROM authority
+          )
+
+          SELECT
+            current_sim_time,
+
+            CASE
+              WHEN candidate_start
+                   <= current_sim_time
+                THEN
+                  candidate_start
+                  + INTERVAL '7 days'
+              ELSE
+                candidate_start
+            END
+              AS scheduled_start_at,
+
+            (
+              CASE
+                WHEN candidate_start
+                     <= current_sim_time
+                  THEN
+                    candidate_start
+                    + INTERVAL '7 days'
+                ELSE
+                  candidate_start
+              END
+            )
+            +
+            (
+              $3::INTEGER *
+              INTERVAL '1 minute'
+            )
+              AS scheduled_end_at
+
+          FROM proposed
+          `,
+          [
+            dayToIso[selectedDay],
+            startTime.minutes,
+            durationMinutes
+          ]
+        );
+
+      const scheduledStartAt =
+        windowResult.rows[0]
+          ?.scheduled_start_at;
+
+      const scheduledEndAt =
+        windowResult.rows[0]
+          ?.scheduled_end_at;
+
+      /* ========================================================
+         UPDATE SAME SCHEDULE ITEM
+         ======================================================== */
+
+      const scheduleUpdateResult =
+        await client.query(
+          `
+          UPDATE public.schedule_items
+
+          SET
+            selected_day = $3,
+            departure = $4,
+            arrival = $5,
+            dep_abs_min = $6,
+            arr_abs_min = $7,
+
+            notes = jsonb_build_object(
+              'source',
+              'ACS_SCHEDULE_MAINTENANCE_EDIT_V1',
+
+              'check_type',
+              $8::TEXT,
+
+              'selected_day',
+              $3::TEXT,
+
+              'scheduled_start_at',
+              $9::TIMESTAMP,
+
+              'scheduled_end_at',
+              $10::TIMESTAMP
+            )::TEXT,
+
+            updated_at =
+              (
+                CURRENT_TIMESTAMP
+                AT TIME ZONE 'UTC'
+              )
+
+          WHERE id = $1
+            AND airline_id = $2
+
+          RETURNING *
+          `,
+          [
+            scheduleItemId,
+            airlineId,
+            selectedDay,
+            startTime.text,
+            endTimeText,
+            proposedStartAbs,
+            proposedEndAbs,
+            original.check_type,
+            scheduledStartAt,
+            scheduledEndAt
+          ]
+        );
+
+      /* ========================================================
+         UPDATE SAME MAINTENANCE EVENT
+         Finance identity and status remain unchanged.
+         ======================================================== */
+
+      const eventUpdateResult =
+        await client.query(
+          `
+          UPDATE public.aircraft_maintenance_events
+
+          SET
+            scheduled_start_at = $3,
+            scheduled_end_at = $4,
+
+            expected_completion_at = CASE
+              WHEN event_status = 'IN_PROGRESS'
+                THEN $4
+              ELSE expected_completion_at
+            END,
+
+            updated_at =
+              (
+                CURRENT_TIMESTAMP
+                AT TIME ZONE 'UTC'
+              )
+
+          WHERE id = $1
+            AND airline_id = $2
+            AND event_status IN (
+              'SCHEDULED',
+              'IN_PROGRESS'
+            )
+
+          RETURNING *
+          `,
+          [
+            original.event_id,
+            airlineId,
+            scheduledStartAt,
+            scheduledEndAt
+          ]
+        );
+
+      if (
+        !scheduleUpdateResult.rows.length ||
+        !eventUpdateResult.rows.length
+      ) {
+        const error =
+          new Error(
+            "MAINTENANCE_EDIT_STATE_CONFLICT"
+          );
+
+        error.code =
+          "MAINTENANCE_EDIT_STATE_CONFLICT";
+
+        throw error;
+      }
+
+      await client.query("COMMIT");
+      transactionStarted = false;
+
+      return res.json({
+        ok: true,
+
+        endpoint:
+          "ACS_SCHEDULE_EDIT_MAINTENANCE",
+
+        version:
+          "v1.0",
+
+        authority:
+          "POSTGRESQL_SCHEDULE_AUTHORITY",
+
+        airline_id:
+          airlineId,
+
+        action:
+          "MAINTENANCE_UPDATED",
+
+        maintenance: {
+          check_type:
+            original.check_type,
+
+          selected_day:
+            selectedDay,
+
+          start_time:
+            startTime.text,
+
+          end_time:
+            endTimeText,
+
+          scheduled_start_at:
+            scheduledStartAt,
+
+          scheduled_end_at:
+            scheduledEndAt,
+
+          event_status:
+            original.event_status,
+
+          finance_charged:
+            original.finance_charged,
+
+          finance_log_id:
+            original.finance_log_id
+        },
+
+        schedule_item:
+          scheduleUpdateResult.rows[0],
+
+        event:
+          eventUpdateResult.rows[0]
+      });
+
+    } catch (error) {
+
+      if (transactionStarted) {
+        try {
+          await client.query(
+            "ROLLBACK"
+          );
+        } catch (rollbackError) {
+          console.error(
+            "ACS EDIT MAINTENANCE " +
+            "ROLLBACK ERROR:",
+            rollbackError
+          );
+        }
+      }
+
+      console.error(
+        "ACS EDIT MAINTENANCE ERROR:",
+        error
+      );
+
+      if (
+        error.code ===
+        "MAINTENANCE_SCHEDULE_CONFLICT"
+      ) {
+        return res.status(409).json({
+          ok: false,
+          error: error.code,
+          details:
+            "The selected maintenance window conflicts with another scheduled operation.",
+          conflict:
+            error.conflict || null
+        });
+      }
+
+      return ACS_sendError(
+        res,
+        error,
+        "MAINTENANCE_EDIT_FAILED"
+      );
+
+    } finally {
+      client.release();
+    }
+  }
+);
+
+/* ============================================================
    POST /v1/schedule/maintenance/resolver
    ------------------------------------------------------------
    ACS A/B maintenance lifecycle authority:
