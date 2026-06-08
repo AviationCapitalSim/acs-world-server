@@ -890,40 +890,78 @@ router.post(
         ACS_formatScheduleMinute(proposedEndAbs);
 
       const existingItemsResult = await client.query(
-        `
-        SELECT
-          id,
-          item_type,
-          service_type,
-          selected_day,
-          departure,
-          arrival,
-          flight_number,
-          dep_abs_min,
-          arr_abs_min,
-          turnaround_min,
-          status
+  `
+  SELECT
+    si.id,
+    si.item_type,
+    si.service_type,
+    si.selected_day,
+    si.departure,
+    si.arrival,
+    si.flight_number,
+    si.dep_abs_min,
+    si.arr_abs_min,
+    si.turnaround_min,
+    si.status,
 
-        FROM public.schedule_items
+    ame.event_status
 
-        WHERE airline_id = $1
-          AND aircraft_id = $2
-          AND item_type IN ('flight', 'service')
-          AND LOWER(COALESCE(status, 'planned'))
-              NOT IN ('cancelled', 'completed')
-          AND (
-            $3::BIGINT IS NULL
-            OR id <> $3::BIGINT
+  FROM public.schedule_items si
+
+  LEFT JOIN public.aircraft_maintenance_events ame
+    ON ame.schedule_item_id = si.id
+   AND ame.airline_id = si.airline_id
+   AND ame.aircraft_id = si.aircraft_id
+
+  WHERE si.airline_id = $1
+    AND si.aircraft_id = $2
+
+    AND (
+      $3::BIGINT IS NULL
+      OR si.id <> $3::BIGINT
+    )
+
+    AND si.item_type IN (
+      'flight',
+      'service'
+    )
+
+    AND LOWER(
+      COALESCE(
+        si.status,
+        'planned'
+      )
+    ) NOT IN (
+      'cancelled',
+      'completed'
+    )
+
+    AND (
+      si.item_type = 'flight'
+      OR (
+        si.item_type = 'service'
+        AND UPPER(
+          COALESCE(
+            ame.event_status,
+            ''
           )
+        ) IN (
+          'SCHEDULED',
+          'IN_PROGRESS'
+        )
+      )
+    )
 
-        ORDER BY dep_abs_min, id
-        `,
-        [
-          airlineId,
-          aircraftId,
-          excludeScheduleItemId
-        ]
-      );
+  ORDER BY
+    si.dep_abs_min,
+    si.id
+  `,
+  [
+    airlineId,
+    aircraftId,
+    excludeScheduleItemId
+  ]
+);
 
       let conflict = null;
 
