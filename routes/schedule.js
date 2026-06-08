@@ -645,11 +645,6 @@ router.post(
 
     const startTime =
       ACS_parseScheduleTime(req.body?.start_time);
-
-    const excludeScheduleItemId =
-    ACS_positiveBigInt(
-    req.body?.exclude_schedule_item_id
-    );
      
     const excludeScheduleItemId =
       req.body?.exclude_schedule_item_id === null ||
