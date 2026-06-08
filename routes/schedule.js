@@ -529,10 +529,30 @@ router.get("/schedule/context", requireAuth, async (req, res) => {
         si.status,
         si.notes,
         si.created_at,
-        si.updated_at
+        si.updated_at,
+
+        ame.id AS maintenance_event_id,
+        ame.event_uid AS maintenance_event_uid,
+        ame.event_status AS maintenance_event_status,
+        ame.finance_charged AS maintenance_finance_charged,
+        ame.finance_log_id AS maintenance_finance_log_id
+
       FROM public.schedule_items si
+
+      LEFT JOIN public.aircraft_maintenance_events ame
+        ON ame.schedule_item_id = si.id
+       AND ame.airline_id = si.airline_id
+       AND ame.aircraft_id = si.aircraft_id
+
       WHERE si.airline_id = $1
         AND LOWER(COALESCE(si.status, 'planned')) <> 'cancelled'
+        AND NOT (
+          LOWER(COALESCE(si.item_type, '')) = 'service'
+          AND (
+            LOWER(COALESCE(si.status, '')) = 'completed'
+            OR UPPER(COALESCE(ame.event_status, '')) = 'COMPLETED'
+          )
+        )
       ORDER BY
         CASE LOWER(si.selected_day)
           WHEN 'mon' THEN 1
@@ -626,6 +646,15 @@ router.post(
     const startTime =
       ACS_parseScheduleTime(req.body?.start_time);
 
+    const excludeScheduleItemId =
+      req.body?.exclude_schedule_item_id === null ||
+      req.body?.exclude_schedule_item_id === undefined ||
+      req.body?.exclude_schedule_item_id === ""
+        ? null
+        : ACS_positiveBigInt(
+            req.body?.exclude_schedule_item_id
+          );
+
     if (!airlineId) {
       return res.status(401).json({
         ok: false,
@@ -670,6 +699,19 @@ router.post(
         ok: false,
         error: "MAINTENANCE_TIME_INVALID",
         format: "HH:MM"
+      });
+    }
+
+    if (
+      req.body?.exclude_schedule_item_id !== null &&
+      req.body?.exclude_schedule_item_id !== undefined &&
+      req.body?.exclude_schedule_item_id !== "" &&
+      !excludeScheduleItemId
+    ) {
+      return res.status(400).json({
+        ok: false,
+        error: "VALIDATION_ERROR",
+        details: "exclude_schedule_item_id must be a positive integer"
       });
     }
 
@@ -869,10 +911,18 @@ router.post(
           AND item_type IN ('flight', 'service')
           AND LOWER(COALESCE(status, 'planned'))
               NOT IN ('cancelled', 'completed')
+          AND (
+            $3::BIGINT IS NULL
+            OR id <> $3::BIGINT
+          )
 
         ORDER BY dep_abs_min, id
         `,
-        [airlineId, aircraftId]
+        [
+          airlineId,
+          aircraftId,
+          excludeScheduleItemId
+        ]
       );
 
       let conflict = null;
@@ -1299,10 +1349,16 @@ const activeCheckInProgress =
   cCheckStatus === "IN_PROGRESS" ||
   dCheckStatus === "IN_PROGRESS";
 
+const higherCheckOverdue =
+  cCheckStatus === "OVERDUE" ||
+  dCheckStatus === "OVERDUE";
+
 const allowABProgrammingDuringMaintenance =
   ["A_CHECK", "B_CHECK"].includes(checkType) &&
-  aircraftInMaintenance &&
-  activeCheckInProgress;
+  (
+    activeCheckInProgress ||
+    higherCheckOverdue
+  );
 
 if (
   aircraftInMaintenance &&
@@ -1328,7 +1384,8 @@ if (
       checkType === "B_CHECK" &&
       bCheckStatus === "OVERDUE" &&
       aircraftInMaintenance === false &&
-      activeCheckInProgress === false;
+      activeCheckInProgress === false &&
+      higherCheckOverdue === false;
        
       /* ========================================================
          DUPLICATE PROTECTION
