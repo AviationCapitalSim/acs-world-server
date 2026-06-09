@@ -4584,8 +4584,15 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
       }
 
       /* ========================================================
-         PHASE 2 — START DUE A/B EVENTS
-         B has priority. Finance is charged only at real start.
+         PHASE 2 — AUTOMATIC START OF SCHEDULED A/B CHECKS
+         --------------------------------------------------------
+         ACS backend rules:
+         - ACS Time is the only start authority.
+         - C/D OVERDUE or IN_PROGRESS keeps A/B in SCHEDULED.
+         - B has priority over A and absorbs pending A.
+         - Only one A/B event may run per aircraft.
+         - Finance is charged once, only when the event starts.
+         - The OCC-visible maintenance label is A-Check/B-Check.
          ======================================================== */
 
       const dueEventsResult = await client.query(
@@ -4632,6 +4639,24 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
             AND ame.check_type IN ('A_CHECK', 'B_CHECK')
             AND ame.scheduled_start_at
                 <= acs_get_current_sim_time()
+
+            AND UPPER(
+              COALESCE(ams.c_check_status, '')
+            ) NOT IN ('OVERDUE', 'IN_PROGRESS')
+
+            AND UPPER(
+              COALESCE(ams.d_check_status, '')
+            ) NOT IN ('OVERDUE', 'IN_PROGRESS')
+
+            AND NOT EXISTS (
+              SELECT 1
+              FROM public.aircraft_maintenance_events active_light
+              WHERE active_light.airline_id = ame.airline_id
+                AND active_light.aircraft_id = ame.aircraft_id
+                AND active_light.check_type IN ('A_CHECK', 'B_CHECK')
+                AND active_light.event_status = 'IN_PROGRESS'
+            )
+
             AND NOT (
               ame.check_type = 'A_CHECK'
               AND EXISTS (
@@ -4664,27 +4689,45 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
         const dStatus =
           ACS_text(event.d_check_status).toUpperCase();
 
-        const bStatus =
-          ACS_text(event.b_check_status).toUpperCase();
-
+        /*
+         * Safety recheck inside the transaction.
+         * C/D keeps authority over A/B while overdue or running.
+         */
         if (
+          cStatus === "OVERDUE" ||
           cStatus === "IN_PROGRESS" ||
+          dStatus === "OVERDUE" ||
           dStatus === "IN_PROGRESS"
         ) {
           continue;
         }
 
         /*
-         * One aircraft can run only one light-maintenance event.
-         * C/D retain absolute priority. B absorbs every pending A.
+         * Never start another light check while the aircraft
+         * already has an A/B event in progress.
          */
-        if (
-          ACS_text(event.operational_status).toUpperCase() ===
-            "IN_MAINTENANCE"
-        ) {
+        const activeLightCheckResult = await client.query(
+          `
+          SELECT id
+          FROM public.aircraft_maintenance_events
+          WHERE airline_id = $1
+            AND aircraft_id = $2
+            AND check_type IN ('A_CHECK', 'B_CHECK')
+            AND event_status = 'IN_PROGRESS'
+          LIMIT 1
+          FOR UPDATE
+          `,
+          [airlineId, event.aircraft_id]
+        );
+
+        if (activeLightCheckResult.rows.length) {
           continue;
         }
 
+        /*
+         * B absorbs every pending A before B starts.
+         * No DELETE, no charge, no refund and no cycle reset.
+         */
         if (checkType === "B_CHECK") {
           await client.query(
             `
@@ -4721,6 +4764,16 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
         const cost = Math.round(
           Number(event.estimated_cost || 0)
         );
+
+        if (!Number.isFinite(cost) || cost <= 0) {
+          const error =
+            new Error("MAINTENANCE_COST_RATE_INVALID");
+
+          error.code =
+            "MAINTENANCE_COST_RATE_INVALID";
+
+          throw error;
+        }
 
         const financeResult = await client.query(
           `
@@ -4798,7 +4851,7 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
             event.schedule_item_id,
             String(event.event_uid),
             `${ACS_checkDisplayName(checkType)} ` +
-              `started from Schedule Table`
+              `started automatically by ACS Time`
           ]
         );
 
@@ -4918,6 +4971,11 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
           [event.aircraft_id, checkType, airlineId]
         );
 
+        /*
+         * Internal operational lock remains IN_MAINTENANCE.
+         * The player-facing OCC label comes from maintenance_status:
+         * A-CHECK or B-CHECK, displayed as A-Check/B-Check.
+         */
         await client.query(
           `
           UPDATE public.aircraft_fleet
