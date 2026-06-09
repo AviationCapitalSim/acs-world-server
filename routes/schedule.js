@@ -4122,18 +4122,12 @@ router.patch(
    PostgreSQL / Railway authority only.
    ============================================================ */
 
-router.post(
-  "/schedule/maintenance/resolver",
-  requireAuth,
-  async (req, res) => {
-    const airlineId = ACS_airlineId(req);
-
-    if (!airlineId) {
-      return res.status(401).json({
-        ok: false,
-        error: "NO_AIRLINE_SESSION"
-      });
-    }
+async function ACS_runMaintenanceResolverForAirline(airlineId) {
+  if (!Number.isInteger(airlineId) || airlineId <= 0) {
+    const error = new Error("NO_AIRLINE_SESSION");
+    error.code = "NO_AIRLINE_SESSION";
+    throw error;
+  }
 
     const client = await pool.connect();
     let transactionStarted = false;
@@ -4141,6 +4135,34 @@ router.post(
     try {
       await client.query("BEGIN");
       transactionStarted = true;
+
+      const resolverLockResult = await client.query(
+        `
+        SELECT pg_try_advisory_xact_lock(
+          hashtext($1)
+        ) AS acquired
+        `,
+        [`ACS_AB_MAINTENANCE_RESOLVER|${airlineId}`]
+      );
+
+      if (resolverLockResult.rows[0]?.acquired !== true) {
+        await client.query("ROLLBACK");
+        transactionStarted = false;
+
+        return {
+          ok: true,
+          endpoint: "ACS_SCHEDULE_MAINTENANCE_RESOLVER",
+          version: "v2.3",
+          authority: "POSTGRESQL_SCHEDULE_AUTHORITY",
+          airline_id: airlineId,
+          skipped: true,
+          skip_reason: "RESOLVER_ALREADY_RUNNING",
+          completed_count: 0,
+          completed_events: [],
+          started_count: 0,
+          started_events: []
+        };
+      }
 
       /* ========================================================
          PHASE 1 — COMPLETE A/B EVENTS
@@ -4743,11 +4765,11 @@ router.post(
       await client.query("COMMIT");
       transactionStarted = false;
 
-      return res.json({
+      return {
         ok: true,
         endpoint:
           "ACS_SCHEDULE_MAINTENANCE_RESOLVER",
-        version: "v2.2",
+        version: "v2.3",
         authority:
           "POSTGRESQL_SCHEDULE_AUTHORITY",
         airline_id: airlineId,
@@ -4755,7 +4777,9 @@ router.post(
         completed_events: completedEvents,
         started_count: startedEvents.length,
         started_events: startedEvents
-      });
+      };
+
+
 
     } catch (error) {
       if (transactionStarted) {
@@ -4771,10 +4795,130 @@ router.post(
       }
 
       console.error(
-        "ACS SCHEDULE MAINTENANCE RESOLVER ERROR:",
+        `ACS SCHEDULE MAINTENANCE RESOLVER ERROR [airline ${airlineId}]:`,
         error
       );
 
+      throw error;
+
+    } finally {
+      client.release();
+    }
+}
+
+export async function ACS_runMaintenanceResolver({
+  airlineId = null,
+  allAirlines = false
+} = {}) {
+  const normalizedAirlineId =
+    airlineId === null || airlineId === undefined
+      ? null
+      : Number(airlineId);
+
+  if (
+    normalizedAirlineId !== null &&
+    (!Number.isInteger(normalizedAirlineId) ||
+      normalizedAirlineId <= 0)
+  ) {
+    const error = new Error("NO_AIRLINE_SESSION");
+    error.code = "NO_AIRLINE_SESSION";
+    throw error;
+  }
+
+  if (normalizedAirlineId !== null) {
+    return ACS_runMaintenanceResolverForAirline(
+      normalizedAirlineId
+    );
+  }
+
+  if (allAirlines !== true) {
+    const error = new Error("MAINTENANCE_RESOLVER_SCOPE_REQUIRED");
+    error.code = "MAINTENANCE_RESOLVER_SCOPE_REQUIRED";
+    throw error;
+  }
+
+  const airlineResult = await pool.query(
+    `
+    SELECT DISTINCT airline_id
+    FROM public.aircraft_maintenance_events
+    WHERE event_status IN ('SCHEDULED', 'IN_PROGRESS')
+      AND check_type IN ('A_CHECK', 'B_CHECK')
+    ORDER BY airline_id
+    `
+  );
+
+  const results = [];
+  const errors = [];
+
+  for (const row of airlineResult.rows) {
+    const currentAirlineId = Number(row.airline_id);
+
+    if (!Number.isInteger(currentAirlineId) || currentAirlineId <= 0) {
+      continue;
+    }
+
+    try {
+      const result =
+        await ACS_runMaintenanceResolverForAirline(
+          currentAirlineId
+        );
+
+      results.push(result);
+    } catch (error) {
+      errors.push({
+        airline_id: currentAirlineId,
+        error:
+          error?.code ||
+          error?.message ||
+          "MAINTENANCE_RESOLVER_FAILED"
+      });
+    }
+  }
+
+  return {
+    ok: errors.length === 0,
+    endpoint: "ACS_SCHEDULE_MAINTENANCE_RESOLVER_GLOBAL",
+    version: "v2.3",
+    authority: "POSTGRESQL_SCHEDULE_AUTHORITY",
+    airline_count: results.length + errors.length,
+    processed_count: results.length,
+    error_count: errors.length,
+    completed_count: results.reduce(
+      (total, result) =>
+        total + Number(result.completed_count || 0),
+      0
+    ),
+    started_count: results.reduce(
+      (total, result) =>
+        total + Number(result.started_count || 0),
+      0
+    ),
+    results,
+    errors
+  };
+}
+
+router.post(
+  "/schedule/maintenance/resolver",
+  requireAuth,
+  async (req, res) => {
+    const airlineId = ACS_airlineId(req);
+
+    if (!airlineId) {
+      return res.status(401).json({
+        ok: false,
+        error: "NO_AIRLINE_SESSION"
+      });
+    }
+
+    try {
+      const result = await ACS_runMaintenanceResolver({
+        airlineId
+      });
+
+      return res.json(result);
+
+    } catch (error) {
       if (
         error.code ===
         "INSUFFICIENT_CAPITAL_FOR_MAINTENANCE"
@@ -4792,9 +4936,6 @@ router.post(
         error,
         "MAINTENANCE_RESOLVER_FAILED"
       );
-
-    } finally {
-      client.release();
     }
   }
 );
