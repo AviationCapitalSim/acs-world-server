@@ -14,7 +14,10 @@ import cookieParser from "cookie-parser";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import usersRoutes from "./routes/users.js";
-import scheduleRoutes from "./routes/schedule.js";
+import scheduleRoutes, {
+  startMaintenanceScheduler,
+  stopMaintenanceScheduler
+} from "./routes/schedule.js";
 import aircraftRoutes from "./routes/aircraft.js";
 import factoryRoutes from "./routes/factory.js";
 import routePlanRoutes from "./routes/route_plans.js";
@@ -140,6 +143,50 @@ console.log("[ACS] Boot env:", {
 });
 
 // ✅ Escuchar en 0.0.0.0 (Railway-friendly)
-app.listen(PORT, "0.0.0.0", () => {
+const server = app.listen(PORT, "0.0.0.0", () => {
   console.log("ACS World Server running on port", PORT);
+
+  startMaintenanceScheduler();
+});
+
+/* ============================================================
+   ACS GRACEFUL SHUTDOWN
+   ------------------------------------------------------------
+   - Stop the A/B maintenance scheduler first.
+   - Then stop accepting new HTTP connections.
+   - Railway SIGTERM/SIGINT safe.
+   ============================================================ */
+
+let ACS_shutdownStarted = false;
+
+function ACS_shutdown(signal) {
+  if (ACS_shutdownStarted) {
+    return;
+  }
+
+  ACS_shutdownStarted = true;
+
+  console.log(`[ACS] ${signal} received. Shutting down safely...`);
+
+  stopMaintenanceScheduler();
+
+  server.close(() => {
+    console.log("[ACS] HTTP server closed");
+    process.exit(0);
+  });
+
+  const forceExitTimer = setTimeout(() => {
+    console.error("[ACS] Forced shutdown after timeout");
+    process.exit(1);
+  }, 10000);
+
+  forceExitTimer.unref?.();
+}
+
+process.on("SIGTERM", () => {
+  ACS_shutdown("SIGTERM");
+});
+
+process.on("SIGINT", () => {
+  ACS_shutdown("SIGINT");
 });
