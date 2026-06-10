@@ -4393,10 +4393,11 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
               THEN 'D-CHECK'
             WHEN ams.maintenance_control_reason = 'C_CHECK'
               THEN 'C-CHECK'
-            WHEN ams.maintenance_control_reason = 'B_CHECK'
-              THEN 'B-CHECK'
-            WHEN ams.maintenance_control_reason = 'A_CHECK'
-              THEN 'A-CHECK'
+            WHEN ams.maintenance_control_reason IN (
+              'B_CHECK',
+              'A_CHECK'
+            )
+              THEN 'CHECK_REQUIRED'
             WHEN ams.maintenance_control_status = 'UNSERVICEABLE'
               THEN 'CHECK_REQUIRED'
             ELSE 'SERVICEABLE'
@@ -5117,9 +5118,12 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
         );
 
         /*
-         * Internal operational lock remains IN_MAINTENANCE.
-         * The player-facing OCC label comes from maintenance_status:
-         * A-CHECK or B-CHECK, displayed as A-Check/B-Check.
+         * ACS AIRBUS OCC — OPERATIONAL MAINTENANCE LOCK
+         * ------------------------------------------------------
+         * aircraft_fleet keeps only PostgreSQL-authorized fleet
+         * values. The Schedule Table visual label A CHECK / B CHECK
+         * comes from the active maintenance event and technical
+         * maintenance status, not from aircraft_fleet.
          */
         await client.query(
           `
@@ -5127,16 +5131,13 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
           SET
             status = 'MAINTENANCE',
             operational_status = 'IN_MAINTENANCE',
-            maintenance_status = CASE
-              WHEN $3 = 'B_CHECK' THEN 'B-CHECK'
-              ELSE 'A-CHECK'
-            END,
+            maintenance_status = 'CHECK_REQUIRED',
             updated_at =
               (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
           WHERE id = $1
             AND airline_id = $2
           `,
-          [event.aircraft_id, airlineId, checkType]
+          [event.aircraft_id, airlineId]
         );
 
         startedEvents.push({
