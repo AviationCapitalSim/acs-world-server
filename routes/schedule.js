@@ -1421,30 +1421,16 @@ if (
        */
       const immediateStart = false;
 
-      /* ========================================================
-         B DOMINANCE — B CHECK ABSORBS A CHECK
-         --------------------------------------------------------
-         - A may be scheduled while a future B is only SCHEDULED.
-         - A is blocked only when B is OVERDUE or IN_PROGRESS.
-         - B cancels a pending A only when B actually starts.
-         - Scheduling B never resets or suppresses A in advance.
-         - EDIT and REMOVE endpoints remain unchanged.
-         ======================================================== */
-
-      if (
-        checkType === "A_CHECK" &&
-        (
-          bCheckStatus === "OVERDUE" ||
-          bCheckStatus === "IN_PROGRESS"
-        )
-      ) {
-        const error = new Error(
-          "This aircraft requires a B-Check. " +
-          "Completion of the B-Check resets both A and B."
-        );
-        error.code = "A_CHECK_BLOCKED_BY_OVERDUE_B";
-        throw error;
-      }
+ /* ========================================================
+   B DOMINANCE — B CHECK ABSORBS A CHECK
+   --------------------------------------------------------
+   - A may always be scheduled.
+   - Scheduling A never starts maintenance immediately.
+   - B keeps operational priority when due or in progress.
+   - B cancels a pending A only when B actually starts.
+   - Scheduling B never resets or suppresses A in advance.
+   - EDIT and REMOVE endpoints remain unchanged.
+   ======================================================== */
 
       /* ========================================================
          DUPLICATE PROTECTION
