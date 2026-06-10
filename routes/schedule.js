@@ -4729,13 +4729,38 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
             AND ame.scheduled_start_at
                 <= acs_get_current_sim_time()
 
-            AND UPPER(
-              COALESCE(ams.c_check_status, '')
-            ) NOT IN ('OVERDUE', 'IN_PROGRESS')
+            /*
+ * ACS OCC HIGHER-CHECK AUTHORITY
+ * ------------------------------------------------------------
+ * A/B may remain SCHEDULED, but cannot start when:
+ * - C or D is already OVERDUE;
+ * - C or D is IN_PROGRESS;
+ * - C or D due date has already been reached by ACS Time,
+ *   even if its stored status has not yet changed to OVERDUE.
+ */
+AND NOT (
+  UPPER(
+    COALESCE(ams.c_check_status, '')
+  ) IN ('OVERDUE', 'IN_PROGRESS')
 
-            AND UPPER(
-              COALESCE(ams.d_check_status, '')
-            ) NOT IN ('OVERDUE', 'IN_PROGRESS')
+  OR (
+    ams.c_check_due_date IS NOT NULL
+    AND ams.c_check_due_date
+        <= acs_get_current_sim_time()
+  )
+)
+
+AND NOT (
+  UPPER(
+    COALESCE(ams.d_check_status, '')
+  ) IN ('OVERDUE', 'IN_PROGRESS')
+
+  OR (
+    ams.d_check_due_date IS NOT NULL
+    AND ams.d_check_due_date
+        <= acs_get_current_sim_time()
+  )
+)
 
             AND NOT EXISTS (
               SELECT 1
