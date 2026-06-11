@@ -5855,39 +5855,6 @@ AND NOT (
           break;
         }
 
-        /*
-         * B absorbs pending A only after B has reached its start
-         * authority and sufficient capital has been confirmed.
-         */
-        if (checkType === "B_CHECK") {
-          await client.query(
-            `
-            WITH cancelled_a AS (
-              UPDATE public.aircraft_maintenance_events
-              SET
-                event_status = 'CANCELLED',
-                updated_at =
-                  (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
-              WHERE airline_id = $1
-                AND aircraft_id = $2
-                AND check_type = 'A_CHECK'
-                AND event_status = 'SCHEDULED'
-                AND finance_charged = FALSE
-              RETURNING schedule_item_id
-            )
-            UPDATE public.schedule_items si
-            SET
-              status = 'cancelled',
-              updated_at =
-                (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
-            FROM cancelled_a ca
-            WHERE si.id = ca.schedule_item_id
-              AND si.airline_id = $1
-            `,
-            [airlineId, event.aircraft_id]
-          );
-        }
-
         const financeLogResult = await client.query(
           `
           INSERT INTO public.finance_log (
