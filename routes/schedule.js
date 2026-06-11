@@ -500,6 +500,23 @@ router.get("/schedule/context", requireAuth, async (req, res) => {
       [airlineId]
     );
 
+        /* ============================================================
+       ACS OCC — PERSISTENT WEEKLY SCHEDULE CONTEXT
+       ------------------------------------------------------------
+       schedule_items is the permanent weekly planning authority.
+
+       Rules:
+       - A/B services remain visible after a technical occurrence
+         reaches COMPLETED.
+       - C/D priority does not remove A/B weekly planning.
+       - Only an explicit REMOVE operation may hide a schedule item
+         by setting schedule_items.status = 'cancelled'.
+       - A maintenance event is occurrence history, not the weekly
+         planning record.
+       - LATERAL selects one authoritative event per schedule item
+         and prevents duplicate Schedule Table rows.
+       ============================================================ */
+
     const scheduleItemsResult = await client.query(
       `
       SELECT
@@ -532,38 +549,134 @@ router.get("/schedule/context", requireAuth, async (req, res) => {
         si.created_at,
         si.updated_at,
 
-        ame.id AS maintenance_event_id,
-        ame.event_uid AS maintenance_event_uid,
-        ame.check_type AS maintenance_check_type,
-        ame.event_status AS maintenance_event_status,
-        ame.scheduled_start_at AS maintenance_scheduled_start_at,
-        ame.scheduled_end_at AS maintenance_scheduled_end_at,
-        ame.started_at AS maintenance_started_at,
-        ame.expected_completion_at AS maintenance_expected_completion_at,
-        ame.completed_at AS maintenance_completed_at,
-        ame.duration_minutes AS maintenance_duration_minutes,
-        ame.estimated_cost AS maintenance_estimated_cost,
-        ame.final_cost AS maintenance_final_cost,
-        ame.currency AS maintenance_currency,
-        ame.finance_charged AS maintenance_finance_charged,
-        ame.finance_log_id AS maintenance_finance_log_id
+        ame.id
+          AS maintenance_event_id,
+
+        ame.event_uid
+          AS maintenance_event_uid,
+
+        ame.check_type
+          AS maintenance_check_type,
+
+        ame.event_status
+          AS maintenance_event_status,
+
+        ame.scheduled_start_at
+          AS maintenance_scheduled_start_at,
+
+        ame.scheduled_end_at
+          AS maintenance_scheduled_end_at,
+
+        ame.started_at
+          AS maintenance_started_at,
+
+        ame.expected_completion_at
+          AS maintenance_expected_completion_at,
+
+        ame.completed_at
+          AS maintenance_completed_at,
+
+        ame.duration_minutes
+          AS maintenance_duration_minutes,
+
+        ame.estimated_cost
+          AS maintenance_estimated_cost,
+
+        ame.final_cost
+          AS maintenance_final_cost,
+
+        ame.currency
+          AS maintenance_currency,
+
+        ame.finance_charged
+          AS maintenance_finance_charged,
+
+        ame.finance_log_id
+          AS maintenance_finance_log_id
 
       FROM public.schedule_items si
 
-      LEFT JOIN public.aircraft_maintenance_events ame
-        ON ame.schedule_item_id = si.id
-       AND ame.airline_id = si.airline_id
-       AND ame.aircraft_id = si.aircraft_id
+      /*
+       * Select only one technical occurrence for each permanent
+       * weekly schedule item.
+       *
+       * Priority:
+       * 1. IN_PROGRESS
+       * 2. SCHEDULED
+       * 3. Most recent historical occurrence
+       */
+      LEFT JOIN LATERAL (
+        SELECT
+          event_row.id,
+          event_row.event_uid,
+          event_row.check_type,
+          event_row.event_status,
+          event_row.scheduled_start_at,
+          event_row.scheduled_end_at,
+          event_row.started_at,
+          event_row.expected_completion_at,
+          event_row.completed_at,
+          event_row.duration_minutes,
+          event_row.estimated_cost,
+          event_row.final_cost,
+          event_row.currency,
+          event_row.finance_charged,
+          event_row.finance_log_id,
+          event_row.created_at,
+          event_row.updated_at
+
+        FROM public.aircraft_maintenance_events event_row
+
+        WHERE event_row.schedule_item_id = si.id
+          AND event_row.airline_id = si.airline_id
+          AND event_row.aircraft_id = si.aircraft_id
+
+        ORDER BY
+          CASE
+            WHEN UPPER(
+              COALESCE(event_row.event_status, '')
+            ) = 'IN_PROGRESS'
+              THEN 1
+
+            WHEN UPPER(
+              COALESCE(event_row.event_status, '')
+            ) = 'SCHEDULED'
+              THEN 2
+
+            WHEN UPPER(
+              COALESCE(event_row.event_status, '')
+            ) = 'COMPLETED'
+              THEN 3
+
+            WHEN UPPER(
+              COALESCE(event_row.event_status, '')
+            ) = 'CANCELLED'
+              THEN 4
+
+            ELSE 5
+          END,
+
+          COALESCE(
+            event_row.updated_at,
+            event_row.created_at
+          ) DESC,
+
+          event_row.id DESC
+
+        LIMIT 1
+      ) ame
+        ON TRUE
 
       WHERE si.airline_id = $1
-        AND LOWER(COALESCE(si.status, 'planned')) <> 'cancelled'
-        AND NOT (
-          LOWER(COALESCE(si.item_type, '')) = 'service'
-          AND (
-            LOWER(COALESCE(si.status, '')) = 'completed'
-            OR UPPER(COALESCE(ame.event_status, '')) = 'COMPLETED'
-          )
-        )
+
+        /*
+         * Only REMOVE may cancel and hide permanent planning.
+         * COMPLETED technical occurrences remain visible.
+         */
+        AND LOWER(
+          COALESCE(si.status, 'planned')
+        ) <> 'cancelled'
+
       ORDER BY
         CASE LOWER(si.selected_day)
           WHEN 'mon' THEN 1
@@ -575,6 +688,7 @@ router.get("/schedule/context", requireAuth, async (req, res) => {
           WHEN 'sun' THEN 7
           ELSE 8
         END,
+
         COALESCE(si.dep_abs_min, 0),
         si.id
       `,
@@ -4400,10 +4514,619 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
         [airlineId]
       );
 
-      /* ========================================================
+          /* ========================================================
          PHASE 1 — COMPLETE A/B EVENTS
-         Cycles start only when the aircraft exits maintenance.
+         ACS OCC — PERSISTENT WEEKLY MAINTENANCE PLANNING
+         --------------------------------------------------------
+         Authority separation:
+
+         schedule_items
+         - Permanent weekly planning.
+         - Remains visible until explicit EDIT or REMOVE.
+         - Never becomes completed because one occurrence ended.
+
+         aircraft_maintenance_events
+         - Individual technical occurrences.
+         - SCHEDULED → IN_PROGRESS → COMPLETED.
+         - After completion, the next occurrence is prepared from
+           the same weekly schedule and the new technical due date.
+
+         Reset hierarchy:
+         - A completion resets A.
+         - B completion resets B and A.
          ======================================================== */
+
+      /*
+       * Rearm one weekly A/B service after a technical reset.
+       *
+       * The next occurrence uses the player's current weekly
+       * day/time. It selects the latest weekly slot whose service
+       * finishes no later than the technical due date.
+       *
+       * If the player removed the weekly service, nothing is
+       * recreated and the technical status remains OPEN.
+       */
+      async function ACS_rearmWeeklyMaintenanceOccurrence({
+        aircraftId,
+        checkType,
+        dueDate
+      }) {
+        const normalizedCheckType =
+          ACS_text(checkType).toUpperCase();
+
+        const serviceType =
+          normalizedCheckType === "B_CHECK"
+            ? "B"
+            : "A";
+
+        if (
+          !["A_CHECK", "B_CHECK"].includes(
+            normalizedCheckType
+          ) ||
+          !dueDate
+        ) {
+          return null;
+        }
+
+        /*
+         * Read the permanent weekly schedule item.
+         * A cancelled item means the player used REMOVE.
+         */
+        const schedulePlanResult =
+          await client.query(
+            `
+            SELECT
+              si.id,
+              si.aircraft_id,
+              si.service_type,
+              si.selected_day,
+              si.departure,
+              si.arrival,
+              si.dep_abs_min,
+              si.arr_abs_min,
+              si.block_time_min,
+              si.status,
+
+              latest_event.duration_minutes,
+              latest_event.estimated_cost,
+              latest_event.currency,
+              latest_event.notes
+
+            FROM public.schedule_items si
+
+            LEFT JOIN LATERAL (
+              SELECT
+                ame.duration_minutes,
+                ame.estimated_cost,
+                ame.currency,
+                ame.notes
+
+              FROM public.aircraft_maintenance_events ame
+
+              WHERE ame.schedule_item_id = si.id
+                AND ame.airline_id = si.airline_id
+                AND ame.aircraft_id = si.aircraft_id
+                AND ame.check_type = $4
+
+              ORDER BY
+                COALESCE(
+                  ame.updated_at,
+                  ame.created_at
+                ) DESC,
+                ame.id DESC
+
+              LIMIT 1
+            ) latest_event
+              ON TRUE
+
+            WHERE si.airline_id = $1
+              AND si.aircraft_id = $2
+              AND LOWER(
+                COALESCE(si.item_type, '')
+              ) = 'service'
+              AND UPPER(
+                COALESCE(si.service_type, '')
+              ) = $3
+              AND LOWER(
+                COALESCE(si.status, 'scheduled')
+              ) <> 'cancelled'
+
+            ORDER BY
+              si.updated_at DESC,
+              si.id DESC
+
+            LIMIT 1
+
+            FOR UPDATE OF si
+            `,
+            [
+              airlineId,
+              aircraftId,
+              serviceType,
+              normalizedCheckType
+            ]
+          );
+
+        if (!schedulePlanResult.rows.length) {
+          return null;
+        }
+
+        const schedulePlan =
+          schedulePlanResult.rows[0];
+
+        const durationMinutes =
+          Number(
+            schedulePlan.duration_minutes ||
+            schedulePlan.block_time_min ||
+            (
+              Number(schedulePlan.arr_abs_min) -
+              Number(schedulePlan.dep_abs_min)
+            )
+          );
+
+        if (
+          !Number.isFinite(durationMinutes) ||
+          durationMinutes <= 0
+        ) {
+          const error =
+            new Error(
+              "MAINTENANCE_DURATION_INVALID"
+            );
+
+          error.code =
+            "MAINTENANCE_DURATION_INVALID";
+
+          throw error;
+        }
+
+        const depAbsMin =
+          Number(schedulePlan.dep_abs_min);
+
+        if (
+          !Number.isFinite(depAbsMin) ||
+          depAbsMin < 0
+        ) {
+          const error =
+            new Error(
+              "MAINTENANCE_TIME_INVALID"
+            );
+
+          error.code =
+            "MAINTENANCE_TIME_INVALID";
+
+          throw error;
+        }
+
+        /*
+         * Select the last programmed weekly slot that completes
+         * on or before the new technical due date.
+         *
+         * PostgreSQL date_trunc('week') uses Monday as the start
+         * of the week, matching dep_abs_min.
+         */
+        const nextWindowResult =
+          await client.query(
+            `
+            WITH slot_authority AS (
+              SELECT
+                $1::TIMESTAMP AS due_at,
+                $2::INTEGER AS dep_abs_min,
+                $3::INTEGER AS duration_minutes
+            ),
+
+            candidate AS (
+              SELECT
+                due_at,
+                duration_minutes,
+
+                date_trunc(
+                  'week',
+                  due_at
+                )
+                +
+                (
+                  dep_abs_min *
+                  INTERVAL '1 minute'
+                )
+                  AS same_week_start
+
+              FROM slot_authority
+            )
+
+            SELECT
+              CASE
+                WHEN
+                  same_week_start
+                  +
+                  (
+                    duration_minutes *
+                    INTERVAL '1 minute'
+                  )
+                  <= due_at
+                THEN same_week_start
+
+                ELSE
+                  same_week_start
+                  - INTERVAL '7 days'
+              END
+                AS scheduled_start_at,
+
+              CASE
+                WHEN
+                  same_week_start
+                  +
+                  (
+                    duration_minutes *
+                    INTERVAL '1 minute'
+                  )
+                  <= due_at
+                THEN
+                  same_week_start
+                  +
+                  (
+                    duration_minutes *
+                    INTERVAL '1 minute'
+                  )
+
+                ELSE
+                  same_week_start
+                  - INTERVAL '7 days'
+                  +
+                  (
+                    duration_minutes *
+                    INTERVAL '1 minute'
+                  )
+              END
+                AS scheduled_end_at
+            FROM candidate
+            `,
+            [
+              dueDate,
+              depAbsMin,
+              durationMinutes
+            ]
+          );
+
+        const scheduledStartAt =
+          nextWindowResult.rows[0]
+            ?.scheduled_start_at;
+
+        const scheduledEndAt =
+          nextWindowResult.rows[0]
+            ?.scheduled_end_at;
+
+        if (
+          !scheduledStartAt ||
+          !scheduledEndAt
+        ) {
+          const error =
+            new Error(
+              "ACS_CURRENT_SIM_TIME_INVALID"
+            );
+
+          error.code =
+            "ACS_CURRENT_SIM_TIME_INVALID";
+
+          throw error;
+        }
+
+        /*
+         * Weekly planning remains active and visible.
+         * Only REMOVE is allowed to cancel it.
+         */
+        await client.query(
+          `
+          UPDATE public.schedule_items
+          SET
+            status = 'scheduled',
+
+            notes = jsonb_build_object(
+              'source',
+              'ACS_WEEKLY_MAINTENANCE_REARM_V1',
+
+              'check_type',
+              $3::TEXT,
+
+              'selected_day',
+              selected_day,
+
+              'scheduled_start_at',
+              $4::TIMESTAMP,
+
+              'scheduled_end_at',
+              $5::TIMESTAMP,
+
+              'technical_due_date',
+              $6::TIMESTAMP
+            )::TEXT,
+
+            updated_at =
+              (
+                CURRENT_TIMESTAMP
+                AT TIME ZONE 'UTC'
+              )
+
+          WHERE id = $1
+            AND airline_id = $2
+            AND LOWER(
+              COALESCE(status, 'scheduled')
+            ) <> 'cancelled'
+          `,
+          [
+            schedulePlan.id,
+            airlineId,
+            normalizedCheckType,
+            scheduledStartAt,
+            scheduledEndAt,
+            dueDate
+          ]
+        );
+
+        /*
+         * Normally no open event should remain after completion.
+         * This protection prevents duplicate occurrences if two
+         * resolver ticks inspect the same aircraft.
+         */
+        const openEventResult =
+          await client.query(
+            `
+            SELECT
+              id,
+              event_status
+
+            FROM public.aircraft_maintenance_events
+
+            WHERE airline_id = $1
+              AND aircraft_id = $2
+              AND schedule_item_id = $3
+              AND check_type = $4
+              AND event_status IN (
+                'SCHEDULED',
+                'IN_PROGRESS'
+              )
+
+            ORDER BY id DESC
+            LIMIT 1
+
+            FOR UPDATE
+            `,
+            [
+              airlineId,
+              aircraftId,
+              schedulePlan.id,
+              normalizedCheckType
+            ]
+          );
+
+        let maintenanceEvent = null;
+
+        if (openEventResult.rows.length) {
+          const existingOpenEvent =
+            openEventResult.rows[0];
+
+          /*
+           * Never overwrite an active service.
+           * A SCHEDULED occurrence may be realigned after B resets A.
+           */
+          if (
+            ACS_text(
+              existingOpenEvent.event_status
+            ).toUpperCase() === "SCHEDULED"
+          ) {
+            const updateEventResult =
+              await client.query(
+                `
+                UPDATE public.aircraft_maintenance_events
+                SET
+                  scheduled_start_at = $3,
+                  scheduled_end_at = $4,
+
+                  started_at = NULL,
+                  expected_completion_at = $4,
+                  completed_at = NULL,
+
+                  duration_minutes = $5,
+                  duration_days =
+                    FLOOR(
+                      $5::NUMERIC / 1440
+                    )::INTEGER,
+
+                  finance_charged = FALSE,
+                  finance_log_id = NULL,
+                  final_cost = NULL,
+
+                  updated_at =
+                    (
+                      CURRENT_TIMESTAMP
+                      AT TIME ZONE 'UTC'
+                    )
+
+                WHERE id = $1
+                  AND airline_id = $2
+                  AND event_status = 'SCHEDULED'
+
+                RETURNING *
+                `,
+                [
+                  existingOpenEvent.id,
+                  airlineId,
+                  scheduledStartAt,
+                  scheduledEndAt,
+                  durationMinutes
+                ]
+              );
+
+            maintenanceEvent =
+              updateEventResult.rows[0] || null;
+          }
+        } else {
+          const insertEventResult =
+            await client.query(
+              `
+              INSERT INTO public.aircraft_maintenance_events (
+                airline_id,
+                aircraft_id,
+
+                check_type,
+                event_status,
+
+                started_at,
+                expected_completion_at,
+                completed_at,
+
+                duration_days,
+                duration_minutes,
+
+                scheduled_start_at,
+                scheduled_end_at,
+
+                schedule_item_id,
+
+                estimated_cost,
+                final_cost,
+
+                currency,
+
+                finance_charged,
+                finance_log_id,
+
+                notes,
+
+                created_at,
+                updated_at
+              )
+              VALUES (
+                $1,
+                $2,
+
+                $3,
+                'SCHEDULED',
+
+                NULL,
+                $5,
+                NULL,
+
+                FLOOR(
+                  $6::NUMERIC / 1440
+                )::INTEGER,
+                $6,
+
+                $4,
+                $5,
+
+                $7,
+
+                $8,
+                NULL,
+
+                $9,
+
+                FALSE,
+                NULL,
+
+                $10,
+
+                (
+                  CURRENT_TIMESTAMP
+                  AT TIME ZONE 'UTC'
+                ),
+                (
+                  CURRENT_TIMESTAMP
+                  AT TIME ZONE 'UTC'
+                )
+              )
+
+              RETURNING *
+              `,
+              [
+                airlineId,
+                aircraftId,
+                normalizedCheckType,
+                scheduledStartAt,
+                scheduledEndAt,
+                durationMinutes,
+                schedulePlan.id,
+                Number(
+                  schedulePlan.estimated_cost || 0
+                ),
+                schedulePlan.currency || "USD",
+
+                JSON.stringify({
+                  source:
+                    "ACS_WEEKLY_MAINTENANCE_REARM_V1",
+
+                  check_type:
+                    normalizedCheckType,
+
+                  technical_due_date:
+                    dueDate,
+
+                  scheduled_start_at:
+                    scheduledStartAt,
+
+                  scheduled_end_at:
+                    scheduledEndAt
+                })
+              ]
+            );
+
+          maintenanceEvent =
+            insertEventResult.rows[0] || null;
+        }
+
+        /*
+         * A valid weekly plan protects its own technical cycle
+         * from becoming overdue before the programmed occurrence.
+         */
+        await client.query(
+          `
+          UPDATE public.aircraft_maintenance_status
+          SET
+            a_check_status = CASE
+              WHEN $3 = 'A_CHECK'
+                THEN 'SCHEDULED'
+              ELSE a_check_status
+            END,
+
+            b_check_status = CASE
+              WHEN $3 = 'B_CHECK'
+                THEN 'SCHEDULED'
+              ELSE b_check_status
+            END,
+
+            updated_at =
+              (
+                CURRENT_TIMESTAMP
+                AT TIME ZONE 'UTC'
+              )
+
+          WHERE aircraft_id = $1
+            AND airline_id = $2
+          `,
+          [
+            aircraftId,
+            airlineId,
+            normalizedCheckType
+          ]
+        );
+
+        return {
+          schedule_item_id:
+            schedulePlan.id,
+
+          event:
+            maintenanceEvent,
+
+          scheduled_start_at:
+            scheduledStartAt,
+
+          scheduled_end_at:
+            scheduledEndAt,
+
+          technical_due_date:
+            dueDate
+        };
+      }
 
       const completionResult = await client.query(
         `
@@ -4414,28 +5137,40 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
           ame.check_type,
           ame.schedule_item_id,
           ame.expected_completion_at,
+
           af.registration,
           af.aircraft_name
+
         FROM public.aircraft_maintenance_events ame
+
         JOIN public.aircraft_fleet af
           ON af.id = ame.aircraft_id
          AND af.airline_id = ame.airline_id
+
         JOIN public.aircraft_maintenance_status ams
           ON ams.aircraft_id = ame.aircraft_id
          AND ams.airline_id = ame.airline_id
+
         WHERE ame.airline_id = $1
           AND ame.event_status = 'IN_PROGRESS'
-          AND ame.check_type IN ('A_CHECK', 'B_CHECK')
+          AND ame.check_type IN (
+            'A_CHECK',
+            'B_CHECK'
+          )
           AND ame.expected_completion_at
               <= acs_get_current_sim_time()
+
         ORDER BY
           ame.expected_completion_at,
+
           CASE ame.check_type
             WHEN 'B_CHECK' THEN 1
             WHEN 'A_CHECK' THEN 2
             ELSE 3
           END,
+
           ame.id
+
         FOR UPDATE OF ame, af, ams
         `,
         [airlineId]
@@ -4443,181 +5178,329 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
 
       const completedEvents = [];
 
-      for (const event of completionResult.rows) {
+      for (
+        const event
+        of completionResult.rows
+      ) {
         const checkType =
-          ACS_text(event.check_type).toUpperCase();
+          ACS_text(
+            event.check_type
+          ).toUpperCase();
 
-        const completedEventResult = await client.query(
-          `
-          UPDATE public.aircraft_maintenance_events
-          SET
-            event_status = 'COMPLETED',
-            completed_at = acs_get_current_sim_time(),
-            updated_at =
-              (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
-          WHERE id = $1
-            AND airline_id = $2
-            AND event_status = 'IN_PROGRESS'
-          RETURNING
-            id,
-            event_uid,
-            aircraft_id,
-            check_type,
-            completed_at,
-            schedule_item_id
-          `,
-          [event.id, airlineId]
-        );
+        const completedEventResult =
+          await client.query(
+            `
+            UPDATE public.aircraft_maintenance_events
+            SET
+              event_status = 'COMPLETED',
 
-        if (!completedEventResult.rows.length) {
+              completed_at =
+                acs_get_current_sim_time(),
+
+              updated_at =
+                (
+                  CURRENT_TIMESTAMP
+                  AT TIME ZONE 'UTC'
+                )
+
+            WHERE id = $1
+              AND airline_id = $2
+              AND event_status = 'IN_PROGRESS'
+
+            RETURNING
+              id,
+              event_uid,
+              aircraft_id,
+              check_type,
+              completed_at,
+              schedule_item_id
+            `,
+            [
+              event.id,
+              airlineId
+            ]
+          );
+
+        if (
+          !completedEventResult.rows.length
+        ) {
           continue;
         }
 
         const completedEvent =
           completedEventResult.rows[0];
 
+        /*
+         * The occurrence is completed, but the weekly plan stays.
+         */
         await client.query(
           `
           UPDATE public.schedule_items
           SET
-            status = 'completed',
+            status = 'scheduled',
+
             updated_at =
-              (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+              (
+                CURRENT_TIMESTAMP
+                AT TIME ZONE 'UTC'
+              )
+
           WHERE id = $1
             AND airline_id = $2
+            AND LOWER(
+              COALESCE(status, 'scheduled')
+            ) <> 'cancelled'
           `,
-          [completedEvent.schedule_item_id, airlineId]
+          [
+            completedEvent.schedule_item_id,
+            airlineId
+          ]
         );
 
         /*
-         * B satisfies A.
-         * Any A that was only waiting on the weekly table is cancelled
-         * when B is completed. It has not been charged.
+         * Technical cycle reset:
+         * A resets A.
+         * B resets B and A.
+         *
+         * B does not cancel the permanent A weekly plan.
          */
-        if (checkType === "B_CHECK") {
+        const statusUpdateResult =
           await client.query(
             `
-            WITH cancelled_a AS (
-              UPDATE public.aircraft_maintenance_events
-              SET
-                event_status = 'CANCELLED',
-                updated_at =
-                  (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
-                notes = notes
-              WHERE airline_id = $1
-                AND aircraft_id = $2
-                AND check_type = 'A_CHECK'
-                AND event_status = 'SCHEDULED'
-              RETURNING schedule_item_id
-            )
-            UPDATE public.schedule_items si
+            UPDATE public.aircraft_maintenance_status
             SET
-              status = 'cancelled',
+              a_check_status = CASE
+                WHEN $3 IN (
+                  'A_CHECK',
+                  'B_CHECK'
+                )
+                  THEN 'OPEN'
+                ELSE a_check_status
+              END,
+
+              a_check_due_date = CASE
+                WHEN $3 IN (
+                  'A_CHECK',
+                  'B_CHECK'
+                )
+                  THEN
+                    $4::TIMESTAMP
+                    + INTERVAL '7 days'
+                ELSE a_check_due_date
+              END,
+
+              b_check_status = CASE
+                WHEN $3 = 'B_CHECK'
+                  THEN 'OPEN'
+                ELSE b_check_status
+              END,
+
+              b_check_due_date = CASE
+                WHEN $3 = 'B_CHECK'
+                  THEN
+                    $4::TIMESTAMP
+                    + INTERVAL '30 days'
+                ELSE b_check_due_date
+              END,
+
+              maintenance_control_status = CASE
+                WHEN UPPER(
+                  COALESCE(
+                    d_check_status,
+                    ''
+                  )
+                ) = 'IN_PROGRESS'
+                  THEN 'IN_MAINTENANCE'
+
+                WHEN UPPER(
+                  COALESCE(
+                    c_check_status,
+                    ''
+                  )
+                ) = 'IN_PROGRESS'
+                  THEN 'IN_MAINTENANCE'
+
+                WHEN UPPER(
+                  COALESCE(
+                    d_check_status,
+                    ''
+                  )
+                ) = 'OVERDUE'
+                  THEN 'UNSERVICEABLE'
+
+                WHEN UPPER(
+                  COALESCE(
+                    c_check_status,
+                    ''
+                  )
+                ) = 'OVERDUE'
+                  THEN 'UNSERVICEABLE'
+
+                ELSE 'SERVICEABLE'
+              END,
+
+              maintenance_control_reason = CASE
+                WHEN UPPER(
+                  COALESCE(
+                    d_check_status,
+                    ''
+                  )
+                ) = 'IN_PROGRESS'
+                  THEN 'D_CHECK'
+
+                WHEN UPPER(
+                  COALESCE(
+                    c_check_status,
+                    ''
+                  )
+                ) = 'IN_PROGRESS'
+                  THEN 'C_CHECK'
+
+                WHEN UPPER(
+                  COALESCE(
+                    d_check_status,
+                    ''
+                  )
+                ) = 'OVERDUE'
+                  THEN 'D_CHECK_OVERDUE'
+
+                WHEN UPPER(
+                  COALESCE(
+                    c_check_status,
+                    ''
+                  )
+                ) = 'OVERDUE'
+                  THEN 'C_CHECK_OVERDUE'
+
+                ELSE NULL
+              END,
+
               updated_at =
-                (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
-            FROM cancelled_a ca
-            WHERE si.id = ca.schedule_item_id
-              AND si.airline_id = $1
+                (
+                  CURRENT_TIMESTAMP
+                  AT TIME ZONE 'UTC'
+                )
+
+            WHERE aircraft_id = $1
+              AND airline_id = $2
+
+            RETURNING
+              a_check_status,
+              a_check_due_date,
+
+              b_check_status,
+              b_check_due_date,
+
+              c_check_status,
+              d_check_status,
+
+              maintenance_control_status,
+              maintenance_control_reason
             `,
-            [airlineId, completedEvent.aircraft_id]
+            [
+              completedEvent.aircraft_id,
+              airlineId,
+              checkType,
+              completedEvent.completed_at
+            ]
           );
-        }
-
-        const statusUpdateResult = await client.query(
-          `
-          UPDATE public.aircraft_maintenance_status
-          SET
-            a_check_status = CASE
-              WHEN $3 = 'A_CHECK' THEN 'OPEN'
-              WHEN $3 = 'B_CHECK' THEN 'OPEN'
-              ELSE a_check_status
-            END,
-
-            a_check_due_date = CASE
-              WHEN $3 IN ('A_CHECK', 'B_CHECK')
-                THEN acs_get_current_sim_time()
-                     + INTERVAL '7 days'
-              ELSE a_check_due_date
-            END,
-
-            b_check_status = CASE
-              WHEN $3 = 'B_CHECK' THEN 'OPEN'
-              ELSE b_check_status
-            END,
-
-            b_check_due_date = CASE
-              WHEN $3 = 'B_CHECK'
-                THEN acs_get_current_sim_time()
-                     + INTERVAL '30 days'
-              ELSE b_check_due_date
-            END,
-
-            maintenance_control_status = CASE
-              WHEN UPPER(COALESCE(d_check_status, '')) = 'IN_PROGRESS'
-                THEN 'IN_MAINTENANCE'
-              WHEN UPPER(COALESCE(c_check_status, '')) = 'IN_PROGRESS'
-                THEN 'IN_MAINTENANCE'
-              WHEN UPPER(COALESCE(d_check_status, '')) = 'OVERDUE'
-                THEN 'UNSERVICEABLE'
-              WHEN UPPER(COALESCE(c_check_status, '')) = 'OVERDUE'
-                THEN 'UNSERVICEABLE'
-              WHEN
-                $3 = 'A_CHECK'
-                AND UPPER(COALESCE(b_check_status, '')) = 'OVERDUE'
-                THEN 'UNSERVICEABLE'
-              ELSE 'SERVICEABLE'
-            END,
-
-            maintenance_control_reason = CASE
-              WHEN UPPER(COALESCE(d_check_status, '')) = 'IN_PROGRESS'
-                THEN 'D_CHECK'
-              WHEN UPPER(COALESCE(c_check_status, '')) = 'IN_PROGRESS'
-                THEN 'C_CHECK'
-              WHEN UPPER(COALESCE(d_check_status, '')) = 'OVERDUE'
-                THEN 'D_CHECK_OVERDUE'
-              WHEN UPPER(COALESCE(c_check_status, '')) = 'OVERDUE'
-                THEN 'C_CHECK_OVERDUE'
-              WHEN
-                $3 = 'A_CHECK'
-                AND UPPER(COALESCE(b_check_status, '')) = 'OVERDUE'
-                THEN 'B_CHECK_OVERDUE'
-              ELSE NULL
-            END,
-
-            updated_at =
-              (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
-
-          WHERE aircraft_id = $1
-            AND airline_id = $2
-
-          RETURNING
-            a_check_status,
-            a_check_due_date,
-            b_check_status,
-            b_check_due_date,
-            c_check_status,
-            d_check_status,
-            maintenance_control_status,
-            maintenance_control_reason
-          `,
-          [
-            completedEvent.aircraft_id,
-            airlineId,
-            checkType
-          ]
-        );
 
         const technicalState =
           statusUpdateResult.rows[0] || {};
 
+        /*
+         * Prepare the next occurrence from the same permanent
+         * weekly schedule.
+         */
+        let nextAOccurrence = null;
+        let nextBOccurrence = null;
+
+        if (checkType === "A_CHECK") {
+          nextAOccurrence =
+            await ACS_rearmWeeklyMaintenanceOccurrence({
+              aircraftId:
+                completedEvent.aircraft_id,
+
+              checkType:
+                "A_CHECK",
+
+              dueDate:
+                technicalState.a_check_due_date
+            });
+        }
+
+        if (checkType === "B_CHECK") {
+          /*
+           * B resets and rearms both B and A.
+           */
+          nextBOccurrence =
+            await ACS_rearmWeeklyMaintenanceOccurrence({
+              aircraftId:
+                completedEvent.aircraft_id,
+
+              checkType:
+                "B_CHECK",
+
+              dueDate:
+                technicalState.b_check_due_date
+            });
+
+          nextAOccurrence =
+            await ACS_rearmWeeklyMaintenanceOccurrence({
+              aircraftId:
+                completedEvent.aircraft_id,
+
+              checkType:
+                "A_CHECK",
+
+              dueDate:
+                technicalState.a_check_due_date
+            });
+        }
+
+        const refreshedTechnicalStateResult =
+          await client.query(
+            `
+            SELECT
+              a_check_status,
+              a_check_due_date,
+
+              b_check_status,
+              b_check_due_date,
+
+              c_check_status,
+              d_check_status,
+
+              maintenance_control_status,
+              maintenance_control_reason
+
+            FROM public.aircraft_maintenance_status
+
+            WHERE aircraft_id = $1
+              AND airline_id = $2
+
+            LIMIT 1
+            `,
+            [
+              completedEvent.aircraft_id,
+              airlineId
+            ]
+          );
+
+        const refreshedTechnicalState =
+          refreshedTechnicalStateResult.rows[0] ||
+          technicalState;
+
         const controlStatus =
           ACS_text(
-            technicalState.maintenance_control_status
+            refreshedTechnicalState
+              .maintenance_control_status
           ).toUpperCase();
 
         const controlReason =
           ACS_text(
-            technicalState.maintenance_control_reason
+            refreshedTechnicalState
+              .maintenance_control_reason
           ).toUpperCase();
 
         await client.query(
@@ -4625,28 +5508,43 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
           UPDATE public.aircraft_fleet
           SET
             status = CASE
-              WHEN $3 = 'IN_MAINTENANCE' THEN 'MAINTENANCE'
+              WHEN $3 = 'IN_MAINTENANCE'
+                THEN 'MAINTENANCE'
               ELSE 'ACTIVE'
             END,
 
             operational_status = CASE
-              WHEN $3 = 'IN_MAINTENANCE' THEN 'IN_MAINTENANCE'
-              WHEN $3 = 'UNSERVICEABLE' THEN 'UNAVAILABLE'
+              WHEN $3 = 'IN_MAINTENANCE'
+                THEN 'IN_MAINTENANCE'
+
+              WHEN $3 = 'UNSERVICEABLE'
+                THEN 'UNAVAILABLE'
+
               ELSE 'AVAILABLE'
             END,
 
             maintenance_status = CASE
-              WHEN $3 = 'IN_MAINTENANCE' AND $4 = 'D_CHECK'
+              WHEN
+                $3 = 'IN_MAINTENANCE'
+                AND $4 = 'D_CHECK'
                 THEN 'D-CHECK'
-              WHEN $3 = 'IN_MAINTENANCE' AND $4 = 'C_CHECK'
+
+              WHEN
+                $3 = 'IN_MAINTENANCE'
+                AND $4 = 'C_CHECK'
                 THEN 'C-CHECK'
+
               WHEN $3 = 'UNSERVICEABLE'
                 THEN 'CHECK_REQUIRED'
+
               ELSE 'SERVICEABLE'
             END,
 
             updated_at =
-              (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+              (
+                CURRENT_TIMESTAMP
+                AT TIME ZONE 'UTC'
+              )
 
           WHERE id = $1
             AND airline_id = $2
@@ -4660,15 +5558,34 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
         );
 
         completedEvents.push({
-          event_id: completedEvent.id,
-          aircraft_id: completedEvent.aircraft_id,
-          registration: event.registration,
-          check_type: checkType,
-          completed_at: completedEvent.completed_at,
+          event_id:
+            completedEvent.id,
+
+          aircraft_id:
+            completedEvent.aircraft_id,
+
+          registration:
+            event.registration,
+
+          check_type:
+            checkType,
+
+          completed_at:
+            completedEvent.completed_at,
+
           a_check_due_date:
-            technicalState.a_check_due_date || null,
+            refreshedTechnicalState
+              .a_check_due_date || null,
+
           b_check_due_date:
-            technicalState.b_check_due_date || null
+            refreshedTechnicalState
+              .b_check_due_date || null,
+
+          next_a_occurrence:
+            nextAOccurrence,
+
+          next_b_occurrence:
+            nextBOccurrence
         });
       }
 
