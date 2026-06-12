@@ -5596,19 +5596,28 @@ if (
         const startedEvent =
           startedEventResult.rows[0];
 
-        await client.query(
-          `
-          UPDATE public.schedule_items
-          SET
-            status = 'in_progress',
-            updated_at =
-              (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
-          WHERE id = $1
-            AND airline_id = $2
-          `,
-          [event.schedule_item_id, airlineId]
-        );
-
+        /*
+ * schedule_items is the persistent weekly plan.
+ * Execution state belongs exclusively to
+ * aircraft_maintenance_events.
+ */
+         
+await client.query(
+  `
+  UPDATE public.schedule_items
+  SET
+    status = 'scheduled',
+    updated_at =
+      (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+  WHERE id = $1
+    AND airline_id = $2
+  `,
+  [
+    event.schedule_item_id,
+    airlineId
+  ]
+);
+         
         await client.query(
           `
           UPDATE public.aircraft_maintenance_status
