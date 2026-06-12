@@ -1423,16 +1423,25 @@ if (
   throw error;
 }
 
- /* ========================================================
-   ACS AIRBUS OCC — IMMEDIATE B OVERDUE AUTHORITY
+  /* ========================================================
+   ACS AIRBUS OCC — IMMEDIATE OVERDUE START AUTHORITY
    --------------------------------------------------------
-   D > C > B > A
+   B_CHECK starts immediately only when:
 
-   - B_CHECK starts immediately when B is OVERDUE.
-   - An A_CHECK already IN_PROGRESS does not block B.
-   - C/D OVERDUE or IN_PROGRESS always block B.
-   - Another B already IN_PROGRESS blocks a second B.
+   1. The requested check is B_CHECK.
+   2. B is already technically OVERDUE.
+   3. No C/D check is OVERDUE or IN_PROGRESS.
+   4. No other maintenance check is IN_PROGRESS.
+
+   Programming A while B is overdue remains allowed, but A
+   never starts ahead of the dominant overdue B.
+
+   C/D authority always dominates:
+   D > C > B > A
    ======================================================== */
+
+const bCheckIsOverdue =
+  bCheckStatus === "OVERDUE";
 
 const higherCheckBlocksImmediateStart =
   cCheckStatus === "OVERDUE" ||
@@ -1440,14 +1449,17 @@ const higherCheckBlocksImmediateStart =
   cCheckStatus === "IN_PROGRESS" ||
   dCheckStatus === "IN_PROGRESS";
 
-const bCheckAlreadyInProgress =
-  bCheckStatus === "IN_PROGRESS";
+const anotherCheckAlreadyInProgress =
+  aCheckStatus === "IN_PROGRESS" ||
+  bCheckStatus === "IN_PROGRESS" ||
+  cCheckStatus === "IN_PROGRESS" ||
+  dCheckStatus === "IN_PROGRESS";
 
 const immediateStart =
   checkType === "B_CHECK" &&
-  bCheckStatus === "OVERDUE" &&
+  bCheckIsOverdue &&
   !higherCheckBlocksImmediateStart &&
-  !bCheckAlreadyInProgress;
+  !anotherCheckAlreadyInProgress;
 
 /* ========================================================
    B DOMINANCE — ACS AIRBUS OCC
@@ -1949,40 +1961,6 @@ const immediateStart =
 
       if (immediateStart) {
 
-      /* ========================================================
-   ACS AIRBUS OCC — B PREEMPTS ACTIVE A OCCURRENCE
-   --------------------------------------------------------
-   - B OVERDUE has authority over A.
-   - Only the active A occurrence is stopped.
-   - The weekly A plan remains intact.
-   - No A refund is generated.
-   - B completion will reset the technical A cycle.
-   ======================================================== */
-
-  for (const supersededA of supersededAResult.rows) {
-    if (!supersededA.schedule_item_id) {
-      continue;
-    }
-
-    await client.query(
-      `
-      UPDATE public.schedule_items
-      SET
-        status = 'scheduled',
-        updated_at =
-          (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
-      WHERE id = $1
-        AND airline_id = $2
-        AND LOWER(COALESCE(item_type, '')) = 'service'
-      `,
-      [
-        supersededA.schedule_item_id,
-        airlineId
-      ]
-    );
-  }
-}
-         
         const financeResult =
           await client.query(
             `
@@ -5121,44 +5099,14 @@ AND NOT (
   )
 )
 
-      AND (
-  ame.check_type = 'B_CHECK'
-  OR (
-    UPPER(
-      COALESCE(
-        ams.b_check_status,
-        ''
-      )
-    ) NOT IN (
-      'OVERDUE',
-      'IN_PROGRESS'
-    )
-
-    AND (
-      ams.b_check_due_date IS NULL
-      OR ams.b_check_due_date
-          > acs_get_current_sim_time()
-    )
-  )
-)
-
-AND NOT EXISTS (
-  SELECT 1
-
-  FROM public.aircraft_maintenance_events active_light
-
-  WHERE active_light.airline_id = ame.airline_id
-    AND active_light.aircraft_id = ame.aircraft_id
-    AND active_light.event_status = 'IN_PROGRESS'
-    AND active_light.check_type IN (
-      'A_CHECK',
-      'B_CHECK'
-    )
-    AND (
-      active_light.check_type = 'B_CHECK'
-      OR ame.check_type = 'A_CHECK'
-    )
-)
+            AND NOT EXISTS (
+              SELECT 1
+              FROM public.aircraft_maintenance_events active_light
+              WHERE active_light.airline_id = ame.airline_id
+                AND active_light.aircraft_id = ame.aircraft_id
+                AND active_light.check_type IN ('A_CHECK', 'B_CHECK')
+                AND active_light.event_status = 'IN_PROGRESS'
+            )
 
         )
         SELECT *
@@ -5173,50 +5121,6 @@ AND NOT EXISTS (
       const blockedEvents = [];
 
       for (const event of dueEventsResult.rows) {
-
-      /* ========================================================
-   ACS MULTI-INSTANCE IDEMPOTENCY LOCK
-   --------------------------------------------------------
-   Revalidates and locks this exact event before finance.
-   Prevents two Railway processes from charging or starting
-   the same occurrence simultaneously.
-   ======================================================== */
-
-const lockedEventResult = await client.query(
-  `
-  SELECT
-    id,
-    event_status,
-    finance_charged,
-    finance_log_id
-  FROM public.aircraft_maintenance_events
-  WHERE id = $1
-    AND airline_id = $2
-  FOR UPDATE
-  `,
-  [
-    event.id,
-    airlineId
-  ]
-);
-
-if (!lockedEventResult.rows.length) {
-  continue;
-}
-
-const lockedEvent =
-  lockedEventResult.rows[0];
-
-if (
-  ACS_text(
-    lockedEvent.event_status
-  ).toUpperCase() !== "SCHEDULED" ||
-  lockedEvent.finance_charged === true ||
-  lockedEvent.finance_log_id
-) {
-  continue;
-}
-         
         const checkType =
           ACS_text(event.check_type).toUpperCase();
 
@@ -5243,129 +5147,23 @@ if (
          * Never start another light check while the aircraft
          * already has an A/B event in progress.
          */
-      const activeLightCheckResult = await client.query(
-  `
-  SELECT
-    id,
-    check_type,
-    schedule_item_id,
-    finance_charged,
-    finance_log_id
+        const activeLightCheckResult = await client.query(
+          `
+          SELECT id
+          FROM public.aircraft_maintenance_events
+          WHERE airline_id = $1
+            AND aircraft_id = $2
+            AND check_type IN ('A_CHECK', 'B_CHECK')
+            AND event_status = 'IN_PROGRESS'
+          LIMIT 1
+          FOR UPDATE
+          `,
+          [airlineId, event.aircraft_id]
+        );
 
-  FROM public.aircraft_maintenance_events
-
-  WHERE airline_id = $1
-    AND aircraft_id = $2
-    AND check_type IN (
-      'A_CHECK',
-      'B_CHECK'
-    )
-    AND event_status = 'IN_PROGRESS'
-
-  ORDER BY
-    CASE check_type
-      WHEN 'B_CHECK' THEN 1
-      WHEN 'A_CHECK' THEN 2
-      ELSE 3
-    END,
-    id
-
-  FOR UPDATE
-  `,
-  [
-    airlineId,
-    event.aircraft_id
-  ]
-);
-
-const activeBCheck =
-  activeLightCheckResult.rows.find(
-    (activeEvent) =>
-      ACS_text(
-        activeEvent.check_type
-      ).toUpperCase() === "B_CHECK"
-  );
-
-const activeACheck =
-  activeLightCheckResult.rows.find(
-    (activeEvent) =>
-      ACS_text(
-        activeEvent.check_type
-      ).toUpperCase() === "A_CHECK"
-  );
-
-/*
- * A never starts while any light check is active.
- */
-if (
-  checkType === "A_CHECK" &&
-  activeLightCheckResult.rows.length
-) {
-  continue;
-}
-
-/*
- * A second B never starts.
- */
-if (
-  checkType === "B_CHECK" &&
-  activeBCheck
-) {
-  continue;
-}
-
-/*
- * An overdue/due B takes authority over an active A.
- * Only the A occurrence is stopped; its weekly plan remains.
- */
-if (
-  checkType === "B_CHECK" &&
-  activeACheck
-) {
-  await client.query(
-    `
-    UPDATE public.aircraft_maintenance_events
-    SET
-      event_status = 'CANCELLED',
-      updated_at =
-        (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
-      notes = (
-        COALESCE(NULLIF(notes, ''), '{}')::jsonb
-        || jsonb_build_object(
-          'resolution',
-          'SUPERSEDED_BY_B_CHECK',
-          'resolved_at',
-          acs_get_current_sim_time()::TEXT
-        )
-      )::TEXT
-    WHERE id = $1
-      AND airline_id = $2
-      AND event_status = 'IN_PROGRESS'
-    `,
-    [
-      activeACheck.id,
-      airlineId
-    ]
-  );
-
-  if (activeACheck.schedule_item_id) {
-    await client.query(
-      `
-      UPDATE public.schedule_items
-      SET
-        status = 'scheduled',
-        updated_at =
-          (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
-      WHERE id = $1
-        AND airline_id = $2
-      `,
-      [
-        activeACheck.schedule_item_id,
-        airlineId
-      ]
-    );
-  }
-}
+        if (activeLightCheckResult.rows.length) {
+          continue;
+        }
 
         if (event.finance_charged === true) {
           continue;
@@ -5600,28 +5398,19 @@ if (
         const startedEvent =
           startedEventResult.rows[0];
 
-        /*
- * schedule_items is the persistent weekly plan.
- * Execution state belongs exclusively to
- * aircraft_maintenance_events.
- */
-         
-await client.query(
-  `
-  UPDATE public.schedule_items
-  SET
-    status = 'scheduled',
-    updated_at =
-      (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
-  WHERE id = $1
-    AND airline_id = $2
-  `,
-  [
-    event.schedule_item_id,
-    airlineId
-  ]
-);
-         
+        await client.query(
+          `
+          UPDATE public.schedule_items
+          SET
+            status = 'in_progress',
+            updated_at =
+              (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+          WHERE id = $1
+            AND airline_id = $2
+          `,
+          [event.schedule_item_id, airlineId]
+        );
+
         await client.query(
           `
           UPDATE public.aircraft_maintenance_status
@@ -5657,7 +5446,6 @@ await client.query(
          * comes from the active maintenance event and technical
          * maintenance status, not from aircraft_fleet.
          */
-         
         await client.query(
           `
           UPDATE public.aircraft_fleet
