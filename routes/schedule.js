@@ -1985,37 +1985,6 @@ const immediateStart =
    - B completion will reset the technical A cycle.
    ======================================================== */
 
-if (checkType === "B_CHECK") {
-  const supersededAResult = await client.query(
-    `
-    UPDATE public.aircraft_maintenance_events
-    SET
-      event_status = 'CANCELLED',
-      updated_at =
-        (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
-      notes = (
-        COALESCE(NULLIF(notes, ''), '{}')::jsonb
-        || jsonb_build_object(
-          'resolution',
-          'SUPERSEDED_BY_OVERDUE_B',
-          'resolved_at',
-          acs_get_current_sim_time()::TEXT
-        )
-      )::TEXT
-    WHERE airline_id = $1
-      AND aircraft_id = $2
-      AND check_type = 'A_CHECK'
-      AND event_status = 'IN_PROGRESS'
-    RETURNING
-      id,
-      schedule_item_id
-    `,
-    [
-      airlineId,
-      aircraftId
-    ]
-  );
-
   for (const supersededA of supersededAResult.rows) {
     if (!supersededA.schedule_item_id) {
       continue;
