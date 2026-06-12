@@ -1449,17 +1449,31 @@ const higherCheckBlocksImmediateStart =
   cCheckStatus === "IN_PROGRESS" ||
   dCheckStatus === "IN_PROGRESS";
 
-const anotherCheckAlreadyInProgress =
-  aCheckStatus === "IN_PROGRESS" ||
-  bCheckStatus === "IN_PROGRESS" ||
+/* ========================================================
+   ACS AIRBUS OCC — IMMEDIATE B OVERDUE AUTHORITY
+   --------------------------------------------------------
+   D > C > B > A
+
+   An A-Check already in progress does not block an overdue
+   B-Check. B takes operational authority immediately.
+
+   C/D and another B already in progress do block the start.
+   ======================================================== */
+
+const higherCheckBlocksImmediateStart =
+  cCheckStatus === "OVERDUE" ||
+  dCheckStatus === "OVERDUE" ||
   cCheckStatus === "IN_PROGRESS" ||
   dCheckStatus === "IN_PROGRESS";
 
+const bCheckAlreadyInProgress =
+  bCheckStatus === "IN_PROGRESS";
+
 const immediateStart =
   checkType === "B_CHECK" &&
-  bCheckIsOverdue &&
+  bCheckStatus === "OVERDUE" &&
   !higherCheckBlocksImmediateStart &&
-  !anotherCheckAlreadyInProgress;
+  !bCheckAlreadyInProgress;
 
 /* ========================================================
    B DOMINANCE — ACS AIRBUS OCC
@@ -1961,6 +1975,71 @@ const immediateStart =
 
       if (immediateStart) {
 
+      /* ========================================================
+   ACS AIRBUS OCC — B PREEMPTS ACTIVE A OCCURRENCE
+   --------------------------------------------------------
+   - B OVERDUE has authority over A.
+   - Only the active A occurrence is stopped.
+   - The weekly A plan remains intact.
+   - No A refund is generated.
+   - B completion will reset the technical A cycle.
+   ======================================================== */
+
+if (checkType === "B_CHECK") {
+  const supersededAResult = await client.query(
+    `
+    UPDATE public.aircraft_maintenance_events
+    SET
+      event_status = 'CANCELLED',
+      updated_at =
+        (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
+      notes = (
+        COALESCE(NULLIF(notes, ''), '{}')::jsonb
+        || jsonb_build_object(
+          'resolution',
+          'SUPERSEDED_BY_OVERDUE_B',
+          'resolved_at',
+          acs_get_current_sim_time()::TEXT
+        )
+      )::TEXT
+    WHERE airline_id = $1
+      AND aircraft_id = $2
+      AND check_type = 'A_CHECK'
+      AND event_status = 'IN_PROGRESS'
+    RETURNING
+      id,
+      schedule_item_id
+    `,
+    [
+      airlineId,
+      aircraftId
+    ]
+  );
+
+  for (const supersededA of supersededAResult.rows) {
+    if (!supersededA.schedule_item_id) {
+      continue;
+    }
+
+    await client.query(
+      `
+      UPDATE public.schedule_items
+      SET
+        status = 'scheduled',
+        updated_at =
+          (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+      WHERE id = $1
+        AND airline_id = $2
+        AND LOWER(COALESCE(item_type, '')) = 'service'
+      `,
+      [
+        supersededA.schedule_item_id,
+        airlineId
+      ]
+    );
+  }
+}
+         
         const financeResult =
           await client.query(
             `
