@@ -1423,41 +1423,15 @@ if (
   throw error;
 }
 
-  /* ========================================================
-   ACS AIRBUS OCC — IMMEDIATE OVERDUE START AUTHORITY
-   --------------------------------------------------------
-   B_CHECK starts immediately only when:
-
-   1. The requested check is B_CHECK.
-   2. B is already technically OVERDUE.
-   3. No C/D check is OVERDUE or IN_PROGRESS.
-   4. No other maintenance check is IN_PROGRESS.
-
-   Programming A while B is overdue remains allowed, but A
-   never starts ahead of the dominant overdue B.
-
-   C/D authority always dominates:
-   D > C > B > A
-   ======================================================== */
-
-const bCheckIsOverdue =
-  bCheckStatus === "OVERDUE";
-
-const higherCheckBlocksImmediateStart =
-  cCheckStatus === "OVERDUE" ||
-  dCheckStatus === "OVERDUE" ||
-  cCheckStatus === "IN_PROGRESS" ||
-  dCheckStatus === "IN_PROGRESS";
-
-/* ========================================================
+ /* ========================================================
    ACS AIRBUS OCC — IMMEDIATE B OVERDUE AUTHORITY
    --------------------------------------------------------
    D > C > B > A
 
-   An A-Check already in progress does not block an overdue
-   B-Check. B takes operational authority immediately.
-
-   C/D and another B already in progress do block the start.
+   - B_CHECK starts immediately when B is OVERDUE.
+   - An A_CHECK already IN_PROGRESS does not block B.
+   - C/D OVERDUE or IN_PROGRESS always block B.
+   - Another B already IN_PROGRESS blocks a second B.
    ======================================================== */
 
 const higherCheckBlocksImmediateStart =
