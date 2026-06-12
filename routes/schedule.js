@@ -5147,14 +5147,44 @@ AND NOT (
   )
 )
 
-            AND NOT EXISTS (
-              SELECT 1
-              FROM public.aircraft_maintenance_events active_light
-              WHERE active_light.airline_id = ame.airline_id
-                AND active_light.aircraft_id = ame.aircraft_id
-                AND active_light.check_type IN ('A_CHECK', 'B_CHECK')
-                AND active_light.event_status = 'IN_PROGRESS'
-            )
+      AND (
+  ame.check_type = 'B_CHECK'
+  OR (
+    UPPER(
+      COALESCE(
+        ams.b_check_status,
+        ''
+      )
+    ) NOT IN (
+      'OVERDUE',
+      'IN_PROGRESS'
+    )
+
+    AND (
+      ams.b_check_due_date IS NULL
+      OR ams.b_check_due_date
+          > acs_get_current_sim_time()
+    )
+  )
+)
+
+AND NOT EXISTS (
+  SELECT 1
+
+  FROM public.aircraft_maintenance_events active_light
+
+  WHERE active_light.airline_id = ame.airline_id
+    AND active_light.aircraft_id = ame.aircraft_id
+    AND active_light.event_status = 'IN_PROGRESS'
+    AND active_light.check_type IN (
+      'A_CHECK',
+      'B_CHECK'
+    )
+    AND (
+      active_light.check_type = 'B_CHECK'
+      OR ame.check_type = 'A_CHECK'
+    )
+)
 
         )
         SELECT *
