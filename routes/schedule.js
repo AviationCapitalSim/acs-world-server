@@ -1449,11 +1449,16 @@ const higherCheckBlocksImmediateStart =
   cCheckStatus === "IN_PROGRESS" ||
   dCheckStatus === "IN_PROGRESS";
 
-const anotherCheckAlreadyInProgress =
-  aCheckStatus === "IN_PROGRESS" ||
+const blockingCheckAlreadyInProgress =
   bCheckStatus === "IN_PROGRESS" ||
   cCheckStatus === "IN_PROGRESS" ||
   dCheckStatus === "IN_PROGRESS";
+
+const immediateStart =
+  checkType === "B_CHECK" &&
+  bCheckIsOverdue &&
+  !higherCheckBlocksImmediateStart &&
+  !blockingCheckAlreadyInProgress;
 
 const immediateStart =
   checkType === "B_CHECK" &&
