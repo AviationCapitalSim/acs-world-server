@@ -1423,25 +1423,54 @@ if (
   throw error;
 }
 
-      /*
-       * ACS A/B PROGRAMMING RULE:
-       * Scheduling never starts maintenance immediately.
-       * Every A/B event is created as SCHEDULED and the backend
-       * resolver starts it only when ACS Time reaches the slot.
-       */
-      const immediateStart = false;
-
- /* ========================================================
-   B DOMINANCE — B CHECK ABSORBS A CHECK
+  /* ========================================================
+   ACS AIRBUS OCC — IMMEDIATE OVERDUE START AUTHORITY
    --------------------------------------------------------
-   - A may always be scheduled.
-   - Scheduling A never starts maintenance immediately.
-   - B keeps operational priority when due or in progress.
-   - B cancels a pending A only when B actually starts.
-   - Scheduling B never resets or suppresses A in advance.
-   - EDIT and REMOVE endpoints remain unchanged.
+   B_CHECK starts immediately only when:
+
+   1. The requested check is B_CHECK.
+   2. B is already technically OVERDUE.
+   3. No C/D check is OVERDUE or IN_PROGRESS.
+   4. No other maintenance check is IN_PROGRESS.
+
+   Programming A while B is overdue remains allowed, but A
+   never starts ahead of the dominant overdue B.
+
+   C/D authority always dominates:
+   D > C > B > A
    ======================================================== */
 
+const bCheckIsOverdue =
+  bCheckStatus === "OVERDUE";
+
+const higherCheckBlocksImmediateStart =
+  cCheckStatus === "OVERDUE" ||
+  dCheckStatus === "OVERDUE" ||
+  cCheckStatus === "IN_PROGRESS" ||
+  dCheckStatus === "IN_PROGRESS";
+
+const anotherCheckAlreadyInProgress =
+  aCheckStatus === "IN_PROGRESS" ||
+  bCheckStatus === "IN_PROGRESS" ||
+  cCheckStatus === "IN_PROGRESS" ||
+  dCheckStatus === "IN_PROGRESS";
+
+const immediateStart =
+  checkType === "B_CHECK" &&
+  bCheckIsOverdue &&
+  !higherCheckBlocksImmediateStart &&
+  !anotherCheckAlreadyInProgress;
+
+/* ========================================================
+   B DOMINANCE — ACS AIRBUS OCC
+   --------------------------------------------------------
+   - A may remain programmed.
+   - B may start immediately when B is OVERDUE.
+   - B never deletes or cancels the player's A plan.
+   - B resets the technical A cycle only after B completes.
+   - C/D always block A/B execution.
+   ======================================================== */
+       
       /* ========================================================
          DUPLICATE PROTECTION
          ======================================================== */
@@ -2125,19 +2154,56 @@ if (
         scheduleItemResult.rows[0];
 
       const durationDays =
-        Math.floor(
-          durationMinutes / 1440
-        );
+  Math.floor(
+    durationMinutes / 1440
+  );
 
-      const eventStatus =
-        immediateStart
-          ? "IN_PROGRESS"
-          : "SCHEDULED";
+const eventStatus =
+  immediateStart
+    ? "IN_PROGRESS"
+    : "SCHEDULED";
 
-      const eventStartedAt =
-        immediateStart
-          ? currentSimTime
-          : null;
+const eventStartedAt =
+  immediateStart
+    ? currentSimTime
+    : null;
+
+/*
+ * The weekly schedule_item keeps the player's selected
+ * day and time.
+ *
+ * The technical occurrence uses the real ACS start time
+ * when an overdue B starts immediately.
+ */
+       
+const eventScheduledStartAt =
+  immediateStart
+    ? currentSimTime
+    : scheduledStartAt;
+
+const immediateCompletionResult =
+  immediateStart
+    ? await client.query(
+        `
+        SELECT
+          acs_get_current_sim_time()
+          +
+          (
+            $1::INTEGER *
+            INTERVAL '1 minute'
+          ) AS completion_at
+        `,
+        [durationMinutes]
+      )
+    : null;
+
+const eventScheduledEndAt =
+  immediateStart
+    ? immediateCompletionResult.rows[0]?.completion_at
+    : scheduledEndAt;
+
+const eventExpectedCompletionAt =
+  eventScheduledEndAt;
 
       /* ========================================================
          CREATE MAINTENANCE EVENT
@@ -2227,13 +2293,13 @@ if (
             eventStatus,
 
             eventStartedAt,
-            scheduledEndAt,
+            eventExpectedCompletionAt,
 
             durationDays,
             durationMinutes,
 
-            scheduledStartAt,
-            scheduledEndAt,
+            eventScheduledStartAt,
+            eventScheduledEndAt,
 
             scheduleItem.id,
 
@@ -2467,18 +2533,24 @@ if (
             `
             UPDATE public.aircraft_maintenance_events
 
-            SET
-              event_status =
-                'IN_PROGRESS',
+SET
+  event_status =
+    'IN_PROGRESS',
 
-              started_at =
-                $2,
+  started_at =
+    $2,
 
-              expected_completion_at =
-                scheduled_end_at,
+  scheduled_start_at =
+    $2,
 
-              finance_charged =
-                TRUE,
+  scheduled_end_at =
+    $5,
+
+  expected_completion_at =
+    $5,
+
+  finance_charged =
+    TRUE,
 
               finance_log_id =
                 $3,
@@ -2499,11 +2571,12 @@ if (
             RETURNING *
             `,
             [
-              maintenanceEvent.id,
-              currentSimTime,
-              financeLogId,
-              airlineId
-            ]
+  maintenanceEvent.id,
+  currentSimTime,
+  financeLogId,
+  airlineId,
+  eventExpectedCompletionAt
+]
           );
 
         if (
