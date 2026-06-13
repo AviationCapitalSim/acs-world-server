@@ -4864,6 +4864,12 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
           completedEvent.schedule_item_id &&
           nextDueDate
         ) {
+
+           await client.query(
+            "SAVEPOINT acs_next_occurrence_savepoint"
+          );
+
+          try {           
           const nextOccurrenceResult = await client.query(
             `
             WITH plan AS (
@@ -5009,10 +5015,46 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
             ]
           );
 
-          nextOccurrence =
-            nextOccurrenceResult.rows[0] || null;
-        }
+                      nextOccurrence =
+              nextOccurrenceResult.rows[0] || null;
 
+            await client.query(
+              "RELEASE SAVEPOINT acs_next_occurrence_savepoint"
+            );
+
+          } catch (recurrenceError) {
+
+            await client.query(
+              "ROLLBACK TO SAVEPOINT acs_next_occurrence_savepoint"
+            );
+
+            await client.query(
+              "RELEASE SAVEPOINT acs_next_occurrence_savepoint"
+            );
+
+            console.error(
+              "[ACS A/B MAINTENANCE] " +
+              "Next occurrence creation failed:",
+              {
+                airline_id: airlineId,
+                aircraft_id:
+                  completedEvent.aircraft_id,
+                completed_event_id:
+                  completedEvent.id,
+                check_type:
+                  checkType,
+                schedule_item_id:
+                  completedEvent.schedule_item_id,
+                error:
+                  recurrenceError?.message ||
+                  recurrenceError
+              }
+            );
+
+            nextOccurrence = null;
+          }
+        }
+        
         /*
          * B completion resets A's technical cycle. Any existing future
          * A occurrence is moved to the first player-selected slot on or
