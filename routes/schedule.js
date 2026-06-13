@@ -4511,8 +4511,14 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
         WHERE ame.airline_id = $1
           AND ame.event_status = 'IN_PROGRESS'
           AND ame.check_type IN ('A_CHECK', 'B_CHECK')
-          AND ame.expected_completion_at
-              <= acs_get_current_sim_time()
+          AND COALESCE(
+          ame.expected_completion_at,
+          ame.started_at
+          + (
+            COALESCE(ame.duration_minutes, 0)
+            * INTERVAL '1 minute'
+          )
+    ) <= acs_get_current_sim_time()
         ORDER BY
           ame.expected_completion_at,
           CASE ame.check_type
