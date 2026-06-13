@@ -2391,6 +2391,126 @@ const eventExpectedCompletionAt =
 
       if (immediateStart) {
 
+         /* ========================================================
+           ACS AIRBUS OCC — B-CHECK DOMINANCE OVER ACTIVE A-CHECK
+           --------------------------------------------------------
+           An overdue B-Check has technical authority over an
+           A-Check currently in progress.
+
+           Rules:
+           - Stop the active A-Check occurrence.
+           - Preserve the same A-Check occurrence as SCHEDULED.
+           - Preserve the player's persistent A schedule_item.
+           - Do not delete, complete, or financially modify A.
+           - The active B-Check becomes the aircraft's sole
+             maintenance authority.
+           ======================================================== */
+         
+        const displacedAResult =
+          await client.query(
+            `
+            UPDATE public.aircraft_maintenance_events AS ame
+
+            SET
+              event_status = 'SCHEDULED',
+              started_at = NULL,
+              expected_completion_at = NULL,
+              completed_at = NULL,
+
+              updated_at =
+                (
+                  CURRENT_TIMESTAMP
+                  AT TIME ZONE 'UTC'
+                )
+
+            WHERE ame.airline_id = $1
+              AND ame.aircraft_id = $2
+              AND ame.check_type = 'A_CHECK'
+              AND ame.event_status = 'IN_PROGRESS'
+
+            RETURNING
+              ame.id,
+              ame.schedule_item_id
+            `,
+            [
+              airlineId,
+              aircraftId
+            ]
+          );
+
+        const displacedAScheduleItemIds =
+          displacedAResult.rows
+            .map((row) =>
+              Number(row.schedule_item_id)
+            )
+            .filter((value) =>
+              Number.isSafeInteger(value) &&
+              value > 0
+            );
+
+        if (
+          displacedAScheduleItemIds.length > 0
+        ) {
+          await client.query(
+            `
+            UPDATE public.schedule_items
+
+            SET
+              status = 'scheduled',
+
+              updated_at =
+                (
+                  CURRENT_TIMESTAMP
+                  AT TIME ZONE 'UTC'
+                )
+
+            WHERE airline_id = $1
+              AND aircraft_id = $2
+              AND id = ANY($3::BIGINT[])
+              AND item_type = 'service'
+              AND UPPER(
+                COALESCE(
+                  service_type,
+                  ''
+                )
+              ) = 'A'
+            `,
+            [
+              airlineId,
+              aircraftId,
+              displacedAScheduleItemIds
+            ]
+          );
+
+          await client.query(
+            `
+            UPDATE public.aircraft_maintenance_status
+
+            SET
+              a_check_status = 'SCHEDULED',
+
+              updated_at =
+                (
+                  CURRENT_TIMESTAMP
+                  AT TIME ZONE 'UTC'
+                )
+
+            WHERE aircraft_id = $1
+              AND airline_id = $2
+              AND UPPER(
+                COALESCE(
+                  a_check_status,
+                  ''
+                )
+              ) = 'IN_PROGRESS'
+            `,
+            [
+              aircraftId,
+              airlineId
+            ]
+          );
+        }
+         
         const financeLogResult =
           await client.query(
             `
