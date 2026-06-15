@@ -5010,6 +5010,61 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
       }
 
       /* ========================================================
+         ACS AIRBUS OCC — COMPLETION TRANSACTION BARRIER
+         --------------------------------------------------------
+         GLOBAL RULE FOR EVERY AIRLINE AND EVERY AIRCRAFT:
+
+         - A/B completion is an independent technical transition.
+         - Once an IN_PROGRESS occurrence reaches its official
+           expected_completion_at, its completion must be committed.
+         - A later start, finance or synchronization failure must
+           never roll back a correctly completed maintenance check.
+         - The next scheduler tick continues with new starts.
+         ======================================================== */
+
+      if (completedEvents.length > 0) {
+        await client.query("COMMIT");
+        transactionStarted = false;
+
+        return {
+          ok: true,
+
+          endpoint:
+            "ACS_SCHEDULE_MAINTENANCE_RESOLVER",
+
+          version:
+            "v2.4",
+
+          authority:
+            "POSTGRESQL_SCHEDULE_AUTHORITY",
+
+          airline_id:
+            airlineId,
+
+          lifecycle_phase:
+            "COMPLETION_COMMITTED",
+
+          completed_count:
+            completedEvents.length,
+
+          completed_events:
+            completedEvents,
+
+          started_count:
+            0,
+
+          started_events:
+            [],
+
+          blocked_count:
+            0,
+
+          blocked_events:
+            []
+        };
+      }
+       
+      /* ========================================================
          PHASE 2 — AUTOMATIC START OF SCHEDULED A/B CHECKS
          --------------------------------------------------------
          ACS backend rules:
