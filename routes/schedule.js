@@ -6785,6 +6785,84 @@ AND NOT EXISTS (
         });
       }
 
+      /* ========================================================
+         🟩 RESOLVER FINAL — AIRCRAFT FLEET SYNCHRONIZATION
+         Date: 2026-06-15
+         --------------------------------------------------------
+         GLOBAL ACS AIRBUS OCC RULE:
+
+         - SERVICEABLE       → ACTIVE / AVAILABLE
+         - IN_MAINTENANCE    → MAINTENANCE / IN_MAINTENANCE
+         - UNSERVICEABLE     → MAINTENANCE / UNAVAILABLE
+
+         This runs for every aircraft of the airline at the end
+         of every backend resolver cycle.
+         ======================================================== */
+
+      await client.query(
+        `
+        UPDATE public.aircraft_fleet af
+
+        SET
+          status = CASE
+            WHEN UPPER(
+              COALESCE(
+                ams.maintenance_control_status,
+                'SERVICEABLE'
+              )
+            ) = 'SERVICEABLE'
+              THEN 'ACTIVE'
+
+            ELSE 'MAINTENANCE'
+          END,
+
+          operational_status = CASE
+            WHEN UPPER(
+              COALESCE(
+                ams.maintenance_control_status,
+                'SERVICEABLE'
+              )
+            ) = 'IN_MAINTENANCE'
+              THEN 'IN_MAINTENANCE'
+
+            WHEN UPPER(
+              COALESCE(
+                ams.maintenance_control_status,
+                'SERVICEABLE'
+              )
+            ) = 'UNSERVICEABLE'
+              THEN 'UNAVAILABLE'
+
+            ELSE 'AVAILABLE'
+          END,
+
+          maintenance_status = CASE
+            WHEN UPPER(
+              COALESCE(
+                ams.maintenance_control_status,
+                'SERVICEABLE'
+              )
+            ) = 'SERVICEABLE'
+              THEN 'SERVICEABLE'
+
+            ELSE 'CHECK_REQUIRED'
+          END,
+
+          updated_at =
+            (
+              CURRENT_TIMESTAMP
+              AT TIME ZONE 'UTC'
+            )
+
+        FROM public.aircraft_maintenance_status ams
+
+        WHERE af.airline_id = $1
+          AND ams.airline_id = af.airline_id
+          AND ams.aircraft_id = af.id
+        `,
+        [airlineId]
+      );
+       
       await client.query("COMMIT");
       transactionStarted = false;
 
