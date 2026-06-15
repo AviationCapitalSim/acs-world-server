@@ -2766,6 +2766,200 @@ SET
         );
       }
 
+            /* ========================================================
+         ACS AIRBUS OCC — FINAL GLOBAL AIRCRAFT SYNCHRONIZATION
+         --------------------------------------------------------
+         GLOBAL RULE:
+
+         - Creating a SCHEDULED A/B service does not place the
+           aircraft in maintenance.
+         - Only a real IN_PROGRESS event places the aircraft in
+           operational maintenance.
+         - C/D OVERDUE keeps the aircraft unavailable.
+         - ACTIVE is allowed only when the aircraft is AVAILABLE
+           and SERVICEABLE.
+         - Applies to every airline and every aircraft.
+         ======================================================== */
+
+      await client.query(
+        `
+        UPDATE public.aircraft_maintenance_status ams
+
+        SET
+          maintenance_control_status = CASE
+
+            WHEN EXISTS (
+              SELECT 1
+              FROM public.aircraft_maintenance_events active_event
+
+              WHERE active_event.airline_id = ams.airline_id
+                AND active_event.aircraft_id = ams.aircraft_id
+                AND active_event.event_status = 'IN_PROGRESS'
+            )
+              THEN 'IN_MAINTENANCE'
+
+            WHEN UPPER(
+              COALESCE(
+                ams.d_check_status,
+                ''
+              )
+            ) = 'OVERDUE'
+              THEN 'UNSERVICEABLE'
+
+            WHEN UPPER(
+              COALESCE(
+                ams.c_check_status,
+                ''
+              )
+            ) = 'OVERDUE'
+              THEN 'UNSERVICEABLE'
+
+            ELSE 'SERVICEABLE'
+          END,
+
+          maintenance_control_reason = CASE
+
+            WHEN EXISTS (
+              SELECT 1
+              FROM public.aircraft_maintenance_events active_d
+
+              WHERE active_d.airline_id = ams.airline_id
+                AND active_d.aircraft_id = ams.aircraft_id
+                AND active_d.check_type = 'D_CHECK'
+                AND active_d.event_status = 'IN_PROGRESS'
+            )
+              THEN 'D_CHECK'
+
+            WHEN EXISTS (
+              SELECT 1
+              FROM public.aircraft_maintenance_events active_c
+
+              WHERE active_c.airline_id = ams.airline_id
+                AND active_c.aircraft_id = ams.aircraft_id
+                AND active_c.check_type = 'C_CHECK'
+                AND active_c.event_status = 'IN_PROGRESS'
+            )
+              THEN 'C_CHECK'
+
+            WHEN EXISTS (
+              SELECT 1
+              FROM public.aircraft_maintenance_events active_b
+
+              WHERE active_b.airline_id = ams.airline_id
+                AND active_b.aircraft_id = ams.aircraft_id
+                AND active_b.check_type = 'B_CHECK'
+                AND active_b.event_status = 'IN_PROGRESS'
+            )
+              THEN 'B_CHECK'
+
+            WHEN EXISTS (
+              SELECT 1
+              FROM public.aircraft_maintenance_events active_a
+
+              WHERE active_a.airline_id = ams.airline_id
+                AND active_a.aircraft_id = ams.aircraft_id
+                AND active_a.check_type = 'A_CHECK'
+                AND active_a.event_status = 'IN_PROGRESS'
+            )
+              THEN 'A_CHECK'
+
+            WHEN UPPER(
+              COALESCE(
+                ams.d_check_status,
+                ''
+              )
+            ) = 'OVERDUE'
+              THEN 'D_CHECK_OVERDUE'
+
+            WHEN UPPER(
+              COALESCE(
+                ams.c_check_status,
+                ''
+              )
+            ) = 'OVERDUE'
+              THEN 'C_CHECK_OVERDUE'
+
+            ELSE NULL
+          END,
+
+          updated_at =
+            (
+              CURRENT_TIMESTAMP
+              AT TIME ZONE 'UTC'
+            )
+
+        WHERE ams.airline_id = $1
+          AND ams.aircraft_id = $2
+        `,
+        [
+          airlineId,
+          aircraftId
+        ]
+      );
+
+      await client.query(
+        `
+        UPDATE public.aircraft_fleet af
+
+        SET
+          status = CASE
+
+            WHEN ams.maintenance_control_status =
+                 'IN_MAINTENANCE'
+              THEN 'MAINTENANCE'
+
+            WHEN ams.maintenance_control_status =
+                 'UNSERVICEABLE'
+              THEN 'MAINTENANCE'
+
+            ELSE 'ACTIVE'
+          END,
+
+          operational_status = CASE
+
+            WHEN ams.maintenance_control_status =
+                 'IN_MAINTENANCE'
+              THEN 'IN_MAINTENANCE'
+
+            WHEN ams.maintenance_control_status =
+                 'UNSERVICEABLE'
+              THEN 'UNAVAILABLE'
+
+            ELSE 'AVAILABLE'
+          END,
+
+          maintenance_status = CASE
+
+            WHEN ams.maintenance_control_status =
+                 'IN_MAINTENANCE'
+              THEN 'CHECK_REQUIRED'
+
+            WHEN ams.maintenance_control_status =
+                 'UNSERVICEABLE'
+              THEN 'CHECK_REQUIRED'
+
+            ELSE 'SERVICEABLE'
+          END,
+
+          updated_at =
+            (
+              CURRENT_TIMESTAMP
+              AT TIME ZONE 'UTC'
+            )
+
+        FROM public.aircraft_maintenance_status ams
+
+        WHERE af.airline_id = $1
+          AND af.id = $2
+          AND ams.airline_id = af.airline_id
+          AND ams.aircraft_id = af.id
+        `,
+        [
+          airlineId,
+          aircraftId
+        ]
+      );
+       
       await client.query("COMMIT");
       transactionStarted = false;
 
