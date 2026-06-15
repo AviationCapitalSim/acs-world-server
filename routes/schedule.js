@@ -6942,21 +6942,56 @@ export async function ACS_runMaintenanceResolver({
 
   const airlineResult = await pool.query(
     `
+    /* ========================================================
+       ACS GLOBAL A/B RESOLVER SCOPE
+       --------------------------------------------------------
+       Include every airline that currently has at least one
+       authoritative A/B maintenance condition requiring the
+       backend resolver:
+
+       1. A live technical occurrence.
+       2. An active persistent A/B player plan, even when its
+          latest technical occurrence is already COMPLETED and
+          the next occurrence has not yet been created.
+       3. An A/B technical due date already reached.
+
+       This is global, PostgreSQL-authoritative and independent
+       from browser sessions, aircraft registration or airline.
+       ======================================================== */
     SELECT DISTINCT airline_id
     FROM (
-      SELECT airline_id
-      FROM public.aircraft_maintenance_events
-      WHERE event_status IN ('SCHEDULED', 'IN_PROGRESS')
-        AND check_type IN ('A_CHECK', 'B_CHECK')
+      SELECT ame.airline_id
+      FROM public.aircraft_maintenance_events ame
+      WHERE UPPER(COALESCE(ame.event_status, '')) IN (
+        'SCHEDULED',
+        'IN_PROGRESS'
+      )
+        AND UPPER(COALESCE(ame.check_type, '')) IN (
+          'A_CHECK',
+          'B_CHECK'
+        )
 
       UNION
 
-      SELECT airline_id
-      FROM public.aircraft_maintenance_status
+      SELECT si.airline_id
+      FROM public.schedule_items si
+      WHERE LOWER(COALESCE(si.item_type, '')) = 'service'
+        AND UPPER(COALESCE(si.service_type, '')) IN ('A', 'B')
+        AND LOWER(COALESCE(si.status, 'scheduled')) NOT IN (
+          'cancelled',
+          'completed'
+        )
+        AND si.aircraft_id IS NOT NULL
+
+      UNION
+
+      SELECT ams.airline_id
+      FROM public.aircraft_maintenance_status ams
       WHERE
-        a_check_due_date <= acs_get_current_sim_time()
-        OR b_check_due_date <= acs_get_current_sim_time()
+        ams.a_check_due_date <= acs_get_current_sim_time()
+        OR ams.b_check_due_date <= acs_get_current_sim_time()
     ) authority_airlines
+    WHERE airline_id IS NOT NULL
     ORDER BY airline_id
     `
   );
