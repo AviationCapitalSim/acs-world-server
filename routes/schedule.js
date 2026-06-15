@@ -5928,7 +5928,10 @@ async function ACS_executeMaintenanceSchedulerTick() {
       client.release();
     }
 }
-       
+
+let ACS_maintenanceSchedulerTimer = null;
+let ACS_maintenanceSchedulerRunning = false;
+
 export function startMaintenanceScheduler({
   intervalMs = Number(
     process.env.ACS_MAINTENANCE_RESOLVER_INTERVAL_MS || 5000
