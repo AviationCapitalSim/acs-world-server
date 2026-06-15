@@ -5885,6 +5885,50 @@ async function ACS_executeMaintenanceSchedulerTick() {
   }
 }
 
+      await client.query("COMMIT");
+      transactionStarted = false;
+
+      return {
+        ok: true,
+        endpoint:
+          "ACS_SCHEDULE_MAINTENANCE_RESOLVER",
+        version: "v2.4",
+        authority:
+          "POSTGRESQL_SCHEDULE_AUTHORITY",
+        airline_id: airlineId,
+        completed_count: completedEvents.length,
+        completed_events: completedEvents,
+        started_count: startedEvents.length,
+        started_events: startedEvents,
+        blocked_count: blockedEvents.length,
+        blocked_events: blockedEvents
+      };
+
+    } catch (error) {
+      if (transactionStarted) {
+        try {
+          await client.query("ROLLBACK");
+        } catch (rollbackError) {
+          console.error(
+            "ACS SCHEDULE MAINTENANCE RESOLVER " +
+            "ROLLBACK ERROR:",
+            rollbackError
+          );
+        }
+      }
+
+      console.error(
+        `ACS SCHEDULE MAINTENANCE RESOLVER ERROR [airline ${airlineId}]:`,
+        error
+      );
+
+      throw error;
+
+    } finally {
+      client.release();
+    }
+}
+       
 export function startMaintenanceScheduler({
   intervalMs = Number(
     process.env.ACS_MAINTENANCE_RESOLVER_INTERVAL_MS || 5000
