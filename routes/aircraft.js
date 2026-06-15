@@ -1126,21 +1126,27 @@ router.post("/aircraft/fleet/:id/maintenance/start", requireAuth, async (req, re
 });
 
 /* ============================================================
-   🟦 ACS MAINTENANCE RESOLVER — A/B/C/D AUTHORITY v1.1
+   🟦 ACS MAINTENANCE RESOLVER — C/D AUTHORITY v1.2
    ------------------------------------------------------------
    Route:
    POST /v1/aircraft/maintenance/resolver
 
-   Purpose:
-   - Complete expired maintenance events
-   - Resolve overdue A/B/C/D checks
-   - Apply maintenance priority D > C > B > A
-   - Block dispatch through CHECK_REQUIRED
+   Scope:
+   - Complete expired C_CHECK and D_CHECK events only
+   - Resolve C/D overdue authority only
+   - Preserve Schedule as the only A/B lifecycle authority
+   - Preserve D > C > B > A operational hierarchy
    - Use authenticated airline isolation
    - Use ACS simulated time only
    - No localStorage
    - No browser clock
    - No Date.now()
+
+   Important:
+   - C completion resets C + B + A technical cycles.
+   - D completion resets D + C + B + A technical cycles.
+   - This resolver never completes A/B events.
+   - This resolver never calculates A/B overdue states.
    ============================================================ */
 
 router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
@@ -1161,13 +1167,10 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
     transactionStarted = true;
 
     /* ============================================================
-       1. COMPLETE FINISHED MAINTENANCE EVENTS
+       1. COMPLETE FINISHED C/D MAINTENANCE EVENTS ONLY
        ------------------------------------------------------------
-       Hierarchy:
        D resets D + C + B + A
        C resets C + B + A
-       B resets B + A
-       A resets A
        ============================================================ */
 
     const eventsResult = await client.query(
@@ -1202,6 +1205,7 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
 
       WHERE ame.airline_id = $1
         AND ame.event_status = 'IN_PROGRESS'
+        AND ame.check_type IN ('C_CHECK', 'D_CHECK')
         AND COALESCE(
               ame.scheduled_end_at,
               ame.expected_completion_at
@@ -1228,7 +1232,7 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
       const aircraftId = Number(event.aircraft_id);
       const completionTime = event.current_sim_time;
 
-      await client.query(
+      const completedEventResult = await client.query(
         `
         UPDATE public.aircraft_maintenance_events
         SET
@@ -1237,6 +1241,9 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
           updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
         WHERE id = $1
           AND airline_id = $3
+          AND check_type IN ('C_CHECK', 'D_CHECK')
+          AND event_status = 'IN_PROGRESS'
+        RETURNING id
         `,
         [
           event.id,
@@ -1244,6 +1251,10 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
           airlineId
         ]
       );
+
+      if (!completedEventResult.rows.length) {
+        continue;
+      }
 
       if (checkType === "D_CHECK") {
         await client.query(
@@ -1292,29 +1303,8 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
             c_check_due_date = $2::TIMESTAMP + INTERVAL '12 months',
             c_check_status = 'OPEN',
 
-            updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
-
-          WHERE aircraft_id = $1
-            AND airline_id = $3
-          `,
-          [
-            aircraftId,
-            completionTime,
-            airlineId
-          ]
-        );
-      }
-
-      if (checkType === "B_CHECK") {
-        await client.query(
-          `
-          UPDATE public.aircraft_maintenance_status
-          SET
-            a_check_due_date = $2::TIMESTAMP + INTERVAL '7 days',
-            a_check_status = 'OPEN',
-
-            b_check_due_date = $2::TIMESTAMP + INTERVAL '30 days',
-            b_check_status = 'OPEN',
+            maintenance_control_status = 'SERVICEABLE',
+            maintenance_control_reason = NULL,
 
             updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
 
@@ -1329,50 +1319,58 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
         );
       }
 
-      if (checkType === "A_CHECK") {
-        await client.query(
-          `
-          UPDATE public.aircraft_maintenance_status
-          SET
-            a_check_due_date = $2::TIMESTAMP + INTERVAL '7 days',
-            a_check_status = 'OPEN',
-
-            updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
-
-          WHERE aircraft_id = $1
-            AND airline_id = $3
-          `,
-          [
-            aircraftId,
-            completionTime,
-            airlineId
-          ]
-        );
-      }
-
-      await client.query(
+      /*
+       * C/D completion may release the aircraft only when no other
+       * maintenance event remains IN_PROGRESS.
+       * A/B lifecycle remains owned by routes/schedule.js.
+       */
+      const remainingActiveResult = await client.query(
         `
-        UPDATE public.aircraft_fleet
-        SET
-          status = 'ACTIVE',
-          operational_status = 'AVAILABLE',
-          maintenance_status = 'SERVICEABLE',
-          condition_pct = CASE
-            WHEN $3 = 'D_CHECK' THEN 100
-            WHEN $3 = 'C_CHECK' THEN GREATEST(condition_pct, 95)
-            ELSE condition_pct
+        SELECT
+          check_type
+        FROM public.aircraft_maintenance_events
+        WHERE airline_id = $1
+          AND aircraft_id = $2
+          AND event_status = 'IN_PROGRESS'
+        ORDER BY
+          CASE check_type
+            WHEN 'D_CHECK' THEN 1
+            WHEN 'C_CHECK' THEN 2
+            WHEN 'B_CHECK' THEN 3
+            WHEN 'A_CHECK' THEN 4
+            ELSE 5
           END,
-          updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
-
-        WHERE id = $1
-          AND airline_id = $2
+          id
+        LIMIT 1
         `,
-        [
-          aircraftId,
-          airlineId,
-          checkType
-        ]
+        [airlineId, aircraftId]
       );
+
+      if (!remainingActiveResult.rows.length) {
+        await client.query(
+          `
+          UPDATE public.aircraft_fleet
+          SET
+            status = 'ACTIVE',
+            operational_status = 'AVAILABLE',
+            maintenance_status = 'SERVICEABLE',
+            condition_pct = CASE
+              WHEN $3 = 'D_CHECK' THEN 100
+              WHEN $3 = 'C_CHECK' THEN GREATEST(condition_pct, 95)
+              ELSE condition_pct
+            END,
+            updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+
+          WHERE id = $1
+            AND airline_id = $2
+          `,
+          [
+            aircraftId,
+            airlineId,
+            checkType
+          ]
+        );
+      }
 
       completedEvents.push({
         event_id: event.id,
@@ -1385,18 +1383,14 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
     }
 
     /* ============================================================
-       2. RESOLVE OVERDUE CHECKS
+       2. RESOLVE C/D AUTHORITY ONLY
        ------------------------------------------------------------
-       Visual / operational priority:
-       D > C > B > A
-
-       A higher active check covers lower checks:
-       D covers C/B/A
-       C covers B/A
-       B covers A
+       - D has priority over C.
+       - A/B statuses are preserved exactly as written by Schedule.
+       - A/B events may still be read to preserve the final hierarchy.
        ============================================================ */
 
-    const overdueResult = await client.query(
+    const cdStatusResult = await client.query(
       `
       WITH active_events AS (
         SELECT
@@ -1430,7 +1424,7 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
         GROUP BY ame.aircraft_id
       ),
 
-      maintenance_state AS (
+      cd_state AS (
         SELECT
           ams.aircraft_id,
           ams.airline_id,
@@ -1441,66 +1435,24 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
           COALESCE(ae.a_in_progress, FALSE) AS a_in_progress,
 
           CASE
-            WHEN COALESCE(ae.d_in_progress, FALSE) = TRUE
+            WHEN COALESCE(ae.d_in_progress, FALSE)
               THEN FALSE
-
             WHEN ams.d_check_due_date IS NOT NULL
              AND ams.d_check_due_date <= acs_get_current_sim_time()
               THEN TRUE
-
             ELSE FALSE
           END AS d_overdue,
 
           CASE
-            WHEN COALESCE(ae.d_in_progress, FALSE) = TRUE
+            WHEN COALESCE(ae.d_in_progress, FALSE)
               THEN FALSE
-
-            WHEN COALESCE(ae.c_in_progress, FALSE) = TRUE
+            WHEN COALESCE(ae.c_in_progress, FALSE)
               THEN FALSE
-
             WHEN ams.c_check_due_date IS NOT NULL
              AND ams.c_check_due_date <= acs_get_current_sim_time()
               THEN TRUE
-
             ELSE FALSE
-          END AS c_overdue,
-
-          CASE
-            WHEN COALESCE(ae.d_in_progress, FALSE) = TRUE
-              THEN FALSE
-
-            WHEN COALESCE(ae.c_in_progress, FALSE) = TRUE
-              THEN FALSE
-
-            WHEN COALESCE(ae.b_in_progress, FALSE) = TRUE
-              THEN FALSE
-
-            WHEN ams.b_check_due_date IS NOT NULL
-             AND ams.b_check_due_date <= acs_get_current_sim_time()
-              THEN TRUE
-
-            ELSE FALSE
-          END AS b_overdue,
-
-          CASE
-            WHEN COALESCE(ae.d_in_progress, FALSE) = TRUE
-              THEN FALSE
-
-            WHEN COALESCE(ae.c_in_progress, FALSE) = TRUE
-              THEN FALSE
-
-            WHEN COALESCE(ae.b_in_progress, FALSE) = TRUE
-              THEN FALSE
-
-            WHEN COALESCE(ae.a_in_progress, FALSE) = TRUE
-              THEN FALSE
-
-            WHEN ams.a_check_due_date IS NOT NULL
-             AND ams.a_check_due_date <= acs_get_current_sim_time()
-              THEN TRUE
-
-            ELSE FALSE
-          END AS a_overdue
+          END AS c_overdue
 
         FROM public.aircraft_maintenance_status ams
 
@@ -1508,35 +1460,14 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
           ON ae.aircraft_id = ams.aircraft_id
 
         WHERE ams.airline_id = $1
-      ),
-
-      resolved_priority AS (
-        SELECT
-          ms.*,
-
-          CASE
-            WHEN ms.d_in_progress THEN 'D_CHECK'
-            WHEN ms.c_in_progress THEN 'C_CHECK'
-            WHEN ms.b_in_progress THEN 'B_CHECK'
-            WHEN ms.a_in_progress THEN 'A_CHECK'
-
-            WHEN ms.d_overdue THEN 'D_CHECK_OVERDUE'
-            WHEN ms.c_overdue THEN 'C_CHECK_OVERDUE'
-            WHEN ms.b_overdue THEN 'B_CHECK_OVERDUE'
-            WHEN ms.a_overdue THEN 'A_CHECK_OVERDUE'
-
-            ELSE NULL
-          END AS dominant_reason
-
-        FROM maintenance_state ms
       )
 
       UPDATE public.aircraft_maintenance_status ams
 
       SET
         d_check_status = CASE
-          WHEN rp.d_in_progress THEN 'IN_PROGRESS'
-          WHEN rp.d_overdue THEN 'OVERDUE'
+          WHEN state.d_in_progress THEN 'IN_PROGRESS'
+          WHEN state.d_overdue THEN 'OVERDUE'
           WHEN UPPER(COALESCE(ams.d_check_status, '')) IN (
             'OVERDUE',
             'IN_PROGRESS'
@@ -1546,9 +1477,9 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
         END,
 
         c_check_status = CASE
-          WHEN rp.d_in_progress THEN 'OPEN'
-          WHEN rp.c_in_progress THEN 'IN_PROGRESS'
-          WHEN rp.c_overdue THEN 'OVERDUE'
+          WHEN state.d_in_progress THEN ams.c_check_status
+          WHEN state.c_in_progress THEN 'IN_PROGRESS'
+          WHEN state.c_overdue THEN 'OVERDUE'
           WHEN UPPER(COALESCE(ams.c_check_status, '')) IN (
             'OVERDUE',
             'IN_PROGRESS'
@@ -1557,71 +1488,40 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
           ELSE ams.c_check_status
         END,
 
-        b_check_status = CASE
-          WHEN rp.d_in_progress
-            OR rp.c_in_progress
-            THEN 'OPEN'
-
-          WHEN rp.b_in_progress
-            THEN 'IN_PROGRESS'
-
-          WHEN rp.b_overdue
-            THEN 'OVERDUE'
-
-          WHEN UPPER(COALESCE(ams.b_check_status, '')) IN (
-            'OVERDUE',
-            'IN_PROGRESS'
-          )
-            THEN 'OPEN'
-
-          ELSE ams.b_check_status
-        END,
-
-        a_check_status = CASE
-          WHEN rp.d_in_progress
-            OR rp.c_in_progress
-            OR rp.b_in_progress
-            THEN 'OPEN'
-
-          WHEN rp.a_in_progress
-            THEN 'IN_PROGRESS'
-
-          WHEN rp.a_overdue
-            THEN 'OVERDUE'
-
-          WHEN UPPER(COALESCE(ams.a_check_status, '')) IN (
-            'OVERDUE',
-            'IN_PROGRESS'
-          )
-            THEN 'OPEN'
-
-          ELSE ams.a_check_status
-        END,
-
         maintenance_control_status = CASE
-          WHEN rp.d_in_progress
-            OR rp.c_in_progress
-            OR rp.b_in_progress
-            OR rp.a_in_progress
+          WHEN state.d_in_progress
+            OR state.c_in_progress
             THEN 'IN_MAINTENANCE'
 
-          WHEN rp.d_overdue
-            OR rp.c_overdue
-            OR rp.b_overdue
-            OR rp.a_overdue
+          WHEN state.d_overdue
+            OR state.c_overdue
             THEN 'MAINTENANCE_REQUIRED'
 
-          ELSE 'SERVICEABLE'
+          WHEN state.b_in_progress
+            OR state.a_in_progress
+            THEN 'IN_MAINTENANCE'
+
+          ELSE ams.maintenance_control_status
         END,
 
-        maintenance_control_reason = rp.dominant_reason,
+        maintenance_control_reason = CASE
+          WHEN state.d_in_progress THEN 'D_CHECK'
+          WHEN state.c_in_progress THEN 'C_CHECK'
+          WHEN state.d_overdue THEN 'D_CHECK_OVERDUE'
+          WHEN state.c_overdue THEN 'C_CHECK_OVERDUE'
+
+          WHEN state.b_in_progress THEN 'B_CHECK'
+          WHEN state.a_in_progress THEN 'A_CHECK'
+
+          ELSE ams.maintenance_control_reason
+        END,
 
         updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
 
-      FROM resolved_priority rp
+      FROM cd_state state
 
-      WHERE ams.aircraft_id = rp.aircraft_id
-        AND ams.airline_id = rp.airline_id
+      WHERE ams.aircraft_id = state.aircraft_id
+        AND ams.airline_id = state.airline_id
 
       RETURNING
         ams.aircraft_id,
@@ -1641,10 +1541,10 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
     );
 
     /* ============================================================
-       3. SYNCHRONIZE AIRCRAFT FLEET DISPATCHABILITY
+       3. SYNCHRONIZE FLEET FROM FINAL AUTHORITY
        ------------------------------------------------------------
-       CHECK_REQUIRED blocks aircraft assignment because Schedule
-       Table requires maintenance_status = SERVICEABLE.
+       This endpoint does not invent or recalculate A/B status.
+       It only publishes the already-resolved dominant authority.
        ============================================================ */
 
     const fleetSyncResult = await client.query(
@@ -1652,14 +1552,36 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
       UPDATE public.aircraft_fleet af
 
       SET
-        maintenance_status = CASE
-          WHEN ams.maintenance_control_status = 'MAINTENANCE_REQUIRED'
-            THEN 'CHECK_REQUIRED'
-
+        status = CASE
           WHEN ams.maintenance_control_status = 'IN_MAINTENANCE'
+            THEN 'MAINTENANCE'
+          ELSE af.status
+        END,
+
+        operational_status = CASE
+          WHEN ams.maintenance_control_status = 'IN_MAINTENANCE'
+            THEN 'IN_MAINTENANCE'
+
+          WHEN ams.maintenance_control_status = 'MAINTENANCE_REQUIRED'
+            THEN 'UNAVAILABLE'
+
+          WHEN ams.maintenance_control_status = 'SERVICEABLE'
+            THEN 'AVAILABLE'
+
+          ELSE af.operational_status
+        END,
+
+        maintenance_status = CASE
+          WHEN ams.maintenance_control_status IN (
+            'MAINTENANCE_REQUIRED',
+            'IN_MAINTENANCE'
+          )
             THEN 'CHECK_REQUIRED'
 
-          ELSE 'SERVICEABLE'
+          WHEN ams.maintenance_control_status = 'SERVICEABLE'
+            THEN 'SERVICEABLE'
+
+          ELSE af.maintenance_status
         END,
 
         updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
@@ -1687,11 +1609,13 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
 
     return res.json({
       ok: true,
-      endpoint: "ACS_MAINTENANCE_RESOLVER",
-      version: "v1.1",
+      endpoint: "ACS_CD_MAINTENANCE_RESOLVER",
+      version: "v1.2",
 
       authority: {
         time: "acs_get_current_sim_time",
+        c_d: "routes/aircraft.js",
+        a_b: "routes/schedule.js",
         maintenance_status: "aircraft_maintenance_status",
         maintenance_events: "aircraft_maintenance_events",
         fleet: "aircraft_fleet"
@@ -1699,8 +1623,8 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
 
       airline_id: airlineId,
 
-      overdue_sync_count: overdueResult.rows.length,
-      overdue_sync: overdueResult.rows,
+      cd_sync_count: cdStatusResult.rows.length,
+      cd_sync: cdStatusResult.rows,
 
       fleet_sync_count: fleetSyncResult.rows.length,
       fleet_sync: fleetSyncResult.rows,
@@ -1715,17 +1639,17 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
         await client.query("ROLLBACK");
       } catch (rollbackError) {
         console.error(
-          "ACS MAINTENANCE RESOLVER ROLLBACK ERROR:",
+          "ACS C/D MAINTENANCE RESOLVER ROLLBACK ERROR:",
           rollbackError
         );
       }
     }
 
-    console.error("ACS MAINTENANCE RESOLVER ERROR:", err);
+    console.error("ACS C/D MAINTENANCE RESOLVER ERROR:", err);
 
     return res.status(500).json({
       ok: false,
-      error: "MAINTENANCE_RESOLVER_FAILED",
+      error: "CD_MAINTENANCE_RESOLVER_FAILED",
       details: err.message
     });
 
