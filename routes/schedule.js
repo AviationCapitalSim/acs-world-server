@@ -4307,6 +4307,331 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
       }
 
       /* ========================================================
+         ACS AIRBUS OCC — GLOBAL ORPHAN PLAN RECOVERY
+         --------------------------------------------------------
+         Every active A/B player plan must have exactly one live
+         SCHEDULED or IN_PROGRESS technical occurrence.
+
+         Applies globally to every airline and aircraft.
+         No registration-specific rules.
+         ======================================================== */
+
+      await client.query(
+        `
+        WITH orphan_plans AS (
+          SELECT
+            si.id AS schedule_item_id,
+            si.airline_id,
+            si.aircraft_id,
+
+            CASE
+              WHEN UPPER(COALESCE(si.service_type, ''))
+                   IN ('B', 'B_CHECK')
+                THEN 'B_CHECK'
+              ELSE 'A_CHECK'
+            END AS check_type,
+
+            CASE LOWER(si.selected_day)
+              WHEN 'mon' THEN 1
+              WHEN 'tue' THEN 2
+              WHEN 'wed' THEN 3
+              WHEN 'thu' THEN 4
+              WHEN 'fri' THEN 5
+              WHEN 'sat' THEN 6
+              WHEN 'sun' THEN 7
+              ELSE NULL
+            END AS selected_iso_day,
+
+            (
+              SPLIT_PART(si.departure, ':', 1)::INTEGER * 60
+              +
+              SPLIT_PART(si.departure, ':', 2)::INTEGER
+            ) AS start_minute,
+
+            CASE
+              WHEN UPPER(COALESCE(si.service_type, ''))
+                   IN ('B', 'B_CHECK')
+                THEN ams.b_check_due_date
+              ELSE ams.a_check_due_date
+            END AS technical_due_at,
+
+            COALESCE(
+              last_event.duration_minutes,
+              si.block_time_min
+            ) AS duration_minutes,
+
+            COALESCE(
+              last_event.duration_days,
+              0
+            ) AS duration_days,
+
+            COALESCE(
+              last_event.estimated_cost,
+              0
+            ) AS estimated_cost,
+
+            COALESCE(
+              last_event.currency,
+              'USD'
+            ) AS currency,
+
+            last_event.id AS previous_event_id
+
+          FROM public.schedule_items si
+
+          JOIN public.aircraft_maintenance_status ams
+            ON ams.airline_id = si.airline_id
+           AND ams.aircraft_id = si.aircraft_id
+
+          LEFT JOIN LATERAL (
+            SELECT
+              ame.id,
+              ame.duration_minutes,
+              ame.duration_days,
+              ame.estimated_cost,
+              ame.currency
+
+            FROM public.aircraft_maintenance_events ame
+
+            WHERE ame.airline_id = si.airline_id
+              AND ame.aircraft_id = si.aircraft_id
+
+              AND ame.check_type =
+                CASE
+                  WHEN UPPER(COALESCE(si.service_type, ''))
+                       IN ('B', 'B_CHECK')
+                    THEN 'B_CHECK'
+                  ELSE 'A_CHECK'
+                END
+
+            ORDER BY ame.id DESC
+            LIMIT 1
+          ) last_event ON TRUE
+
+          WHERE si.airline_id = $1
+            AND si.aircraft_id IS NOT NULL
+
+            AND LOWER(COALESCE(si.item_type, '')) = 'service'
+
+            AND UPPER(COALESCE(si.service_type, ''))
+                IN ('A', 'A_CHECK', 'B', 'B_CHECK')
+
+            AND LOWER(COALESCE(si.status, 'scheduled'))
+                NOT IN ('cancelled', 'completed')
+
+            AND NOT EXISTS (
+              SELECT 1
+              FROM public.aircraft_maintenance_events live_event
+
+              WHERE live_event.airline_id = si.airline_id
+                AND live_event.aircraft_id = si.aircraft_id
+
+                AND live_event.check_type =
+                  CASE
+                    WHEN UPPER(COALESCE(si.service_type, ''))
+                         IN ('B', 'B_CHECK')
+                      THEN 'B_CHECK'
+                    ELSE 'A_CHECK'
+                  END
+
+                AND live_event.event_status IN (
+                  'SCHEDULED',
+                  'IN_PROGRESS'
+                )
+            )
+        ),
+
+        authority AS (
+          SELECT
+            orphan_plans.*,
+
+            GREATEST(
+              COALESCE(
+                orphan_plans.technical_due_at,
+                acs_get_current_sim_time()
+              ),
+              acs_get_current_sim_time()
+            ) AS anchor_at
+
+          FROM orphan_plans
+
+          WHERE orphan_plans.selected_iso_day IS NOT NULL
+            AND orphan_plans.duration_minutes > 0
+        ),
+
+        candidate AS (
+          SELECT
+            authority.*,
+
+            date_trunc('day', authority.anchor_at)
+            +
+            (
+              (
+                authority.selected_iso_day
+                -
+                EXTRACT(
+                  ISODOW FROM authority.anchor_at
+                )::INTEGER
+                + 7
+              ) % 7
+            ) * INTERVAL '1 day'
+            +
+            authority.start_minute * INTERVAL '1 minute'
+              AS raw_start
+
+          FROM authority
+        ),
+
+        resolved AS (
+          SELECT
+            candidate.*,
+
+            CASE
+              WHEN candidate.raw_start
+                   <= acs_get_current_sim_time()
+                THEN candidate.raw_start + INTERVAL '7 days'
+              ELSE candidate.raw_start
+            END AS next_start
+
+          FROM candidate
+        )
+
+        INSERT INTO public.aircraft_maintenance_events (
+          airline_id,
+          aircraft_id,
+          check_type,
+          event_status,
+
+          started_at,
+          expected_completion_at,
+          completed_at,
+
+          duration_days,
+          duration_minutes,
+
+          scheduled_start_at,
+          scheduled_end_at,
+
+          schedule_item_id,
+
+          estimated_cost,
+          final_cost,
+          currency,
+
+          finance_charged,
+          finance_log_id,
+
+          notes,
+          created_at,
+          updated_at
+        )
+
+        SELECT
+          resolved.airline_id,
+          resolved.aircraft_id,
+          resolved.check_type,
+          'SCHEDULED',
+
+          NULL,
+          resolved.next_start
+            + resolved.duration_minutes * INTERVAL '1 minute',
+          NULL,
+
+          resolved.duration_days,
+          resolved.duration_minutes,
+
+          resolved.next_start,
+          resolved.next_start
+            + resolved.duration_minutes * INTERVAL '1 minute',
+
+          resolved.schedule_item_id,
+
+          resolved.estimated_cost,
+          NULL,
+          resolved.currency,
+
+          FALSE,
+          NULL,
+
+          jsonb_build_object(
+            'source',
+            'ACS_AB_GLOBAL_ORPHAN_RECOVERY_V1',
+
+            'previous_event_id',
+            resolved.previous_event_id,
+
+            'persistent_schedule_item_id',
+            resolved.schedule_item_id
+          )::TEXT,
+
+          (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
+          (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+
+        FROM resolved
+
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM public.aircraft_maintenance_events final_guard
+
+          WHERE final_guard.airline_id = resolved.airline_id
+            AND final_guard.aircraft_id = resolved.aircraft_id
+            AND final_guard.check_type = resolved.check_type
+
+            AND final_guard.event_status IN (
+              'SCHEDULED',
+              'IN_PROGRESS'
+            )
+        )
+        `,
+        [airlineId]
+      );
+
+      /*
+       * Synchronize A/B planning state after global recovery.
+       * C/D authority is preserved.
+       */
+      await client.query(
+        `
+        UPDATE public.aircraft_maintenance_status ams
+
+        SET
+          a_check_status = CASE
+            WHEN EXISTS (
+              SELECT 1
+              FROM public.aircraft_maintenance_events ame
+
+              WHERE ame.airline_id = ams.airline_id
+                AND ame.aircraft_id = ams.aircraft_id
+                AND ame.check_type = 'A_CHECK'
+                AND ame.event_status = 'SCHEDULED'
+            )
+              THEN 'SCHEDULED'
+            ELSE ams.a_check_status
+          END,
+
+          b_check_status = CASE
+            WHEN EXISTS (
+              SELECT 1
+              FROM public.aircraft_maintenance_events ame
+
+              WHERE ame.airline_id = ams.airline_id
+                AND ame.aircraft_id = ams.aircraft_id
+                AND ame.check_type = 'B_CHECK'
+                AND ame.event_status = 'SCHEDULED'
+            )
+              THEN 'SCHEDULED'
+            ELSE ams.b_check_status
+          END,
+
+          updated_at =
+            (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+
+        WHERE ams.airline_id = $1
+        `,
+        [airlineId]
+      );
+
+      /* ========================================================
          PHASE 0 — ESTABLISH OVERDUE A/B AUTHORITY
          --------------------------------------------------------
          Existing ACS states only:
@@ -4747,153 +5072,244 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
           completedEvent.schedule_item_id &&
           nextDueDate
         ) {
-          const nextOccurrenceResult = await client.query(
-            `
-            WITH plan AS (
-              SELECT
-                si.id,
-                si.airline_id,
-                si.aircraft_id,
-                si.selected_day,
-                si.departure,
-                si.status,
-                CASE LOWER(si.selected_day)
-                  WHEN 'mon' THEN 1
-                  WHEN 'tue' THEN 2
-                  WHEN 'wed' THEN 3
-                  WHEN 'thu' THEN 4
-                  WHEN 'fri' THEN 5
-                  WHEN 'sat' THEN 6
-                  WHEN 'sun' THEN 7
-                  ELSE NULL
-                END AS selected_iso_day,
-                (
-                  SPLIT_PART(si.departure, ':', 1)::INTEGER * 60
-                  + SPLIT_PART(si.departure, ':', 2)::INTEGER
-                ) AS start_minute
-              FROM public.schedule_items si
-              WHERE si.id = $1
-                AND si.airline_id = $2
-                AND si.aircraft_id = $3
-                AND si.item_type = 'service'
-                AND LOWER(COALESCE(si.status, 'scheduled'))
-                    <> 'cancelled'
-              LIMIT 1
-            ),
-            candidate AS (
-              SELECT
-                plan.*,
-                $5::TIMESTAMP AS due_at,
-                date_trunc('day', $5::TIMESTAMP)
-                + (
-                    (
-                      plan.selected_iso_day
-                      - EXTRACT(ISODOW FROM $5::TIMESTAMP)::INTEGER
-                      + 7
-                    ) % 7
-                  ) * INTERVAL '1 day'
-                + plan.start_minute * INTERVAL '1 minute'
-                  AS raw_start
-              FROM plan
-              WHERE plan.selected_iso_day IS NOT NULL
-            ),
-            resolved AS (
-              SELECT
-                candidate.*,
-                CASE
-                  WHEN candidate.raw_start < candidate.due_at
-                    THEN candidate.raw_start + INTERVAL '7 days'
-                  ELSE candidate.raw_start
-                END AS next_start
-              FROM candidate
-            )
-            INSERT INTO public.aircraft_maintenance_events (
-              airline_id,
-              aircraft_id,
-              check_type,
-              event_status,
-              started_at,
-              expected_completion_at,
-              completed_at,
-              duration_days,
-              duration_minutes,
-              scheduled_start_at,
-              scheduled_end_at,
-              schedule_item_id,
-              estimated_cost,
-              final_cost,
-              currency,
-              finance_charged,
-              finance_log_id,
-              notes,
-              created_at,
-              updated_at
-            )
-            SELECT
-              resolved.airline_id,
-              resolved.aircraft_id,
-              $4,
-              'SCHEDULED',
-              NULL,
-              resolved.next_start
-                + $6::INTEGER * INTERVAL '1 minute',
-              NULL,
-              $7::INTEGER,
-              $6::INTEGER,
-              resolved.next_start,
-              resolved.next_start
-                + $6::INTEGER * INTERVAL '1 minute',
-              resolved.id,
-              $8,
-              NULL,
-              $9,
-              FALSE,
-              NULL,
-              jsonb_build_object(
-                'source', 'ACS_AB_RECURRING_PLAN_V1',
-                'previous_event_id', $10::BIGINT,
-                'technical_due_at', $5::TIMESTAMP,
-                'persistent_schedule_item_id', resolved.id
-              )::TEXT,
-              (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
-              (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
-            FROM resolved
-            WHERE NOT EXISTS (
-              SELECT 1
-              FROM public.aircraft_maintenance_events open_event
-              WHERE open_event.airline_id = resolved.airline_id
-                AND open_event.aircraft_id = resolved.aircraft_id
-                AND open_event.check_type = $4
-                AND open_event.event_status IN (
-                  'SCHEDULED',
-                  'IN_PROGRESS'
-                )
-            )
-            RETURNING
-              id,
-              event_uid,
-              schedule_item_id,
-              check_type,
-              event_status,
-              scheduled_start_at,
-              scheduled_end_at
-            `,
-            [
-              completedEvent.schedule_item_id,
-              airlineId,
-              completedEvent.aircraft_id,
-              checkType,
-              nextDueDate,
-              Number(completedEvent.duration_minutes || 0),
-              Number(completedEvent.duration_days || 0),
-              Number(completedEvent.estimated_cost || 0),
-              completedEvent.currency || 'USD',
-              completedEvent.id
-            ]
+          await client.query(
+            "SAVEPOINT acs_next_occurrence"
           );
 
-          nextOccurrence =
-            nextOccurrenceResult.rows[0] || null;
+          try {
+            const nextOccurrenceResult =
+              await client.query(
+                `
+                WITH plan AS (
+                  SELECT
+                    si.id,
+                    si.airline_id,
+                    si.aircraft_id,
+                    si.selected_day,
+                    si.departure,
+
+                    CASE LOWER(si.selected_day)
+                      WHEN 'mon' THEN 1
+                      WHEN 'tue' THEN 2
+                      WHEN 'wed' THEN 3
+                      WHEN 'thu' THEN 4
+                      WHEN 'fri' THEN 5
+                      WHEN 'sat' THEN 6
+                      WHEN 'sun' THEN 7
+                      ELSE NULL
+                    END AS selected_iso_day,
+
+                    (
+                      SPLIT_PART(si.departure, ':', 1)::INTEGER * 60
+                      +
+                      SPLIT_PART(si.departure, ':', 2)::INTEGER
+                    ) AS start_minute
+
+                  FROM public.schedule_items si
+
+                  WHERE si.id = $1
+                    AND si.airline_id = $2
+                    AND si.aircraft_id = $3
+                    AND LOWER(COALESCE(si.item_type, '')) = 'service'
+                    AND LOWER(COALESCE(si.status, 'scheduled'))
+                        NOT IN ('cancelled', 'completed')
+
+                  LIMIT 1
+                ),
+
+                authority AS (
+                  SELECT
+                    plan.*,
+
+                    GREATEST(
+                      $5::TIMESTAMP,
+                      acs_get_current_sim_time()
+                    ) AS anchor_at
+
+                  FROM plan
+                  WHERE plan.selected_iso_day IS NOT NULL
+                ),
+
+                candidate AS (
+                  SELECT
+                    authority.*,
+
+                    date_trunc('day', authority.anchor_at)
+                    +
+                    (
+                      (
+                        authority.selected_iso_day
+                        -
+                        EXTRACT(
+                          ISODOW FROM authority.anchor_at
+                        )::INTEGER
+                        + 7
+                      ) % 7
+                    ) * INTERVAL '1 day'
+                    +
+                    authority.start_minute * INTERVAL '1 minute'
+                      AS raw_start
+
+                  FROM authority
+                ),
+
+                resolved AS (
+                  SELECT
+                    candidate.*,
+
+                    CASE
+                      WHEN candidate.raw_start
+                           <= acs_get_current_sim_time()
+                        THEN candidate.raw_start + INTERVAL '7 days'
+                      ELSE candidate.raw_start
+                    END AS next_start
+
+                  FROM candidate
+                )
+
+                INSERT INTO public.aircraft_maintenance_events (
+                  airline_id,
+                  aircraft_id,
+                  check_type,
+                  event_status,
+
+                  started_at,
+                  expected_completion_at,
+                  completed_at,
+
+                  duration_days,
+                  duration_minutes,
+
+                  scheduled_start_at,
+                  scheduled_end_at,
+
+                  schedule_item_id,
+
+                  estimated_cost,
+                  final_cost,
+                  currency,
+
+                  finance_charged,
+                  finance_log_id,
+
+                  notes,
+                  created_at,
+                  updated_at
+                )
+
+                SELECT
+                  resolved.airline_id,
+                  resolved.aircraft_id,
+                  $4,
+                  'SCHEDULED',
+
+                  NULL,
+                  resolved.next_start
+                    + $6::INTEGER * INTERVAL '1 minute',
+                  NULL,
+
+                  $7::INTEGER,
+                  $6::INTEGER,
+
+                  resolved.next_start,
+                  resolved.next_start
+                    + $6::INTEGER * INTERVAL '1 minute',
+
+                  resolved.id,
+
+                  $8,
+                  NULL,
+                  $9,
+
+                  FALSE,
+                  NULL,
+
+                  jsonb_build_object(
+                    'source',
+                    'ACS_AB_RECURRING_PLAN_V2',
+
+                    'previous_event_id',
+                    $10::BIGINT,
+
+                    'technical_due_at',
+                    $5::TIMESTAMP,
+
+                    'persistent_schedule_item_id',
+                    resolved.id
+                  )::TEXT,
+
+                  (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
+                  (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+
+                FROM resolved
+
+                WHERE NOT EXISTS (
+                  SELECT 1
+                  FROM public.aircraft_maintenance_events live_event
+
+                  WHERE live_event.airline_id =
+                        resolved.airline_id
+
+                    AND live_event.aircraft_id =
+                        resolved.aircraft_id
+
+                    AND live_event.check_type = $4
+
+                    AND live_event.event_status IN (
+                      'SCHEDULED',
+                      'IN_PROGRESS'
+                    )
+                )
+
+                RETURNING
+                  id,
+                  event_uid,
+                  schedule_item_id,
+                  check_type,
+                  event_status,
+                  scheduled_start_at,
+                  scheduled_end_at
+                `,
+                [
+                  completedEvent.schedule_item_id,
+                  airlineId,
+                  completedEvent.aircraft_id,
+                  checkType,
+                  nextDueDate,
+                  Number(completedEvent.duration_minutes || 0),
+                  Number(completedEvent.duration_days || 0),
+                  Number(completedEvent.estimated_cost || 0),
+                  completedEvent.currency || "USD",
+                  completedEvent.id
+                ]
+              );
+
+            nextOccurrence =
+              nextOccurrenceResult.rows[0] || null;
+
+            await client.query(
+              "RELEASE SAVEPOINT acs_next_occurrence"
+            );
+
+          } catch (recurrenceError) {
+            await client.query(
+              "ROLLBACK TO SAVEPOINT acs_next_occurrence"
+            );
+
+            await client.query(
+              "RELEASE SAVEPOINT acs_next_occurrence"
+            );
+
+            console.error(
+              `[ACS A/B RECURRENCE RECOVERY] ` +
+              `airline=${airlineId} ` +
+              `aircraft=${completedEvent.aircraft_id} ` +
+              `check=${checkType}`,
+              recurrenceError
+            );
+
+            nextOccurrence = null;
+          }
         }
 
         /*
@@ -5009,61 +5425,6 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
         });
       }
 
-      /* ========================================================
-         ACS AIRBUS OCC — COMPLETION TRANSACTION BARRIER
-         --------------------------------------------------------
-         GLOBAL RULE FOR EVERY AIRLINE AND EVERY AIRCRAFT:
-
-         - A/B completion is an independent technical transition.
-         - Once an IN_PROGRESS occurrence reaches its official
-           expected_completion_at, its completion must be committed.
-         - A later start, finance or synchronization failure must
-           never roll back a correctly completed maintenance check.
-         - The next scheduler tick continues with new starts.
-         ======================================================== */
-
-      if (completedEvents.length > 0) {
-        await client.query("COMMIT");
-        transactionStarted = false;
-
-        return {
-          ok: true,
-
-          endpoint:
-            "ACS_SCHEDULE_MAINTENANCE_RESOLVER",
-
-          version:
-            "v2.4",
-
-          authority:
-            "POSTGRESQL_SCHEDULE_AUTHORITY",
-
-          airline_id:
-            airlineId,
-
-          lifecycle_phase:
-            "COMPLETION_COMMITTED",
-
-          completed_count:
-            completedEvents.length,
-
-          completed_events:
-            completedEvents,
-
-          started_count:
-            0,
-
-          started_events:
-            [],
-
-          blocked_count:
-            0,
-
-          blocked_events:
-            []
-        };
-      }
-       
       /* ========================================================
          PHASE 2 — AUTOMATIC START OF SCHEDULED A/B CHECKS
          --------------------------------------------------------
