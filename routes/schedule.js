@@ -1426,12 +1426,18 @@ if (
   /* ========================================================
    ACS AIRBUS OCC — IMMEDIATE OVERDUE START AUTHORITY
    --------------------------------------------------------
-   D > C > B > A
+   B_CHECK starts immediately only when:
 
-   - B_CHECK starts immediately when B is OVERDUE.
-   - A_CHECK does not block an overdue B_CHECK.
-   - C/D OVERDUE or IN_PROGRESS block B_CHECK.
-   - Another B_CHECK already IN_PROGRESS blocks a second B.
+   1. The requested check is B_CHECK.
+   2. B is already technically OVERDUE.
+   3. No C/D check is OVERDUE or IN_PROGRESS.
+   4. No other maintenance check is IN_PROGRESS.
+
+   Programming A while B is overdue remains allowed, but A
+   never starts ahead of the dominant overdue B.
+
+   C/D authority always dominates:
+   D > C > B > A
    ======================================================== */
 
 const bCheckIsOverdue =
@@ -1443,14 +1449,17 @@ const higherCheckBlocksImmediateStart =
   cCheckStatus === "IN_PROGRESS" ||
   dCheckStatus === "IN_PROGRESS";
 
-const bCheckAlreadyInProgress =
-  bCheckStatus === "IN_PROGRESS";
+const anotherCheckAlreadyInProgress =
+  aCheckStatus === "IN_PROGRESS" ||
+  bCheckStatus === "IN_PROGRESS" ||
+  cCheckStatus === "IN_PROGRESS" ||
+  dCheckStatus === "IN_PROGRESS";
 
 const immediateStart =
   checkType === "B_CHECK" &&
   bCheckIsOverdue &&
   !higherCheckBlocksImmediateStart &&
-  !bCheckAlreadyInProgress;
+  !anotherCheckAlreadyInProgress;
 
 /* ========================================================
    B DOMINANCE — ACS AIRBUS OCC
@@ -2391,126 +2400,6 @@ const eventExpectedCompletionAt =
 
       if (immediateStart) {
 
-         /* ========================================================
-           ACS AIRBUS OCC — B-CHECK DOMINANCE OVER ACTIVE A-CHECK
-           --------------------------------------------------------
-           An overdue B-Check has technical authority over an
-           A-Check currently in progress.
-
-           Rules:
-           - Stop the active A-Check occurrence.
-           - Preserve the same A-Check occurrence as SCHEDULED.
-           - Preserve the player's persistent A schedule_item.
-           - Do not delete, complete, or financially modify A.
-           - The active B-Check becomes the aircraft's sole
-             maintenance authority.
-           ======================================================== */
-         
-        const displacedAResult =
-          await client.query(
-            `
-            UPDATE public.aircraft_maintenance_events AS ame
-
-            SET
-              event_status = 'SCHEDULED',
-              started_at = NULL,
-              expected_completion_at = NULL,
-              completed_at = NULL,
-
-              updated_at =
-                (
-                  CURRENT_TIMESTAMP
-                  AT TIME ZONE 'UTC'
-                )
-
-            WHERE ame.airline_id = $1
-              AND ame.aircraft_id = $2
-              AND ame.check_type = 'A_CHECK'
-              AND ame.event_status = 'IN_PROGRESS'
-
-            RETURNING
-              ame.id,
-              ame.schedule_item_id
-            `,
-            [
-              airlineId,
-              aircraftId
-            ]
-          );
-
-        const displacedAScheduleItemIds =
-          displacedAResult.rows
-            .map((row) =>
-              Number(row.schedule_item_id)
-            )
-            .filter((value) =>
-              Number.isSafeInteger(value) &&
-              value > 0
-            );
-
-        if (
-          displacedAScheduleItemIds.length > 0
-        ) {
-          await client.query(
-            `
-            UPDATE public.schedule_items
-
-            SET
-              status = 'scheduled',
-
-              updated_at =
-                (
-                  CURRENT_TIMESTAMP
-                  AT TIME ZONE 'UTC'
-                )
-
-            WHERE airline_id = $1
-              AND aircraft_id = $2
-              AND id = ANY($3::BIGINT[])
-              AND item_type = 'service'
-              AND UPPER(
-                COALESCE(
-                  service_type,
-                  ''
-                )
-              ) = 'A'
-            `,
-            [
-              airlineId,
-              aircraftId,
-              displacedAScheduleItemIds
-            ]
-          );
-
-          await client.query(
-            `
-            UPDATE public.aircraft_maintenance_status
-
-            SET
-              a_check_status = 'SCHEDULED',
-
-              updated_at =
-                (
-                  CURRENT_TIMESTAMP
-                  AT TIME ZONE 'UTC'
-                )
-
-            WHERE aircraft_id = $1
-              AND airline_id = $2
-              AND UPPER(
-                COALESCE(
-                  a_check_status,
-                  ''
-                )
-              ) = 'IN_PROGRESS'
-            `,
-            [
-              aircraftId,
-              airlineId
-            ]
-          );
-        }
-         
         const financeLogResult =
           await client.query(
             `
@@ -2766,200 +2655,6 @@ SET
         );
       }
 
-            /* ========================================================
-         ACS AIRBUS OCC — FINAL GLOBAL AIRCRAFT SYNCHRONIZATION
-         --------------------------------------------------------
-         GLOBAL RULE:
-
-         - Creating a SCHEDULED A/B service does not place the
-           aircraft in maintenance.
-         - Only a real IN_PROGRESS event places the aircraft in
-           operational maintenance.
-         - C/D OVERDUE keeps the aircraft unavailable.
-         - ACTIVE is allowed only when the aircraft is AVAILABLE
-           and SERVICEABLE.
-         - Applies to every airline and every aircraft.
-         ======================================================== */
-
-      await client.query(
-        `
-        UPDATE public.aircraft_maintenance_status ams
-
-        SET
-          maintenance_control_status = CASE
-
-            WHEN EXISTS (
-              SELECT 1
-              FROM public.aircraft_maintenance_events active_event
-
-              WHERE active_event.airline_id = ams.airline_id
-                AND active_event.aircraft_id = ams.aircraft_id
-                AND active_event.event_status = 'IN_PROGRESS'
-            )
-              THEN 'IN_MAINTENANCE'
-
-            WHEN UPPER(
-              COALESCE(
-                ams.d_check_status,
-                ''
-              )
-            ) = 'OVERDUE'
-              THEN 'UNSERVICEABLE'
-
-            WHEN UPPER(
-              COALESCE(
-                ams.c_check_status,
-                ''
-              )
-            ) = 'OVERDUE'
-              THEN 'UNSERVICEABLE'
-
-            ELSE 'SERVICEABLE'
-          END,
-
-          maintenance_control_reason = CASE
-
-            WHEN EXISTS (
-              SELECT 1
-              FROM public.aircraft_maintenance_events active_d
-
-              WHERE active_d.airline_id = ams.airline_id
-                AND active_d.aircraft_id = ams.aircraft_id
-                AND active_d.check_type = 'D_CHECK'
-                AND active_d.event_status = 'IN_PROGRESS'
-            )
-              THEN 'D_CHECK'
-
-            WHEN EXISTS (
-              SELECT 1
-              FROM public.aircraft_maintenance_events active_c
-
-              WHERE active_c.airline_id = ams.airline_id
-                AND active_c.aircraft_id = ams.aircraft_id
-                AND active_c.check_type = 'C_CHECK'
-                AND active_c.event_status = 'IN_PROGRESS'
-            )
-              THEN 'C_CHECK'
-
-            WHEN EXISTS (
-              SELECT 1
-              FROM public.aircraft_maintenance_events active_b
-
-              WHERE active_b.airline_id = ams.airline_id
-                AND active_b.aircraft_id = ams.aircraft_id
-                AND active_b.check_type = 'B_CHECK'
-                AND active_b.event_status = 'IN_PROGRESS'
-            )
-              THEN 'B_CHECK'
-
-            WHEN EXISTS (
-              SELECT 1
-              FROM public.aircraft_maintenance_events active_a
-
-              WHERE active_a.airline_id = ams.airline_id
-                AND active_a.aircraft_id = ams.aircraft_id
-                AND active_a.check_type = 'A_CHECK'
-                AND active_a.event_status = 'IN_PROGRESS'
-            )
-              THEN 'A_CHECK'
-
-            WHEN UPPER(
-              COALESCE(
-                ams.d_check_status,
-                ''
-              )
-            ) = 'OVERDUE'
-              THEN 'D_CHECK_OVERDUE'
-
-            WHEN UPPER(
-              COALESCE(
-                ams.c_check_status,
-                ''
-              )
-            ) = 'OVERDUE'
-              THEN 'C_CHECK_OVERDUE'
-
-            ELSE NULL
-          END,
-
-          updated_at =
-            (
-              CURRENT_TIMESTAMP
-              AT TIME ZONE 'UTC'
-            )
-
-        WHERE ams.airline_id = $1
-          AND ams.aircraft_id = $2
-        `,
-        [
-          airlineId,
-          aircraftId
-        ]
-      );
-
-      await client.query(
-        `
-        UPDATE public.aircraft_fleet af
-
-        SET
-          status = CASE
-
-            WHEN ams.maintenance_control_status =
-                 'IN_MAINTENANCE'
-              THEN 'MAINTENANCE'
-
-            WHEN ams.maintenance_control_status =
-                 'UNSERVICEABLE'
-              THEN 'MAINTENANCE'
-
-            ELSE 'ACTIVE'
-          END,
-
-          operational_status = CASE
-
-            WHEN ams.maintenance_control_status =
-                 'IN_MAINTENANCE'
-              THEN 'IN_MAINTENANCE'
-
-            WHEN ams.maintenance_control_status =
-                 'UNSERVICEABLE'
-              THEN 'UNAVAILABLE'
-
-            ELSE 'AVAILABLE'
-          END,
-
-          maintenance_status = CASE
-
-            WHEN ams.maintenance_control_status =
-                 'IN_MAINTENANCE'
-              THEN 'CHECK_REQUIRED'
-
-            WHEN ams.maintenance_control_status =
-                 'UNSERVICEABLE'
-              THEN 'CHECK_REQUIRED'
-
-            ELSE 'SERVICEABLE'
-          END,
-
-          updated_at =
-            (
-              CURRENT_TIMESTAMP
-              AT TIME ZONE 'UTC'
-            )
-
-        FROM public.aircraft_maintenance_status ams
-
-        WHERE af.airline_id = $1
-          AND af.id = $2
-          AND ams.airline_id = af.airline_id
-          AND ams.aircraft_id = af.id
-        `,
-        [
-          airlineId,
-          aircraftId
-        ]
-      );
-       
       await client.query("COMMIT");
       transactionStarted = false;
 
@@ -4033,19 +3728,16 @@ if (
 /* ============================================================
    PATCH /v1/schedule/maintenance/:scheduleItemId/remove
    ------------------------------------------------------------
-   ACS AIRBUS OCC — UNIVERSAL REMOVE A/B PLAN
+   ACS AIRBUS OCC — REMOVE A/B MAINTENANCE
 
-   GLOBAL RULES:
-   - schedule_items is the persistent player plan.
-   - The player may remove any active A/B plan.
-   - A live SCHEDULED occurrence is cancelled.
-   - A live IN_PROGRESS occurrence is stopped and cancelled.
-   - COMPLETED history is never modified.
-   - A plan without a live occurrence can still be removed.
+   Rules:
+   - SCHEDULED may be cancelled.
+   - IN_PROGRESS may be stopped and cancelled.
+   - COMPLETED maintenance is immutable technical history.
    - No physical DELETE.
-   - No finance refund.
-   - No registration-specific or airline-specific logic.
-   - Technical state is recalculated transactionally.
+   - No refund.
+   - Existing finance_log remains untouched.
+   - Aircraft technical condition is recalculated.
    ============================================================ */
 
 router.patch(
@@ -4086,44 +3778,51 @@ router.patch(
       await client.query("BEGIN");
       transactionStarted = true;
 
-      /* ========================================================
-         READ PLAN IDENTITY
-         --------------------------------------------------------
-         The plan is authoritative even if its latest event is
-         COMPLETED or no live occurrence currently exists.
-         ======================================================== */
+      await client.query(
+        `
+        SELECT pg_advisory_xact_lock(
+          hashtext($1)
+        )
+        `,
+        [
+          `ACS_REMOVE_MAINTENANCE|${airlineId}|${scheduleItemId}`
+        ]
+      );
 
-      const planIdentityResult =
+      const maintenanceResult =
         await client.query(
           `
           SELECT
             si.id AS schedule_item_id,
-            si.airline_id,
             si.aircraft_id,
             si.service_type,
-            si.status AS schedule_status
+            si.status AS schedule_status,
+
+            ame.id AS event_id,
+            ame.event_uid,
+            ame.check_type,
+            ame.event_status,
+            ame.finance_charged,
+            ame.finance_log_id
 
           FROM public.schedule_items si
 
+          JOIN public.aircraft_maintenance_events ame
+            ON ame.schedule_item_id = si.id
+           AND ame.airline_id = si.airline_id
+           AND ame.aircraft_id = si.aircraft_id
+
           WHERE si.id = $1
             AND si.airline_id = $2
-            AND LOWER(
-              COALESCE(
-                si.item_type,
-                ''
-              )
-            ) = 'service'
-            AND UPPER(
-              COALESCE(
-                si.service_type,
-                ''
-              )
-            ) IN (
-              'A',
-              'B'
+            AND si.item_type = 'service'
+            AND ame.check_type IN (
+              'A_CHECK',
+              'B_CHECK'
             )
 
           LIMIT 1
+
+          FOR UPDATE OF si, ame
           `,
           [
             scheduleItemId,
@@ -4131,7 +3830,7 @@ router.patch(
           ]
         );
 
-      if (!planIdentityResult.rows.length) {
+      if (!maintenanceResult.rows.length) {
         const error =
           new Error(
             "MAINTENANCE_EVENT_NOT_FOUND"
@@ -4143,15 +3842,71 @@ router.patch(
         throw error;
       }
 
-      const planIdentity =
-        planIdentityResult.rows[0];
+      const maintenance =
+        maintenanceResult.rows[0];
 
-      const aircraftId =
-        ACS_positiveBigInt(
-          planIdentity.aircraft_id
+      const originalEventStatus =
+        ACS_text(
+          maintenance.event_status
+        ).toUpperCase();
+
+      if (
+        ![
+          "SCHEDULED",
+          "IN_PROGRESS"
+        ].includes(originalEventStatus)
+      ) {
+        const error =
+          new Error(
+            "MAINTENANCE_EVENT_NOT_REMOVABLE"
+          );
+
+        error.code =
+          "MAINTENANCE_EVENT_NOT_REMOVABLE";
+
+        throw error;
+      }
+
+      const eventUpdateResult =
+        await client.query(
+          `
+          UPDATE public.aircraft_maintenance_events
+
+          SET
+            event_status = 'CANCELLED',
+
+            completed_at = NULL,
+
+            updated_at =
+              (
+                CURRENT_TIMESTAMP
+                AT TIME ZONE 'UTC'
+              )
+
+          WHERE id = $1
+            AND airline_id = $2
+            AND event_status IN (
+              'SCHEDULED',
+              'IN_PROGRESS'
+            )
+
+          RETURNING
+            id,
+            event_uid,
+            aircraft_id,
+            check_type,
+            event_status,
+            schedule_item_id,
+            finance_charged,
+            finance_log_id
+          `,
+          [
+            maintenance.event_id,
+            airlineId
+          ]
         );
 
-      if (!aircraftId) {
+      if (!eventUpdateResult.rows.length) {
         const error =
           new Error(
             "MAINTENANCE_REMOVE_STATE_CONFLICT"
@@ -4162,273 +3917,6 @@ router.patch(
 
         throw error;
       }
-
-      const checkType =
-        ACS_text(
-          planIdentity.service_type
-        ).toUpperCase() === "B"
-          ? "B_CHECK"
-          : "A_CHECK";
-
-      /* ========================================================
-         UNIVERSAL AIRCRAFT LOCK
-         --------------------------------------------------------
-         Every maintenance operation for the same aircraft must
-         share the same lock identity.
-         ======================================================== */
-
-      await client.query(
-        `
-        SELECT pg_advisory_xact_lock(
-          hashtext($1)
-        )
-        `,
-        [
-          `ACS_MAINTENANCE_AIRCRAFT|${airlineId}|${aircraftId}`
-        ]
-      );
-
-      /* ========================================================
-         LOCK PERSISTENT PLAN
-         ======================================================== */
-
-      const planResult =
-        await client.query(
-          `
-          SELECT
-            si.id AS schedule_item_id,
-            si.schedule_uid,
-            si.airline_id,
-            si.aircraft_id,
-            si.service_type,
-            si.status AS schedule_status,
-            si.selected_day,
-            si.departure,
-            si.arrival
-
-          FROM public.schedule_items si
-
-          WHERE si.id = $1
-            AND si.airline_id = $2
-            AND si.aircraft_id = $3
-            AND LOWER(
-              COALESCE(
-                si.item_type,
-                ''
-              )
-            ) = 'service'
-            AND UPPER(
-              COALESCE(
-                si.service_type,
-                ''
-              )
-            ) IN (
-              'A',
-              'B'
-            )
-
-          LIMIT 1
-
-          FOR UPDATE
-          `,
-          [
-            scheduleItemId,
-            airlineId,
-            aircraftId
-          ]
-        );
-
-      if (!planResult.rows.length) {
-        const error =
-          new Error(
-            "MAINTENANCE_EVENT_NOT_FOUND"
-          );
-
-        error.code =
-          "MAINTENANCE_EVENT_NOT_FOUND";
-
-        throw error;
-      }
-
-      const plan =
-        planResult.rows[0];
-
-      /* ========================================================
-         IDEMPOTENT ALREADY-CANCELLED RESPONSE
-         ======================================================== */
-
-      if (
-        ACS_text(
-          plan.schedule_status
-        ).toLowerCase() === "cancelled"
-      ) {
-        await client.query("COMMIT");
-        transactionStarted = false;
-
-        return res.json({
-          ok: true,
-          endpoint:
-            "ACS_SCHEDULE_REMOVE_MAINTENANCE",
-          version: "v2.5",
-          authority:
-            "POSTGRESQL_SCHEDULE_AUTHORITY",
-          airline_id: airlineId,
-          aircraft_id: aircraftId,
-          action:
-            "MAINTENANCE_PLAN_ALREADY_CANCELLED",
-          check_type: checkType,
-          schedule_item: plan,
-          cancelled_event: null,
-          finance: {
-            refunded: false,
-            amount: 0
-          }
-        });
-      }
-
-      /* ========================================================
-         LOCK LIVE OCCURRENCE IF ONE EXISTS
-         --------------------------------------------------------
-         Priority:
-         1. IN_PROGRESS
-         2. SCHEDULED
-
-         COMPLETED and CANCELLED history are not selected.
-         ======================================================== */
-
-      const liveEventResult =
-        await client.query(
-          `
-          SELECT
-            ame.id,
-            ame.event_uid,
-            ame.airline_id,
-            ame.aircraft_id,
-            ame.schedule_item_id,
-            ame.check_type,
-            ame.event_status,
-            ame.started_at,
-            ame.expected_completion_at,
-            ame.completed_at,
-            ame.finance_charged,
-            ame.finance_log_id,
-            ame.final_cost
-
-          FROM public.aircraft_maintenance_events ame
-
-          WHERE ame.airline_id = $1
-            AND ame.aircraft_id = $2
-            AND ame.schedule_item_id = $3
-            AND ame.check_type = $4
-            AND ame.event_status IN (
-              'IN_PROGRESS',
-              'SCHEDULED'
-            )
-
-          ORDER BY
-            CASE ame.event_status
-              WHEN 'IN_PROGRESS' THEN 1
-              WHEN 'SCHEDULED' THEN 2
-              ELSE 3
-            END,
-            ame.id DESC
-
-          LIMIT 1
-
-          FOR UPDATE
-          `,
-          [
-            airlineId,
-            aircraftId,
-            scheduleItemId,
-            checkType
-          ]
-        );
-
-      const liveEvent =
-        liveEventResult.rows[0] || null;
-
-      const originalEventStatus =
-        ACS_text(
-          liveEvent?.event_status
-        ).toUpperCase();
-
-      /* ========================================================
-         CANCEL LIVE OCCURRENCE
-         --------------------------------------------------------
-         If no live occurrence exists, this step is skipped.
-         Historical COMPLETED events remain untouched.
-         ======================================================== */
-
-      let cancelledEvent = null;
-
-      if (liveEvent) {
-
-        const eventUpdateResult =
-          await client.query(
-            `
-            UPDATE public.aircraft_maintenance_events
-
-            SET
-              event_status = 'CANCELLED',
-
-              completed_at = NULL,
-
-              updated_at =
-                (
-                  CURRENT_TIMESTAMP
-                  AT TIME ZONE 'UTC'
-                )
-
-            WHERE id = $1
-              AND airline_id = $2
-              AND aircraft_id = $3
-              AND schedule_item_id = $4
-              AND event_status IN (
-                'SCHEDULED',
-                'IN_PROGRESS'
-              )
-
-            RETURNING
-              id,
-              event_uid,
-              airline_id,
-              aircraft_id,
-              schedule_item_id,
-              check_type,
-              event_status,
-              started_at,
-              finance_charged,
-              finance_log_id,
-              final_cost
-            `,
-            [
-              liveEvent.id,
-              airlineId,
-              aircraftId,
-              scheduleItemId
-            ]
-          );
-
-        if (!eventUpdateResult.rows.length) {
-          const error =
-            new Error(
-              "MAINTENANCE_REMOVE_STATE_CONFLICT"
-            );
-
-          error.code =
-            "MAINTENANCE_REMOVE_STATE_CONFLICT";
-
-          throw error;
-        }
-
-        cancelledEvent =
-          eventUpdateResult.rows[0];
-      }
-
-      /* ========================================================
-         CANCEL PERSISTENT PLAYER PLAN
-         ======================================================== */
 
       const scheduleUpdateResult =
         await client.query(
@@ -4446,20 +3934,21 @@ router.patch(
 
           WHERE id = $1
             AND airline_id = $2
-            AND aircraft_id = $3
             AND LOWER(
               COALESCE(
                 status,
                 'scheduled'
               )
-            ) <> 'cancelled'
+            ) IN (
+              'scheduled',
+              'in_progress'
+            )
 
           RETURNING *
           `,
           [
             scheduleItemId,
-            airlineId,
-            aircraftId
+            airlineId
           ]
         );
 
@@ -4475,436 +3964,204 @@ router.patch(
         throw error;
       }
 
-      const cancelledPlan =
-        scheduleUpdateResult.rows[0];
+      /*
+       * Only an active event requires technical-state restoration.
+       * Finance remains unchanged and no refund is generated.
+       */
+      if (originalEventStatus === "IN_PROGRESS") {
 
-      /* ========================================================
-         READ COMPLETE REMAINING AIRCRAFT STATE
-         ======================================================== */
+        const technicalStateResult =
+          await client.query(
+            `
+            UPDATE public.aircraft_maintenance_status
 
-      const remainingStateResult =
-        await client.query(
-          `
-          SELECT
-            ams.a_check_due_date,
-            ams.a_check_status,
+            SET
+              a_check_status = CASE
+                WHEN $3 = 'A_CHECK'
+                  THEN CASE
+                    WHEN a_check_due_date
+                         <= acs_get_current_sim_time()
+                      THEN 'OVERDUE'
+                    ELSE 'OPEN'
+                  END
+                ELSE a_check_status
+              END,
 
-            ams.b_check_due_date,
-            ams.b_check_status,
+              b_check_status = CASE
+                WHEN $3 = 'B_CHECK'
+                  THEN CASE
+                    WHEN b_check_due_date
+                         <= acs_get_current_sim_time()
+                      THEN 'OVERDUE'
+                    ELSE 'OPEN'
+                  END
+                ELSE b_check_status
+              END,
 
-            ams.c_check_due_date,
-            ams.c_check_status,
-
-            ams.d_check_due_date,
-            ams.d_check_status,
-
-            acs_get_current_sim_time()
-              AS current_sim_time,
-
-            EXISTS (
-              SELECT 1
-
-              FROM public.schedule_items si_a
-
-              WHERE si_a.airline_id = $1
-                AND si_a.aircraft_id = $2
-                AND LOWER(
+              maintenance_control_status = CASE
+                WHEN UPPER(
                   COALESCE(
-                    si_a.item_type,
+                    d_check_status,
                     ''
                   )
-                ) = 'service'
-                AND UPPER(
+                ) = 'IN_PROGRESS'
+                  THEN 'IN_MAINTENANCE'
+
+                WHEN UPPER(
                   COALESCE(
-                    si_a.service_type,
+                    c_check_status,
                     ''
                   )
-                ) = 'A'
-                AND LOWER(
+                ) = 'IN_PROGRESS'
+                  THEN 'IN_MAINTENANCE'
+
+                WHEN UPPER(
                   COALESCE(
-                    si_a.status,
-                    'scheduled'
-                  )
-                ) NOT IN (
-                  'cancelled',
-                  'completed'
-                )
-            ) AS has_a_plan,
-
-            EXISTS (
-              SELECT 1
-
-              FROM public.schedule_items si_b
-
-              WHERE si_b.airline_id = $1
-                AND si_b.aircraft_id = $2
-                AND LOWER(
-                  COALESCE(
-                    si_b.item_type,
+                    d_check_status,
                     ''
                   )
-                ) = 'service'
-                AND UPPER(
+                ) = 'OVERDUE'
+                  THEN 'UNSERVICEABLE'
+
+                WHEN UPPER(
                   COALESCE(
-                    si_b.service_type,
+                    c_check_status,
                     ''
                   )
-                ) = 'B'
-                AND LOWER(
+                ) = 'OVERDUE'
+                  THEN 'UNSERVICEABLE'
+
+                WHEN
+                  $3 = 'B_CHECK'
+                  AND b_check_due_date
+                      <= acs_get_current_sim_time()
+                  THEN 'UNSERVICEABLE'
+
+                WHEN
+                  $3 = 'A_CHECK'
+                  AND a_check_due_date
+                      <= acs_get_current_sim_time()
+                  THEN 'UNSERVICEABLE'
+
+                ELSE 'SERVICEABLE'
+              END,
+
+              maintenance_control_reason = CASE
+                WHEN UPPER(
                   COALESCE(
-                    si_b.status,
-                    'scheduled'
+                    d_check_status,
+                    ''
                   )
-                ) NOT IN (
-                  'cancelled',
-                  'completed'
+                ) = 'IN_PROGRESS'
+                  THEN 'D_CHECK'
+
+                WHEN UPPER(
+                  COALESCE(
+                    c_check_status,
+                    ''
+                  )
+                ) = 'IN_PROGRESS'
+                  THEN 'C_CHECK'
+
+                WHEN UPPER(
+                  COALESCE(
+                    d_check_status,
+                    ''
+                  )
+                ) = 'OVERDUE'
+                  THEN 'D_CHECK_OVERDUE'
+
+                WHEN UPPER(
+                  COALESCE(
+                    c_check_status,
+                    ''
+                  )
+                ) = 'OVERDUE'
+                  THEN 'C_CHECK_OVERDUE'
+
+                WHEN
+                  $3 = 'B_CHECK'
+                  AND b_check_due_date
+                      <= acs_get_current_sim_time()
+                  THEN 'B_CHECK_OVERDUE'
+
+                WHEN
+                  $3 = 'A_CHECK'
+                  AND a_check_due_date
+                      <= acs_get_current_sim_time()
+                  THEN 'A_CHECK_OVERDUE'
+
+                ELSE NULL
+              END,
+
+              updated_at =
+                (
+                  CURRENT_TIMESTAMP
+                  AT TIME ZONE 'UTC'
                 )
-            ) AS has_b_plan,
 
-            EXISTS (
-              SELECT 1
+            WHERE aircraft_id = $1
+              AND airline_id = $2
 
-              FROM public.aircraft_maintenance_events ame_a
-
-              WHERE ame_a.airline_id = $1
-                AND ame_a.aircraft_id = $2
-                AND ame_a.check_type = 'A_CHECK'
-                AND ame_a.event_status IN (
-                  'SCHEDULED',
-                  'IN_PROGRESS'
-                )
-            ) AS has_a_live_event,
-
-            EXISTS (
-              SELECT 1
-
-              FROM public.aircraft_maintenance_events ame_b
-
-              WHERE ame_b.airline_id = $1
-                AND ame_b.aircraft_id = $2
-                AND ame_b.check_type = 'B_CHECK'
-                AND ame_b.event_status IN (
-                  'SCHEDULED',
-                  'IN_PROGRESS'
-                )
-            ) AS has_b_live_event,
-
-            (
-              SELECT
-                active_event.check_type
-
-              FROM public.aircraft_maintenance_events active_event
-
-              WHERE active_event.airline_id = $1
-                AND active_event.aircraft_id = $2
-                AND active_event.event_status = 'IN_PROGRESS'
-
-              ORDER BY
-                CASE active_event.check_type
-                  WHEN 'D_CHECK' THEN 1
-                  WHEN 'C_CHECK' THEN 2
-                  WHEN 'B_CHECK' THEN 3
-                  WHEN 'A_CHECK' THEN 4
-                  ELSE 5
-                END,
-                active_event.id DESC
-
-              LIMIT 1
-            ) AS active_check
-
-          FROM public.aircraft_maintenance_status ams
-
-          WHERE ams.airline_id = $1
-            AND ams.aircraft_id = $2
-
-          LIMIT 1
-
-          FOR UPDATE
-          `,
-          [
-            airlineId,
-            aircraftId
-          ]
-        );
-
-      if (!remainingStateResult.rows.length) {
-        const error =
-          new Error(
-            "MAINTENANCE_STATUS_NOT_ESTABLISHED"
+            RETURNING
+              a_check_status,
+              b_check_status,
+              c_check_status,
+              d_check_status,
+              maintenance_control_status,
+              maintenance_control_reason
+            `,
+            [
+              maintenance.aircraft_id,
+              airlineId,
+              maintenance.check_type
+            ]
           );
 
-        error.code =
-          "MAINTENANCE_STATUS_NOT_ESTABLISHED";
+        const technicalState =
+          technicalStateResult.rows[0] || {};
 
-        throw error;
-      }
+        const controlStatus =
+          ACS_text(
+            technicalState.maintenance_control_status
+          ).toUpperCase();
 
-      const remainingState =
-        remainingStateResult.rows[0];
+        const aircraftStillInMaintenance =
+          controlStatus === "IN_MAINTENANCE";
 
-      const currentSimTime =
-        new Date(
-          remainingState.current_sim_time
-        );
+        const aircraftUnserviceable =
+          controlStatus === "UNSERVICEABLE";
 
-      const dueOrPast = (value) => {
-        if (!value) {
-          return false;
-        }
-
-        const dueDate =
-          new Date(value);
-
-        return (
-          !Number.isNaN(
-            dueDate.getTime()
-          ) &&
-          dueDate.getTime() <=
-            currentSimTime.getTime()
-        );
-      };
-
-      const cCheckStatus =
-        ACS_text(
-          remainingState.c_check_status
-        ).toUpperCase();
-
-      const dCheckStatus =
-        ACS_text(
-          remainingState.d_check_status
-        ).toUpperCase();
-
-      const activeCheck =
-        ACS_text(
-          remainingState.active_check
-        ).toUpperCase();
-
-      const hasAPlan =
-        remainingState.has_a_plan === true;
-
-      const hasBPlan =
-        remainingState.has_b_plan === true;
-
-      const hasALiveEvent =
-        remainingState.has_a_live_event === true;
-
-      const hasBLiveEvent =
-        remainingState.has_b_live_event === true;
-
-      /* ========================================================
-         RESOLVE A/B TECHNICAL STATUS
-         ======================================================== */
-
-      const nextAStatus =
-        activeCheck === "A_CHECK"
-          ? "IN_PROGRESS"
-          : (
-              hasALiveEvent ||
-              hasAPlan
-            )
-            ? "SCHEDULED"
-            : dueOrPast(
-                remainingState.a_check_due_date
-              )
-              ? "OVERDUE"
-              : "OPEN";
-
-      const nextBStatus =
-        activeCheck === "B_CHECK"
-          ? "IN_PROGRESS"
-          : (
-              hasBLiveEvent ||
-              hasBPlan
-            )
-            ? "SCHEDULED"
-            : dueOrPast(
-                remainingState.b_check_due_date
-              )
-              ? "OVERDUE"
-              : "OPEN";
-
-      /* ========================================================
-         RESOLVE DOMINANT TECHNICAL AUTHORITY
-         --------------------------------------------------------
-         D > C > B > A
-         ======================================================== */
-
-      let maintenanceControlStatus =
-        "SERVICEABLE";
-
-      let maintenanceControlReason =
-        null;
-
-      if (
-        activeCheck === "D_CHECK" ||
-        dCheckStatus === "IN_PROGRESS"
-      ) {
-        maintenanceControlStatus =
-          "IN_MAINTENANCE";
-
-        maintenanceControlReason =
-          "D_CHECK";
-
-      } else if (
-        activeCheck === "C_CHECK" ||
-        cCheckStatus === "IN_PROGRESS"
-      ) {
-        maintenanceControlStatus =
-          "IN_MAINTENANCE";
-
-        maintenanceControlReason =
-          "C_CHECK";
-
-      } else if (
-        activeCheck === "B_CHECK"
-      ) {
-        maintenanceControlStatus =
-          "IN_MAINTENANCE";
-
-        maintenanceControlReason =
-          "B_CHECK";
-
-      } else if (
-        activeCheck === "A_CHECK"
-      ) {
-        maintenanceControlStatus =
-          "IN_MAINTENANCE";
-
-        maintenanceControlReason =
-          "A_CHECK";
-
-      } else if (
-        dCheckStatus === "OVERDUE"
-      ) {
-        maintenanceControlStatus =
-          "UNSERVICEABLE";
-
-        maintenanceControlReason =
-          "D_CHECK_OVERDUE";
-
-      } else if (
-        cCheckStatus === "OVERDUE"
-      ) {
-        maintenanceControlStatus =
-          "UNSERVICEABLE";
-
-        maintenanceControlReason =
-          "C_CHECK_OVERDUE";
-
-      } else if (
-        nextBStatus === "OVERDUE"
-      ) {
-        maintenanceControlStatus =
-          "UNSERVICEABLE";
-
-        maintenanceControlReason =
-          "B_CHECK_OVERDUE";
-
-      } else if (
-        nextAStatus === "OVERDUE"
-      ) {
-        maintenanceControlStatus =
-          "UNSERVICEABLE";
-
-        maintenanceControlReason =
-          "A_CHECK_OVERDUE";
-      }
-
-      /* ========================================================
-         SYNCHRONIZE MAINTENANCE STATUS
-         ======================================================== */
-
-      const technicalStatusUpdateResult =
-        await client.query(
-          `
-          UPDATE public.aircraft_maintenance_status
-
-          SET
-            a_check_status = $3,
-            b_check_status = $4,
-
-            maintenance_control_status = $5,
-            maintenance_control_reason = $6,
-
-            updated_at =
-              (
-                CURRENT_TIMESTAMP
-                AT TIME ZONE 'UTC'
-              )
-
-          WHERE airline_id = $1
-            AND aircraft_id = $2
-
-          RETURNING
-            airline_id,
-            aircraft_id,
-            a_check_status,
-            b_check_status,
-            c_check_status,
-            d_check_status,
-            maintenance_control_status,
-            maintenance_control_reason
-          `,
-          [
-            airlineId,
-            aircraftId,
-            nextAStatus,
-            nextBStatus,
-            maintenanceControlStatus,
-            maintenanceControlReason
-          ]
-        );
-
-      if (
-        !technicalStatusUpdateResult.rows.length
-      ) {
-        const error =
-          new Error(
-            "MAINTENANCE_REMOVE_STATE_CONFLICT"
-          );
-
-        error.code =
-          "MAINTENANCE_REMOVE_STATE_CONFLICT";
-
-        throw error;
-      }
-
-      /* ========================================================
-         SYNCHRONIZE AIRCRAFT FLEET
-         --------------------------------------------------------
-         ACTIVE is permitted only when AVAILABLE and SERVICEABLE.
-         ======================================================== */
-
-      const fleetStatus =
-        maintenanceControlStatus ===
-        "SERVICEABLE"
-          ? "ACTIVE"
-          : "MAINTENANCE";
-
-      const operationalStatus =
-        maintenanceControlStatus ===
-        "IN_MAINTENANCE"
-          ? "IN_MAINTENANCE"
-          : maintenanceControlStatus ===
-            "UNSERVICEABLE"
-            ? "UNAVAILABLE"
-            : "AVAILABLE";
-
-      const aircraftMaintenanceStatus =
-        maintenanceControlStatus ===
-        "SERVICEABLE"
-          ? "SERVICEABLE"
-          : "CHECK_REQUIRED";
-
-      const fleetUpdateResult =
         await client.query(
           `
           UPDATE public.aircraft_fleet
 
           SET
-            status = $3,
-            operational_status = $4,
-            maintenance_status = $5,
+            status = CASE
+              WHEN $3::BOOLEAN
+                THEN 'MAINTENANCE'
+              ELSE 'ACTIVE'
+            END,
+
+            operational_status = CASE
+              WHEN $3::BOOLEAN
+                THEN 'IN_MAINTENANCE'
+
+              WHEN $4::BOOLEAN
+                THEN 'UNAVAILABLE'
+
+              ELSE 'AVAILABLE'
+            END,
+
+            maintenance_status = CASE
+              WHEN $3::BOOLEAN
+                THEN 'CHECK_REQUIRED'
+
+              WHEN $4::BOOLEAN
+                THEN 'CHECK_REQUIRED'
+
+              ELSE 'SERVICEABLE'
+            END,
 
             updated_at =
               (
@@ -4912,35 +4169,16 @@ router.patch(
                 AT TIME ZONE 'UTC'
               )
 
-          WHERE airline_id = $1
-            AND id = $2
-
-          RETURNING
-            id,
-            airline_id,
-            status,
-            operational_status,
-            maintenance_status
+          WHERE id = $1
+            AND airline_id = $2
           `,
           [
+            maintenance.aircraft_id,
             airlineId,
-            aircraftId,
-            fleetStatus,
-            operationalStatus,
-            aircraftMaintenanceStatus
+            aircraftStillInMaintenance,
+            aircraftUnserviceable
           ]
         );
-
-      if (!fleetUpdateResult.rows.length) {
-        const error =
-          new Error(
-            "MAINTENANCE_REMOVE_STATE_CONFLICT"
-          );
-
-        error.code =
-          "MAINTENANCE_REMOVE_STATE_CONFLICT";
-
-        throw error;
       }
 
       await client.query("COMMIT");
@@ -4953,7 +4191,7 @@ router.patch(
           "ACS_SCHEDULE_REMOVE_MAINTENANCE",
 
         version:
-          "v2.5",
+          "v2.0",
 
         authority:
           "POSTGRESQL_SCHEDULE_AUTHORITY",
@@ -4961,52 +4199,34 @@ router.patch(
         airline_id:
           airlineId,
 
-        aircraft_id:
-          aircraftId,
-
         action:
-          "MAINTENANCE_PLAN_REMOVED",
+          "MAINTENANCE_REMOVED",
 
-        maintenance: {
-          check_type:
-            checkType,
+        previous_event_status:
+          originalEventStatus,
 
-          previous_event_status:
-            originalEventStatus || null,
-
-          live_event_cancelled:
-            cancelledEvent !== null,
-
-          completed_history_preserved:
-            true
+        finance: {
+          refund_created: false,
+          original_charge_preserved:
+            maintenance.finance_charged === true,
+          finance_log_id:
+            maintenance.finance_log_id
         },
 
         schedule_item:
-          cancelledPlan,
+          scheduleUpdateResult.rows[0],
 
-        cancelled_event:
-          cancelledEvent,
-
-        technical_status:
-          technicalStatusUpdateResult.rows[0],
-
-        aircraft:
-          fleetUpdateResult.rows[0],
-
-        finance: {
-          refunded: false,
-          amount: 0,
-          original_finance_log_id:
-            cancelledEvent?.finance_log_id ||
-            null
-        }
+        event:
+          eventUpdateResult.rows[0]
       });
 
     } catch (error) {
 
       if (transactionStarted) {
         try {
-          await client.query("ROLLBACK");
+          await client.query(
+            "ROLLBACK"
+          );
         } catch (rollbackError) {
           console.error(
             "ACS REMOVE MAINTENANCE " +
@@ -5086,467 +4306,6 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
         };
       }
 
-          /* ========================================================
-         ACS AIRBUS OCC — UNIVERSAL A/B OCCURRENCE RECOVERY
-         --------------------------------------------------------
-         GLOBAL RULE:
-
-         - schedule_items is the persistent player plan.
-         - Every active A/B plan must have one live occurrence:
-           SCHEDULED or IN_PROGRESS.
-         - A COMPLETED event is immutable history.
-         - A plan linked only to COMPLETED/CANCELLED history is
-           recovered by creating one new SCHEDULED occurrence.
-         - A plan incorrectly left in_progress after completion
-           returns to scheduled.
-         - No finance charge.
-         - No aircraft release.
-         - No fleet-state mutation.
-         - C/D may block execution, but never delete A/B plans.
-         ======================================================== */
-
-      const orphanRecoveryResult = await client.query(
-        `
-        WITH active_plans AS (
-          SELECT
-            si.id AS schedule_item_id,
-            si.airline_id,
-            si.aircraft_id,
-
-            CASE
-              WHEN UPPER(COALESCE(si.service_type, '')) = 'A'
-                THEN 'A_CHECK'
-              WHEN UPPER(COALESCE(si.service_type, '')) = 'B'
-                THEN 'B_CHECK'
-              ELSE NULL
-            END AS check_type,
-
-            si.selected_day,
-            si.departure,
-            si.status AS schedule_status,
-
-            CASE LOWER(si.selected_day)
-              WHEN 'mon' THEN 1
-              WHEN 'tue' THEN 2
-              WHEN 'wed' THEN 3
-              WHEN 'thu' THEN 4
-              WHEN 'fri' THEN 5
-              WHEN 'sat' THEN 6
-              WHEN 'sun' THEN 7
-              ELSE NULL
-            END AS selected_iso_day,
-
-            (
-              SPLIT_PART(si.departure, ':', 1)::INTEGER * 60
-              +
-              SPLIT_PART(si.departure, ':', 2)::INTEGER
-            ) AS start_minute,
-
-            COALESCE(
-              NULLIF(si.block_time_min, 0),
-              CASE
-                WHEN UPPER(COALESCE(si.service_type, '')) = 'B'
-                  THEN 1440
-                ELSE 300
-              END
-            )::INTEGER AS fallback_duration_minutes
-
-          FROM public.schedule_items si
-
-          WHERE si.airline_id = $1
-            AND LOWER(COALESCE(si.item_type, '')) = 'service'
-            AND UPPER(COALESCE(si.service_type, '')) IN ('A', 'B')
-            AND LOWER(COALESCE(si.status, 'scheduled'))
-                NOT IN ('cancelled', 'completed')
-        ),
-
-        orphan_plans AS (
-          SELECT
-            ap.*,
-
-            CASE
-              WHEN ap.check_type = 'B_CHECK'
-                THEN ams.b_check_due_date
-              ELSE ams.a_check_due_date
-            END AS technical_due_at
-
-          FROM active_plans ap
-
-          JOIN public.aircraft_maintenance_status ams
-            ON ams.airline_id = ap.airline_id
-           AND ams.aircraft_id = ap.aircraft_id
-
-          WHERE ap.check_type IS NOT NULL
-            AND ap.selected_iso_day IS NOT NULL
-
-            AND NOT EXISTS (
-              SELECT 1
-              FROM public.aircraft_maintenance_events live_event
-
-              WHERE live_event.airline_id = ap.airline_id
-                AND live_event.aircraft_id = ap.aircraft_id
-                AND live_event.check_type = ap.check_type
-                AND live_event.event_status IN (
-                  'SCHEDULED',
-                  'IN_PROGRESS'
-                )
-            )
-        ),
-
-        last_history AS (
-          SELECT
-            op.*,
-
-            history.id AS previous_event_id,
-            history.duration_days,
-            history.duration_minutes,
-            history.estimated_cost,
-            history.currency
-
-          FROM orphan_plans op
-
-          LEFT JOIN LATERAL (
-            SELECT
-              ame.id,
-              ame.duration_days,
-              ame.duration_minutes,
-              ame.estimated_cost,
-              ame.currency
-
-            FROM public.aircraft_maintenance_events ame
-
-            WHERE ame.airline_id = op.airline_id
-              AND ame.aircraft_id = op.aircraft_id
-              AND ame.check_type = op.check_type
-              AND ame.event_status IN (
-                'COMPLETED',
-                'CANCELLED'
-              )
-
-            ORDER BY
-              CASE ame.event_status
-                WHEN 'COMPLETED' THEN 1
-                WHEN 'CANCELLED' THEN 2
-                ELSE 3
-              END,
-              ame.id DESC
-
-            LIMIT 1
-          ) history ON TRUE
-        ),
-
-        recovery_anchor AS (
-          SELECT
-            lh.*,
-
-            GREATEST(
-              COALESCE(
-                lh.technical_due_at,
-                acs_get_current_sim_time()
-              ),
-              acs_get_current_sim_time()
-            ) AS anchor_at,
-
-            COALESCE(
-              NULLIF(lh.duration_minutes, 0),
-              lh.fallback_duration_minutes
-            )::INTEGER AS resolved_duration_minutes,
-
-            COALESCE(
-              lh.duration_days,
-              FLOOR(
-                COALESCE(
-                  NULLIF(lh.duration_minutes, 0),
-                  lh.fallback_duration_minutes
-                ) / 1440.0
-              )::INTEGER,
-              0
-            )::INTEGER AS resolved_duration_days
-
-          FROM last_history lh
-        ),
-
-        candidate_start AS (
-          SELECT
-            ra.*,
-
-            date_trunc(
-              'day',
-              ra.anchor_at
-            )
-            +
-            (
-              (
-                ra.selected_iso_day
-                -
-                EXTRACT(
-                  ISODOW FROM ra.anchor_at
-                )::INTEGER
-                +
-                7
-              ) % 7
-            ) * INTERVAL '1 day'
-            +
-            ra.start_minute * INTERVAL '1 minute'
-              AS raw_candidate_start
-
-          FROM recovery_anchor ra
-        ),
-
-        resolved_start AS (
-          SELECT
-            cs.*,
-
-            CASE
-              WHEN cs.raw_candidate_start
-                   <= cs.anchor_at
-                THEN
-                  cs.raw_candidate_start
-                  + INTERVAL '7 days'
-              ELSE
-                cs.raw_candidate_start
-            END AS next_start_at
-
-          FROM candidate_start cs
-        ),
-
-        repaired_plans AS (
-          UPDATE public.schedule_items si
-
-          SET
-            status = 'scheduled',
-
-            updated_at =
-              (
-                CURRENT_TIMESTAMP
-                AT TIME ZONE 'UTC'
-              )
-
-          FROM resolved_start rs
-
-          WHERE si.id = rs.schedule_item_id
-            AND si.airline_id = rs.airline_id
-            AND si.aircraft_id = rs.aircraft_id
-
-          RETURNING
-            si.id,
-            si.airline_id,
-            si.aircraft_id
-        ),
-
-        inserted_events AS (
-          INSERT INTO public.aircraft_maintenance_events (
-            airline_id,
-            aircraft_id,
-
-            check_type,
-            event_status,
-
-            started_at,
-            expected_completion_at,
-            completed_at,
-
-            duration_days,
-            duration_minutes,
-
-            scheduled_start_at,
-            scheduled_end_at,
-
-            schedule_item_id,
-
-            estimated_cost,
-            final_cost,
-
-            currency,
-
-            finance_charged,
-            finance_log_id,
-
-            notes,
-
-            created_at,
-            updated_at
-          )
-
-          SELECT
-            rs.airline_id,
-            rs.aircraft_id,
-
-            rs.check_type,
-            'SCHEDULED',
-
-            NULL,
-            rs.next_start_at
-              +
-              rs.resolved_duration_minutes
-              * INTERVAL '1 minute',
-            NULL,
-
-            rs.resolved_duration_days,
-            rs.resolved_duration_minutes,
-
-            rs.next_start_at,
-            rs.next_start_at
-              +
-              rs.resolved_duration_minutes
-              * INTERVAL '1 minute',
-
-            rs.schedule_item_id,
-
-            COALESCE(rs.estimated_cost, 0),
-            NULL,
-
-            COALESCE(rs.currency, 'USD'),
-
-            FALSE,
-            NULL,
-
-            jsonb_build_object(
-              'source',
-              'ACS_AB_UNIVERSAL_OCCURRENCE_RECOVERY_V1',
-
-              'previous_event_id',
-              rs.previous_event_id,
-
-              'technical_due_at',
-              rs.technical_due_at,
-
-              'persistent_schedule_item_id',
-              rs.schedule_item_id
-            )::TEXT,
-
-            (
-              CURRENT_TIMESTAMP
-              AT TIME ZONE 'UTC'
-            ),
-
-            (
-              CURRENT_TIMESTAMP
-              AT TIME ZONE 'UTC'
-            )
-
-          FROM resolved_start rs
-
-          JOIN repaired_plans rp
-            ON rp.id = rs.schedule_item_id
-           AND rp.airline_id = rs.airline_id
-           AND rp.aircraft_id = rs.aircraft_id
-
-          WHERE NOT EXISTS (
-            SELECT 1
-            FROM public.aircraft_maintenance_events live_event
-
-            WHERE live_event.airline_id = rs.airline_id
-              AND live_event.aircraft_id = rs.aircraft_id
-              AND live_event.check_type = rs.check_type
-              AND live_event.event_status IN (
-                'SCHEDULED',
-                'IN_PROGRESS'
-              )
-          )
-
-          RETURNING
-            id,
-            event_uid,
-            airline_id,
-            aircraft_id,
-            schedule_item_id,
-            check_type,
-            event_status,
-            scheduled_start_at,
-            scheduled_end_at
-        ),
-
-        synchronized_status AS (
-          UPDATE public.aircraft_maintenance_status ams
-
-          SET
-            a_check_status = CASE
-              WHEN EXISTS (
-                SELECT 1
-                FROM inserted_events inserted_a
-
-                WHERE inserted_a.airline_id = ams.airline_id
-                  AND inserted_a.aircraft_id = ams.aircraft_id
-                  AND inserted_a.check_type = 'A_CHECK'
-              )
-                THEN 'SCHEDULED'
-              ELSE ams.a_check_status
-            END,
-
-            b_check_status = CASE
-              WHEN EXISTS (
-                SELECT 1
-                FROM inserted_events inserted_b
-
-                WHERE inserted_b.airline_id = ams.airline_id
-                  AND inserted_b.aircraft_id = ams.aircraft_id
-                  AND inserted_b.check_type = 'B_CHECK'
-              )
-                THEN 'SCHEDULED'
-              ELSE ams.b_check_status
-            END,
-
-            updated_at =
-              (
-                CURRENT_TIMESTAMP
-                AT TIME ZONE 'UTC'
-              )
-
-          WHERE ams.airline_id = $1
-
-            AND EXISTS (
-              SELECT 1
-              FROM inserted_events inserted_event
-
-              WHERE inserted_event.airline_id = ams.airline_id
-                AND inserted_event.aircraft_id = ams.aircraft_id
-            )
-
-          RETURNING
-            ams.airline_id,
-            ams.aircraft_id
-        )
-
-        SELECT
-          inserted_events.id AS event_id,
-          inserted_events.event_uid,
-          inserted_events.airline_id,
-          inserted_events.aircraft_id,
-          inserted_events.schedule_item_id,
-          inserted_events.check_type,
-          inserted_events.event_status,
-          inserted_events.scheduled_start_at,
-          inserted_events.scheduled_end_at
-
-        FROM inserted_events
-
-        ORDER BY
-          inserted_events.aircraft_id,
-          CASE inserted_events.check_type
-            WHEN 'B_CHECK' THEN 1
-            WHEN 'A_CHECK' THEN 2
-            ELSE 3
-          END,
-          inserted_events.id
-        `,
-        [airlineId]
-      );
-
-      if (orphanRecoveryResult.rows.length > 0) {
-        console.log(
-          "[ACS A/B MAINTENANCE] " +
-          "Universal occurrence recovery completed:",
-          {
-            airline_id: airlineId,
-            recovered_count:
-              orphanRecoveryResult.rows.length,
-            recovered_events:
-              orphanRecoveryResult.rows
-          }
-        );
-      }
-       
       /* ========================================================
          PHASE 0 — ESTABLISH OVERDUE A/B AUTHORITY
          --------------------------------------------------------
@@ -5761,14 +4520,8 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
         WHERE ame.airline_id = $1
           AND ame.event_status = 'IN_PROGRESS'
           AND ame.check_type IN ('A_CHECK', 'B_CHECK')
-          AND COALESCE(
-          ame.expected_completion_at,
-          ame.started_at
-          + (
-            COALESCE(ame.duration_minutes, 0)
-            * INTERVAL '1 minute'
-          )
-    ) <= acs_get_current_sim_time()
+          AND ame.expected_completion_at
+              <= acs_get_current_sim_time()
         ORDER BY
           ame.expected_completion_at,
           CASE ame.check_type
@@ -5994,12 +4747,6 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
           completedEvent.schedule_item_id &&
           nextDueDate
         ) {
-
-           await client.query(
-            "SAVEPOINT acs_next_occurrence_savepoint"
-          );
-
-          try {           
           const nextOccurrenceResult = await client.query(
             `
             WITH plan AS (
@@ -6145,46 +4892,10 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
             ]
           );
 
-                      nextOccurrence =
-              nextOccurrenceResult.rows[0] || null;
-
-            await client.query(
-              "RELEASE SAVEPOINT acs_next_occurrence_savepoint"
-            );
-
-          } catch (recurrenceError) {
-
-            await client.query(
-              "ROLLBACK TO SAVEPOINT acs_next_occurrence_savepoint"
-            );
-
-            await client.query(
-              "RELEASE SAVEPOINT acs_next_occurrence_savepoint"
-            );
-
-            console.error(
-              "[ACS A/B MAINTENANCE] " +
-              "Next occurrence creation failed:",
-              {
-                airline_id: airlineId,
-                aircraft_id:
-                  completedEvent.aircraft_id,
-                completed_event_id:
-                  completedEvent.id,
-                check_type:
-                  checkType,
-                schedule_item_id:
-                  completedEvent.schedule_item_id,
-                error:
-                  recurrenceError?.message ||
-                  recurrenceError
-              }
-            );
-
-            nextOccurrence = null;
-          }
+          nextOccurrence =
+            nextOccurrenceResult.rows[0] || null;
         }
-        
+
         /*
          * B completion resets A's technical cycle. Any existing future
          * A occurrence is moved to the first player-selected slot on or
@@ -6388,37 +5099,14 @@ AND NOT (
   )
 )
 
-            AND (
-  ame.check_type = 'B_CHECK'
-  OR (
-    ame.check_type = 'A_CHECK'
-
-    AND UPPER(
-      COALESCE(
-        ams.b_check_status,
-        ''
-      )
-    ) NOT IN (
-      'OVERDUE',
-      'IN_PROGRESS'
-    )
-
-    AND (
-      ams.b_check_due_date IS NULL
-      OR ams.b_check_due_date
-          > acs_get_current_sim_time()
-    )
-  )
-)
-
-AND NOT EXISTS (
-  SELECT 1
-  FROM public.aircraft_maintenance_events active_light
-  WHERE active_light.airline_id = ame.airline_id
-    AND active_light.aircraft_id = ame.aircraft_id
-    AND active_light.event_status = 'IN_PROGRESS'
-    AND active_light.check_type = 'B_CHECK'
-)
+            AND NOT EXISTS (
+              SELECT 1
+              FROM public.aircraft_maintenance_events active_light
+              WHERE active_light.airline_id = ame.airline_id
+                AND active_light.aircraft_id = ame.aircraft_id
+                AND active_light.check_type IN ('A_CHECK', 'B_CHECK')
+                AND active_light.event_status = 'IN_PROGRESS'
+            )
 
         )
         SELECT *
@@ -6785,84 +5473,6 @@ AND NOT EXISTS (
         });
       }
 
-      /* ========================================================
-         🟩 RESOLVER FINAL — AIRCRAFT FLEET SYNCHRONIZATION
-         Date: 2026-06-15
-         --------------------------------------------------------
-         GLOBAL ACS AIRBUS OCC RULE:
-
-         - SERVICEABLE       → ACTIVE / AVAILABLE
-         - IN_MAINTENANCE    → MAINTENANCE / IN_MAINTENANCE
-         - UNSERVICEABLE     → MAINTENANCE / UNAVAILABLE
-
-         This runs for every aircraft of the airline at the end
-         of every backend resolver cycle.
-         ======================================================== */
-
-      await client.query(
-        `
-        UPDATE public.aircraft_fleet af
-
-        SET
-          status = CASE
-            WHEN UPPER(
-              COALESCE(
-                ams.maintenance_control_status,
-                'SERVICEABLE'
-              )
-            ) = 'SERVICEABLE'
-              THEN 'ACTIVE'
-
-            ELSE 'MAINTENANCE'
-          END,
-
-          operational_status = CASE
-            WHEN UPPER(
-              COALESCE(
-                ams.maintenance_control_status,
-                'SERVICEABLE'
-              )
-            ) = 'IN_MAINTENANCE'
-              THEN 'IN_MAINTENANCE'
-
-            WHEN UPPER(
-              COALESCE(
-                ams.maintenance_control_status,
-                'SERVICEABLE'
-              )
-            ) = 'UNSERVICEABLE'
-              THEN 'UNAVAILABLE'
-
-            ELSE 'AVAILABLE'
-          END,
-
-          maintenance_status = CASE
-            WHEN UPPER(
-              COALESCE(
-                ams.maintenance_control_status,
-                'SERVICEABLE'
-              )
-            ) = 'SERVICEABLE'
-              THEN 'SERVICEABLE'
-
-            ELSE 'CHECK_REQUIRED'
-          END,
-
-          updated_at =
-            (
-              CURRENT_TIMESTAMP
-              AT TIME ZONE 'UTC'
-            )
-
-        FROM public.aircraft_maintenance_status ams
-
-        WHERE af.airline_id = $1
-          AND ams.airline_id = af.airline_id
-          AND ams.aircraft_id = af.id
-        `,
-        [airlineId]
-      );
-       
       await client.query("COMMIT");
       transactionStarted = false;
 
@@ -6942,56 +5552,21 @@ export async function ACS_runMaintenanceResolver({
 
   const airlineResult = await pool.query(
     `
-    /* ========================================================
-       ACS GLOBAL A/B RESOLVER SCOPE
-       --------------------------------------------------------
-       Include every airline that currently has at least one
-       authoritative A/B maintenance condition requiring the
-       backend resolver:
-
-       1. A live technical occurrence.
-       2. An active persistent A/B player plan, even when its
-          latest technical occurrence is already COMPLETED and
-          the next occurrence has not yet been created.
-       3. An A/B technical due date already reached.
-
-       This is global, PostgreSQL-authoritative and independent
-       from browser sessions, aircraft registration or airline.
-       ======================================================== */
     SELECT DISTINCT airline_id
     FROM (
-      SELECT ame.airline_id
-      FROM public.aircraft_maintenance_events ame
-      WHERE UPPER(COALESCE(ame.event_status, '')) IN (
-        'SCHEDULED',
-        'IN_PROGRESS'
-      )
-        AND UPPER(COALESCE(ame.check_type, '')) IN (
-          'A_CHECK',
-          'B_CHECK'
-        )
+      SELECT airline_id
+      FROM public.aircraft_maintenance_events
+      WHERE event_status IN ('SCHEDULED', 'IN_PROGRESS')
+        AND check_type IN ('A_CHECK', 'B_CHECK')
 
       UNION
 
-      SELECT si.airline_id
-      FROM public.schedule_items si
-      WHERE LOWER(COALESCE(si.item_type, '')) = 'service'
-        AND UPPER(COALESCE(si.service_type, '')) IN ('A', 'B')
-        AND LOWER(COALESCE(si.status, 'scheduled')) NOT IN (
-          'cancelled',
-          'completed'
-        )
-        AND si.aircraft_id IS NOT NULL
-
-      UNION
-
-      SELECT ams.airline_id
-      FROM public.aircraft_maintenance_status ams
+      SELECT airline_id
+      FROM public.aircraft_maintenance_status
       WHERE
-        ams.a_check_due_date <= acs_get_current_sim_time()
-        OR ams.b_check_due_date <= acs_get_current_sim_time()
+        a_check_due_date <= acs_get_current_sim_time()
+        OR b_check_due_date <= acs_get_current_sim_time()
     ) authority_airlines
-    WHERE airline_id IS NOT NULL
     ORDER BY airline_id
     `
   );
