@@ -5894,6 +5894,169 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
 }
 
 /* ============================================================
+   ACS GLOBAL A/B MAINTENANCE RESOLVER DISPATCHER
+   ------------------------------------------------------------
+   File: routes/schedule.js
+
+   Purpose:
+   - Dispatch A/B maintenance resolver globally or by airline.
+   - Required by ACS_executeMaintenanceSchedulerTick().
+   - schedule.js remains A/B authority only.
+   - aircraft.js remains C/D authority only.
+   - No auto-assign.
+   - No player schedule deletion.
+   ============================================================ */
+
+async function ACS_runMaintenanceResolver({
+  allAirlines = false,
+  airlineId = null
+} = {}) {
+  if (!allAirlines) {
+    const scopedAirlineId = Number(airlineId);
+
+    if (
+      !Number.isInteger(scopedAirlineId) ||
+      scopedAirlineId <= 0
+    ) {
+      const error = new Error("MAINTENANCE_RESOLVER_SCOPE_REQUIRED");
+      error.code = "MAINTENANCE_RESOLVER_SCOPE_REQUIRED";
+      throw error;
+    }
+
+    return ACS_runMaintenanceResolverForAirline(scopedAirlineId);
+  }
+
+  const client = await pool.connect();
+
+  try {
+    const airlinesResult = await client.query(
+      `
+      SELECT DISTINCT airline_id
+      FROM public.aircraft_fleet
+      WHERE airline_id IS NOT NULL
+      ORDER BY airline_id
+      `
+    );
+
+    const results = [];
+    const errors = [];
+
+    let completedCount = 0;
+    let startedCount = 0;
+    let blockedCount = 0;
+
+    for (const row of airlinesResult.rows) {
+      const currentAirlineId = Number(row.airline_id);
+
+      if (
+        !Number.isInteger(currentAirlineId) ||
+        currentAirlineId <= 0
+      ) {
+        continue;
+      }
+
+      try {
+        const result =
+          await ACS_runMaintenanceResolverForAirline(currentAirlineId);
+
+        completedCount += Number(result?.completed_count || 0);
+        startedCount += Number(result?.started_count || 0);
+        blockedCount += Number(result?.blocked_count || 0);
+
+        results.push(result);
+      } catch (error) {
+        errors.push({
+          airline_id: currentAirlineId,
+          error: error.code || error.message || "RESOLVER_FAILED"
+        });
+
+        console.error(
+          `[ACS A/B MAINTENANCE] Resolver failed for airline ${currentAirlineId}:`,
+          error
+        );
+      }
+    }
+
+    return {
+      ok: errors.length === 0,
+      endpoint: "ACS_GLOBAL_AB_MAINTENANCE_RESOLVER",
+      version: "v2.4",
+      authority: "POSTGRESQL_SCHEDULE_AUTHORITY",
+      all_airlines: true,
+      airline_count: airlinesResult.rows.length,
+      completed_count: completedCount,
+      started_count: startedCount,
+      blocked_count: blockedCount,
+      error_count: errors.length,
+      errors,
+      results
+    };
+  } finally {
+    client.release();
+  }
+}
+
+/* ============================================================
+   POST /v1/schedule/maintenance/resolver
+   ------------------------------------------------------------
+   Manual A/B resolver trigger for authenticated airline.
+
+   Purpose:
+   - Confirm resolver execution without waiting for scheduler tick.
+   - Uses req.airline_id from requireAuth.
+   - No frontend/localStorage authority.
+   - No C/D mutation.
+   ============================================================ */
+
+router.post(
+  "/schedule/maintenance/resolver",
+  requireAuth,
+  async (req, res) => {
+    const airlineId = ACS_airlineId(req);
+
+    if (!airlineId) {
+      return res.status(401).json({
+        ok: false,
+        error: "NO_AIRLINE_SESSION"
+      });
+    }
+
+    try {
+      const result = await ACS_runMaintenanceResolver({
+        airlineId
+      });
+
+      console.log("[ACS A/B MAINTENANCE] Manual resolver:", {
+        airline_id: airlineId,
+        completed_count: result?.completed_count || 0,
+        started_count: result?.started_count || 0,
+        blocked_count: result?.blocked_count || 0,
+        skipped: result?.skipped || false,
+        skip_reason: result?.skip_reason || null
+      });
+
+      return res.json({
+        ok: true,
+        endpoint: "ACS_SCHEDULE_MAINTENANCE_RESOLVER_MANUAL",
+        airline_id: airlineId,
+        result
+      });
+    } catch (error) {
+      console.error(
+        "[ACS A/B MAINTENANCE] Manual resolver failed:",
+        error
+      );
+
+      return ACS_sendError(
+        res,
+        error,
+        "MAINTENANCE_RESOLVER_FAILED"
+      );
+    }
+  }
+);
+
+/* ============================================================
    ACS GLOBAL A/B MAINTENANCE SCHEDULER
    ------------------------------------------------------------
    - PostgreSQL / ACS Time authority only.
