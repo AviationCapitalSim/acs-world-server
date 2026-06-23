@@ -4631,20 +4631,20 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
         [airlineId]
       );
 
-            /* ========================================================
-         PHASE 0 — NORMALIZE A/B TECHNICAL STATE
+      /* ========================================================
+         PHASE 0 — GLOBAL A/B STATE NORMALIZATION
          --------------------------------------------------------
          ACS AIRBUS OCC CONTRACT:
-         - schedule.js is the only A/B authority.
-         - A/B state is derived from live maintenance events.
-         - A valid SCHEDULED event suppresses OVERDUE.
-         - A valid IN_PROGRESS event controls maintenance state.
-         - C/D authority is preserved and always dominates A/B.
-         - No player schedule is deleted.
+         - Global formula for 700+ users.
+         - Live A/B events dominate due dates.
+         - IN_PROGRESS > SCHEDULED > OVERDUE > OPEN.
+         - C/D authority is preserved and dominates control status.
+         - No auto-assign.
+         - No deletion of player schedules.
          - No finance mutation.
          ======================================================== */
 
-      await client.query(
+      const phase0Result = await client.query(
         `
         WITH live_ab AS (
           SELECT
@@ -4678,107 +4678,103 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
           FROM public.aircraft_maintenance_events ame
 
           WHERE ame.airline_id = $1
-            AND ame.check_type IN (
-              'A_CHECK',
-              'B_CHECK'
-            )
-            AND ame.event_status IN (
-              'SCHEDULED',
-              'IN_PROGRESS'
-            )
+            AND ame.check_type IN ('A_CHECK', 'B_CHECK')
+            AND ame.event_status IN ('SCHEDULED', 'IN_PROGRESS')
 
           GROUP BY
             ame.airline_id,
             ame.aircraft_id
+        ),
+
+        normalized AS (
+          SELECT
+            ams.airline_id,
+            ams.aircraft_id,
+
+            CASE
+              WHEN COALESCE(live_ab.a_live_rank, 0) = 2
+                THEN 'IN_PROGRESS'
+              WHEN COALESCE(live_ab.a_live_rank, 0) = 1
+                THEN 'SCHEDULED'
+              WHEN ams.a_check_due_date <= acs_get_current_sim_time()
+                THEN 'OVERDUE'
+              ELSE 'OPEN'
+            END AS next_a_status,
+
+            CASE
+              WHEN COALESCE(live_ab.b_live_rank, 0) = 2
+                THEN 'IN_PROGRESS'
+              WHEN COALESCE(live_ab.b_live_rank, 0) = 1
+                THEN 'SCHEDULED'
+              WHEN ams.b_check_due_date <= acs_get_current_sim_time()
+                THEN 'OVERDUE'
+              ELSE 'OPEN'
+            END AS next_b_status,
+
+            UPPER(COALESCE(ams.c_check_status, 'OPEN')) AS c_status,
+            UPPER(COALESCE(ams.d_check_status, 'OPEN')) AS d_status
+
+          FROM public.aircraft_maintenance_status ams
+
+          LEFT JOIN live_ab
+            ON live_ab.airline_id = ams.airline_id
+           AND live_ab.aircraft_id = ams.aircraft_id
+
+          WHERE ams.airline_id = $1
         )
 
         UPDATE public.aircraft_maintenance_status ams
 
         SET
-          a_check_status = CASE
-            WHEN COALESCE(live_ab.a_live_rank, 0) = 2
-              THEN 'IN_PROGRESS'
-            WHEN COALESCE(live_ab.a_live_rank, 0) = 1
-              THEN 'SCHEDULED'
-            WHEN ams.a_check_due_date <= acs_get_current_sim_time()
-              THEN 'OVERDUE'
-            ELSE 'OPEN'
-          END,
-
-          b_check_status = CASE
-            WHEN COALESCE(live_ab.b_live_rank, 0) = 2
-              THEN 'IN_PROGRESS'
-            WHEN COALESCE(live_ab.b_live_rank, 0) = 1
-              THEN 'SCHEDULED'
-            WHEN ams.b_check_due_date <= acs_get_current_sim_time()
-              THEN 'OVERDUE'
-            ELSE 'OPEN'
-          END,
+          a_check_status = normalized.next_a_status,
+          b_check_status = normalized.next_b_status,
 
           maintenance_control_status = CASE
-            WHEN UPPER(COALESCE(ams.d_check_status, '')) = 'IN_PROGRESS'
+            WHEN normalized.d_status = 'IN_PROGRESS'
               THEN 'IN_MAINTENANCE'
-            WHEN UPPER(COALESCE(ams.c_check_status, '')) = 'IN_PROGRESS'
+            WHEN normalized.c_status = 'IN_PROGRESS'
               THEN 'IN_MAINTENANCE'
-
-            WHEN UPPER(COALESCE(ams.d_check_status, '')) = 'OVERDUE'
+            WHEN normalized.d_status = 'OVERDUE'
               THEN 'UNSERVICEABLE'
-            WHEN UPPER(COALESCE(ams.c_check_status, '')) = 'OVERDUE'
+            WHEN normalized.c_status = 'OVERDUE'
               THEN 'UNSERVICEABLE'
-
-            WHEN COALESCE(live_ab.b_live_rank, 0) = 2
+            WHEN normalized.next_b_status = 'IN_PROGRESS'
               THEN 'IN_MAINTENANCE'
-            WHEN COALESCE(live_ab.a_live_rank, 0) = 2
+            WHEN normalized.next_a_status = 'IN_PROGRESS'
               THEN 'IN_MAINTENANCE'
-
-            WHEN COALESCE(live_ab.b_live_rank, 0) = 1
-              THEN 'SERVICEABLE'
-            WHEN COALESCE(live_ab.a_live_rank, 0) = 1
-              THEN 'SERVICEABLE'
-
-            WHEN ams.b_check_due_date <= acs_get_current_sim_time()
-              THEN 'UNSERVICEABLE'
-            WHEN ams.a_check_due_date <= acs_get_current_sim_time()
-              THEN 'UNSERVICEABLE'
-
+            WHEN normalized.next_b_status = 'OVERDUE'
+              THEN 'MAINTENANCE_REQUIRED'
+            WHEN normalized.next_a_status = 'OVERDUE'
+              THEN 'MAINTENANCE_REQUIRED'
             ELSE 'SERVICEABLE'
           END,
 
           maintenance_control_reason = CASE
-            WHEN UPPER(COALESCE(ams.d_check_status, '')) = 'IN_PROGRESS'
+            WHEN normalized.d_status = 'IN_PROGRESS'
               THEN 'D_CHECK'
-            WHEN UPPER(COALESCE(ams.c_check_status, '')) = 'IN_PROGRESS'
+            WHEN normalized.c_status = 'IN_PROGRESS'
               THEN 'C_CHECK'
-
-            WHEN UPPER(COALESCE(ams.d_check_status, '')) = 'OVERDUE'
+            WHEN normalized.d_status = 'OVERDUE'
               THEN 'D_CHECK_OVERDUE'
-            WHEN UPPER(COALESCE(ams.c_check_status, '')) = 'OVERDUE'
+            WHEN normalized.c_status = 'OVERDUE'
               THEN 'C_CHECK_OVERDUE'
-
-            WHEN COALESCE(live_ab.b_live_rank, 0) = 2
+            WHEN normalized.next_b_status = 'IN_PROGRESS'
               THEN 'B_CHECK'
-            WHEN COALESCE(live_ab.a_live_rank, 0) = 2
+            WHEN normalized.next_a_status = 'IN_PROGRESS'
               THEN 'A_CHECK'
-
-            WHEN ams.b_check_due_date <= acs_get_current_sim_time()
-             AND COALESCE(live_ab.b_live_rank, 0) = 0
+            WHEN normalized.next_b_status = 'OVERDUE'
               THEN 'B_CHECK_OVERDUE'
-
-            WHEN ams.a_check_due_date <= acs_get_current_sim_time()
-             AND COALESCE(live_ab.a_live_rank, 0) = 0
+            WHEN normalized.next_a_status = 'OVERDUE'
               THEN 'A_CHECK_OVERDUE'
-
             ELSE NULL
           END,
 
-          updated_at =
-            (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+          updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
 
-        FROM live_ab
+        FROM normalized
 
-        WHERE ams.airline_id = $1
-          AND ams.airline_id = live_ab.airline_id
-          AND ams.aircraft_id = live_ab.aircraft_id
+        WHERE ams.airline_id = normalized.airline_id
+          AND ams.aircraft_id = normalized.aircraft_id
         `,
         [airlineId]
       );
