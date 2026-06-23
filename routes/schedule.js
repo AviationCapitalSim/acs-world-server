@@ -4576,7 +4576,15 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
 
         FROM resolved
 
-        WHERE NOT EXISTS (
+                WHERE NOT EXISTS (
+          SELECT 1
+          FROM public.aircraft_maintenance_events schedule_item_guard
+
+          WHERE schedule_item_guard.schedule_item_id =
+            resolved.schedule_item_id
+        )
+
+        AND NOT EXISTS (
           SELECT 1
           FROM public.aircraft_maintenance_events final_guard
 
