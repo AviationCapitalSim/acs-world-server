@@ -4292,25 +4292,23 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
         transactionStarted = false;
 
         return {
-  ok: true,
-  endpoint: "ACS_SCHEDULE_MAINTENANCE_RESOLVER",
-  version: "v2.4",
-  authority: "POSTGRESQL_SCHEDULE_AUTHORITY",
-  airline_id: airlineId,
-
-  orphan_recovered_count: orphanRecoveryResult?.rowCount || 0,
-  phase0_normalized_count: phase0Result?.rowCount || 0,
-  phase1_candidate_count: completionResult?.rowCount || 0,
-
-  completed_count: completedEvents.length,
-  completed_events: completedEvents,
-
-  started_count: startedEvents.length,
-  started_events: startedEvents,
-
-  blocked_count: blockedEvents.length,
-  blocked_events: blockedEvents
-};
+          ok: true,
+          endpoint: "ACS_SCHEDULE_MAINTENANCE_RESOLVER",
+          version: "v2.4",
+          authority: "POSTGRESQL_SCHEDULE_AUTHORITY",
+          airline_id: airlineId,
+          skipped: true,
+          skip_reason: "RESOLVER_ALREADY_RUNNING",
+          orphan_recovered_count: 0,
+          phase0_normalized_count: 0,
+          phase1_candidate_count: 0,
+          completed_count: 0,
+          completed_events: [],
+          started_count: 0,
+          started_events: [],
+          blocked_count: 0,
+          blocked_events: []
+        };
       }
 
       /* ========================================================
@@ -4323,7 +4321,7 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
          No registration-specific rules.
          ======================================================== */
 
-      await client.query(
+      const orphanRecoveryResult = await client.query(
         `
         WITH orphan_plans AS (
           SELECT
@@ -4597,6 +4595,9 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
               'IN_PROGRESS'
             )
         )
+        ON CONFLICT ON CONSTRAINT
+          uq_aircraft_maintenance_events_schedule_item
+        DO NOTHING
         `,
         [airlineId]
       );
@@ -4947,249 +4948,12 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
 
         let nextOccurrence = null;
 
-        if (
-          completedEvent.schedule_item_id &&
-          nextDueDate
-        ) {
-          await client.query(
-            "SAVEPOINT acs_next_occurrence"
-          );
-
-          try {
-            const nextOccurrenceResult =
-              await client.query(
-                `
-                WITH plan AS (
-                  SELECT
-                    si.id,
-                    si.airline_id,
-                    si.aircraft_id,
-                    si.selected_day,
-                    si.departure,
-
-                    CASE LOWER(si.selected_day)
-                      WHEN 'mon' THEN 1
-                      WHEN 'tue' THEN 2
-                      WHEN 'wed' THEN 3
-                      WHEN 'thu' THEN 4
-                      WHEN 'fri' THEN 5
-                      WHEN 'sat' THEN 6
-                      WHEN 'sun' THEN 7
-                      ELSE NULL
-                    END AS selected_iso_day,
-
-                    (
-                      SPLIT_PART(si.departure, ':', 1)::INTEGER * 60
-                      +
-                      SPLIT_PART(si.departure, ':', 2)::INTEGER
-                    ) AS start_minute
-
-                  FROM public.schedule_items si
-
-                  WHERE si.id = $1
-                    AND si.airline_id = $2
-                    AND si.aircraft_id = $3
-                    AND LOWER(COALESCE(si.item_type, '')) = 'service'
-                    AND LOWER(COALESCE(si.status, 'scheduled'))
-                        NOT IN ('cancelled', 'completed')
-
-                  LIMIT 1
-                ),
-
-                authority AS (
-                  SELECT
-                    plan.*,
-
-                    GREATEST(
-                      $5::TIMESTAMP,
-                      acs_get_current_sim_time()
-                    ) AS anchor_at
-
-                  FROM plan
-                  WHERE plan.selected_iso_day IS NOT NULL
-                ),
-
-                candidate AS (
-                  SELECT
-                    authority.*,
-
-                    date_trunc('day', authority.anchor_at)
-                    +
-                    (
-                      (
-                        authority.selected_iso_day
-                        -
-                        EXTRACT(
-                          ISODOW FROM authority.anchor_at
-                        )::INTEGER
-                        + 7
-                      ) % 7
-                    ) * INTERVAL '1 day'
-                    +
-                    authority.start_minute * INTERVAL '1 minute'
-                      AS raw_start
-
-                  FROM authority
-                ),
-
-                resolved AS (
-                  SELECT
-                    candidate.*,
-
-                    CASE
-                      WHEN candidate.raw_start
-                           <= acs_get_current_sim_time()
-                        THEN candidate.raw_start + INTERVAL '7 days'
-                      ELSE candidate.raw_start
-                    END AS next_start
-
-                  FROM candidate
-                )
-
-                INSERT INTO public.aircraft_maintenance_events (
-                  airline_id,
-                  aircraft_id,
-                  check_type,
-                  event_status,
-
-                  started_at,
-                  expected_completion_at,
-                  completed_at,
-
-                  duration_days,
-                  duration_minutes,
-
-                  scheduled_start_at,
-                  scheduled_end_at,
-
-                  schedule_item_id,
-
-                  estimated_cost,
-                  final_cost,
-                  currency,
-
-                  finance_charged,
-                  finance_log_id,
-
-                  notes,
-                  created_at,
-                  updated_at
-                )
-
-                SELECT
-                  resolved.airline_id,
-                  resolved.aircraft_id,
-                  $4,
-                  'SCHEDULED',
-
-                  NULL,
-                  resolved.next_start
-                    + $6::INTEGER * INTERVAL '1 minute',
-                  NULL,
-
-                  $7::INTEGER,
-                  $6::INTEGER,
-
-                  resolved.next_start,
-                  resolved.next_start
-                    + $6::INTEGER * INTERVAL '1 minute',
-
-                  resolved.id,
-
-                  $8,
-                  NULL,
-                  $9,
-
-                  FALSE,
-                  NULL,
-
-                  jsonb_build_object(
-                    'source',
-                    'ACS_AB_RECURRING_PLAN_V2',
-
-                    'previous_event_id',
-                    $10::BIGINT,
-
-                    'technical_due_at',
-                    $5::TIMESTAMP,
-
-                    'persistent_schedule_item_id',
-                    resolved.id
-                  )::TEXT,
-
-                  (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
-                  (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
-
-                FROM resolved
-
-                WHERE NOT EXISTS (
-                  SELECT 1
-                  FROM public.aircraft_maintenance_events live_event
-
-                  WHERE live_event.airline_id =
-                        resolved.airline_id
-
-                    AND live_event.aircraft_id =
-                        resolved.aircraft_id
-
-                    AND live_event.check_type = $4
-
-                    AND live_event.event_status IN (
-                      'SCHEDULED',
-                      'IN_PROGRESS'
-                    )
-                )
-
-                RETURNING
-                  id,
-                  event_uid,
-                  schedule_item_id,
-                  check_type,
-                  event_status,
-                  scheduled_start_at,
-                  scheduled_end_at
-                `,
-                [
-                  completedEvent.schedule_item_id,
-                  airlineId,
-                  completedEvent.aircraft_id,
-                  checkType,
-                  nextDueDate,
-                  Number(completedEvent.duration_minutes || 0),
-                  Number(completedEvent.duration_days || 0),
-                  Number(completedEvent.estimated_cost || 0),
-                  completedEvent.currency || "USD",
-                  completedEvent.id
-                ]
-              );
-
-            nextOccurrence =
-              nextOccurrenceResult.rows[0] || null;
-
-            await client.query(
-              "RELEASE SAVEPOINT acs_next_occurrence"
-            );
-
-          } catch (recurrenceError) {
-            await client.query(
-              "ROLLBACK TO SAVEPOINT acs_next_occurrence"
-            );
-
-            await client.query(
-              "RELEASE SAVEPOINT acs_next_occurrence"
-            );
-
-            console.error(
-              `[ACS A/B RECURRENCE RECOVERY] ` +
-              `airline=${airlineId} ` +
-              `aircraft=${completedEvent.aircraft_id} ` +
-              `check=${checkType}`,
-              recurrenceError
-            );
-
-            nextOccurrence = null;
-          }
-        }
+        /*
+         * Current schema enforces one aircraft_maintenance_event per
+         * schedule_item_id. Do not create recurring events with the same
+         * persistent player plan until the data model is changed.
+         */
+        nextOccurrence = null;
 
         if (
           checkType === 'B_CHECK' &&
@@ -5312,7 +5076,11 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
          - The OCC-visible maintenance label is A-Check/B-Check.
          ======================================================== */
 
-      const dueEventsResult = await client.query(
+      const autoStartEnabled =
+        process.env.ACS_AB_AUTO_START_ENABLED === "true";
+
+      const dueEventsResult = autoStartEnabled
+        ? await client.query(
         `
         WITH eligible AS (
           SELECT
@@ -5385,7 +5153,8 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
         ORDER BY scheduled_start_at, id
         `,
         [airlineId]
-      );
+      )
+        : { rows: [], rowCount: 0 };
 
       const startedEvents = [];
       const blockedEvents = [];
@@ -5874,6 +5643,13 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
         authority:
           "POSTGRESQL_SCHEDULE_AUTHORITY",
         airline_id: airlineId,
+        orphan_recovered_count:
+          orphanRecoveryResult.rowCount || 0,
+        phase0_normalized_count:
+          phase0Result.rowCount || 0,
+        phase1_candidate_count:
+          completionResult.rowCount || 0,
+        auto_start_enabled: autoStartEnabled,
         completed_count: completedEvents.length,
         completed_events: completedEvents,
         started_count: startedEvents.length,
@@ -5958,6 +5734,9 @@ async function ACS_runMaintenanceResolver({
     let completedCount = 0;
     let startedCount = 0;
     let blockedCount = 0;
+    let orphanRecoveredCount = 0;
+    let phase0NormalizedCount = 0;
+    let phase1CandidateCount = 0;
 
     for (const row of airlinesResult.rows) {
       const currentAirlineId = Number(row.airline_id);
@@ -5976,6 +5755,12 @@ async function ACS_runMaintenanceResolver({
         completedCount += Number(result?.completed_count || 0);
         startedCount += Number(result?.started_count || 0);
         blockedCount += Number(result?.blocked_count || 0);
+        orphanRecoveredCount +=
+          Number(result?.orphan_recovered_count || 0);
+        phase0NormalizedCount +=
+          Number(result?.phase0_normalized_count || 0);
+        phase1CandidateCount +=
+          Number(result?.phase1_candidate_count || 0);
 
         results.push(result);
       } catch (error) {
@@ -5998,6 +5783,9 @@ async function ACS_runMaintenanceResolver({
       authority: "POSTGRESQL_SCHEDULE_AUTHORITY",
       all_airlines: true,
       airline_count: airlinesResult.rows.length,
+      orphan_recovered_count: orphanRecoveredCount,
+      phase0_normalized_count: phase0NormalizedCount,
+      phase1_candidate_count: phase1CandidateCount,
       completed_count: completedCount,
       started_count: startedCount,
       blocked_count: blockedCount,
@@ -6127,6 +5915,14 @@ export function startMaintenanceScheduler({
     process.env.ACS_MAINTENANCE_RESOLVER_INTERVAL_MS || 5000
   )
 } = {}) {
+  if (process.env.ACS_MAINTENANCE_SCHEDULER_ENABLED !== "true") {
+    console.log(
+      "[ACS A/B MAINTENANCE] Scheduler disabled " +
+      "(set ACS_MAINTENANCE_SCHEDULER_ENABLED=true to enable)"
+    );
+    return false;
+  }
+
   if (ACS_maintenanceSchedulerTimer) {
     return false;
   }
