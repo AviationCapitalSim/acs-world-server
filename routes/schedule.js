@@ -4631,61 +4631,88 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
         [airlineId]
       );
 
-      /* ========================================================
-         PHASE 0 — ESTABLISH OVERDUE A/B AUTHORITY
+            /* ========================================================
+         PHASE 0 — NORMALIZE A/B TECHNICAL STATE
          --------------------------------------------------------
-         Existing ACS states only:
-         - OVERDUE A CHECK when A reaches its due date without
-           a valid A service scheduled or in progress.
-         - OVERDUE B CHECK when B reaches its due date without
-           a valid B service scheduled or in progress.
-         - B becomes dominant only when B is actually due.
-         - A future B does not suppress A.
+         ACS AIRBUS OCC CONTRACT:
+         - schedule.js is the only A/B authority.
+         - A/B state is derived from live maintenance events.
+         - A valid SCHEDULED event suppresses OVERDUE.
+         - A valid IN_PROGRESS event controls maintenance state.
+         - C/D authority is preserved and always dominates A/B.
+         - No player schedule is deleted.
+         - No finance mutation.
          ======================================================== */
 
       await client.query(
         `
+        WITH live_ab AS (
+          SELECT
+            ame.airline_id,
+            ame.aircraft_id,
+
+            MAX(
+              CASE
+                WHEN ame.check_type = 'A_CHECK'
+                 AND ame.event_status = 'IN_PROGRESS'
+                  THEN 2
+                WHEN ame.check_type = 'A_CHECK'
+                 AND ame.event_status = 'SCHEDULED'
+                  THEN 1
+                ELSE 0
+              END
+            ) AS a_live_rank,
+
+            MAX(
+              CASE
+                WHEN ame.check_type = 'B_CHECK'
+                 AND ame.event_status = 'IN_PROGRESS'
+                  THEN 2
+                WHEN ame.check_type = 'B_CHECK'
+                 AND ame.event_status = 'SCHEDULED'
+                  THEN 1
+                ELSE 0
+              END
+            ) AS b_live_rank
+
+          FROM public.aircraft_maintenance_events ame
+
+          WHERE ame.airline_id = $1
+            AND ame.check_type IN (
+              'A_CHECK',
+              'B_CHECK'
+            )
+            AND ame.event_status IN (
+              'SCHEDULED',
+              'IN_PROGRESS'
+            )
+
+          GROUP BY
+            ame.airline_id,
+            ame.aircraft_id
+        )
+
         UPDATE public.aircraft_maintenance_status ams
+
         SET
-          b_check_status = CASE
-            WHEN
-              ams.b_check_due_date <= acs_get_current_sim_time()
-              AND NOT EXISTS (
-                SELECT 1
-                FROM public.aircraft_maintenance_events b
-                WHERE b.airline_id = ams.airline_id
-                  AND b.aircraft_id = ams.aircraft_id
-                  AND b.check_type = 'B_CHECK'
-                  AND b.event_status IN ('SCHEDULED', 'IN_PROGRESS')
-              )
+          a_check_status = CASE
+            WHEN COALESCE(live_ab.a_live_rank, 0) = 2
+              THEN 'IN_PROGRESS'
+            WHEN COALESCE(live_ab.a_live_rank, 0) = 1
+              THEN 'SCHEDULED'
+            WHEN ams.a_check_due_date <= acs_get_current_sim_time()
               THEN 'OVERDUE'
-            ELSE ams.b_check_status
+            ELSE 'OPEN'
           END,
 
-          a_check_status = CASE
-            WHEN
-              ams.b_check_due_date <= acs_get_current_sim_time()
-              AND NOT EXISTS (
-                SELECT 1
-                FROM public.aircraft_maintenance_events b
-                WHERE b.airline_id = ams.airline_id
-                  AND b.aircraft_id = ams.aircraft_id
-                  AND b.check_type = 'B_CHECK'
-                  AND b.event_status IN ('SCHEDULED', 'IN_PROGRESS')
-              )
-              THEN 'OPEN'
-            WHEN
-              ams.a_check_due_date <= acs_get_current_sim_time()
-              AND NOT EXISTS (
-                SELECT 1
-                FROM public.aircraft_maintenance_events a
-                WHERE a.airline_id = ams.airline_id
-                  AND a.aircraft_id = ams.aircraft_id
-                  AND a.check_type = 'A_CHECK'
-                  AND a.event_status IN ('SCHEDULED', 'IN_PROGRESS')
-              )
+          b_check_status = CASE
+            WHEN COALESCE(live_ab.b_live_rank, 0) = 2
+              THEN 'IN_PROGRESS'
+            WHEN COALESCE(live_ab.b_live_rank, 0) = 1
+              THEN 'SCHEDULED'
+            WHEN ams.b_check_due_date <= acs_get_current_sim_time()
               THEN 'OVERDUE'
-            ELSE ams.a_check_status
+            ELSE 'OPEN'
           END,
 
           maintenance_control_status = CASE
@@ -4693,33 +4720,28 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
               THEN 'IN_MAINTENANCE'
             WHEN UPPER(COALESCE(ams.c_check_status, '')) = 'IN_PROGRESS'
               THEN 'IN_MAINTENANCE'
+
             WHEN UPPER(COALESCE(ams.d_check_status, '')) = 'OVERDUE'
               THEN 'UNSERVICEABLE'
             WHEN UPPER(COALESCE(ams.c_check_status, '')) = 'OVERDUE'
               THEN 'UNSERVICEABLE'
-            WHEN
-              ams.b_check_due_date <= acs_get_current_sim_time()
-              AND NOT EXISTS (
-                SELECT 1
-                FROM public.aircraft_maintenance_events b
-                WHERE b.airline_id = ams.airline_id
-                  AND b.aircraft_id = ams.aircraft_id
-                  AND b.check_type = 'B_CHECK'
-                  AND b.event_status IN ('SCHEDULED', 'IN_PROGRESS')
-              )
+
+            WHEN COALESCE(live_ab.b_live_rank, 0) = 2
+              THEN 'IN_MAINTENANCE'
+            WHEN COALESCE(live_ab.a_live_rank, 0) = 2
+              THEN 'IN_MAINTENANCE'
+
+            WHEN COALESCE(live_ab.b_live_rank, 0) = 1
+              THEN 'SERVICEABLE'
+            WHEN COALESCE(live_ab.a_live_rank, 0) = 1
+              THEN 'SERVICEABLE'
+
+            WHEN ams.b_check_due_date <= acs_get_current_sim_time()
               THEN 'UNSERVICEABLE'
-            WHEN
-              ams.a_check_due_date <= acs_get_current_sim_time()
-              AND NOT EXISTS (
-                SELECT 1
-                FROM public.aircraft_maintenance_events a
-                WHERE a.airline_id = ams.airline_id
-                  AND a.aircraft_id = ams.aircraft_id
-                  AND a.check_type = 'A_CHECK'
-                  AND a.event_status IN ('SCHEDULED', 'IN_PROGRESS')
-              )
+            WHEN ams.a_check_due_date <= acs_get_current_sim_time()
               THEN 'UNSERVICEABLE'
-            ELSE ams.maintenance_control_status
+
+            ELSE 'SERVICEABLE'
           END,
 
           maintenance_control_reason = CASE
@@ -4727,87 +4749,40 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
               THEN 'D_CHECK'
             WHEN UPPER(COALESCE(ams.c_check_status, '')) = 'IN_PROGRESS'
               THEN 'C_CHECK'
+
             WHEN UPPER(COALESCE(ams.d_check_status, '')) = 'OVERDUE'
               THEN 'D_CHECK_OVERDUE'
             WHEN UPPER(COALESCE(ams.c_check_status, '')) = 'OVERDUE'
               THEN 'C_CHECK_OVERDUE'
-            WHEN
-              ams.b_check_due_date <= acs_get_current_sim_time()
-              AND NOT EXISTS (
-                SELECT 1
-                FROM public.aircraft_maintenance_events b
-                WHERE b.airline_id = ams.airline_id
-                  AND b.aircraft_id = ams.aircraft_id
-                  AND b.check_type = 'B_CHECK'
-                  AND b.event_status IN ('SCHEDULED', 'IN_PROGRESS')
-              )
+
+            WHEN COALESCE(live_ab.b_live_rank, 0) = 2
+              THEN 'B_CHECK'
+            WHEN COALESCE(live_ab.a_live_rank, 0) = 2
+              THEN 'A_CHECK'
+
+            WHEN ams.b_check_due_date <= acs_get_current_sim_time()
+             AND COALESCE(live_ab.b_live_rank, 0) = 0
               THEN 'B_CHECK_OVERDUE'
-            WHEN
-              ams.a_check_due_date <= acs_get_current_sim_time()
-              AND NOT EXISTS (
-                SELECT 1
-                FROM public.aircraft_maintenance_events a
-                WHERE a.airline_id = ams.airline_id
-                  AND a.aircraft_id = ams.aircraft_id
-                  AND a.check_type = 'A_CHECK'
-                  AND a.event_status IN ('SCHEDULED', 'IN_PROGRESS')
-              )
+
+            WHEN ams.a_check_due_date <= acs_get_current_sim_time()
+             AND COALESCE(live_ab.a_live_rank, 0) = 0
               THEN 'A_CHECK_OVERDUE'
-            ELSE ams.maintenance_control_reason
+
+            ELSE NULL
           END,
 
           updated_at =
             (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+
+        FROM live_ab
 
         WHERE ams.airline_id = $1
+          AND ams.airline_id = live_ab.airline_id
+          AND ams.aircraft_id = live_ab.aircraft_id
         `,
         [airlineId]
       );
-
-      await client.query(
-        `
-        UPDATE public.aircraft_fleet af
-        SET
-          status = CASE
-            WHEN ams.maintenance_control_status = 'IN_MAINTENANCE'
-              THEN 'MAINTENANCE'
-            ELSE 'ACTIVE'
-          END,
-
-          operational_status = CASE
-            WHEN ams.maintenance_control_status = 'IN_MAINTENANCE'
-              THEN 'IN_MAINTENANCE'
-            WHEN ams.maintenance_control_status = 'UNSERVICEABLE'
-              THEN 'UNAVAILABLE'
-            ELSE 'AVAILABLE'
-          END,
-
-          maintenance_status = CASE
-            WHEN ams.maintenance_control_reason = 'D_CHECK'
-              THEN 'D-CHECK'
-            WHEN ams.maintenance_control_reason = 'C_CHECK'
-              THEN 'C-CHECK'
-            WHEN ams.maintenance_control_reason IN (
-              'B_CHECK',
-              'A_CHECK'
-            )
-              THEN 'CHECK_REQUIRED'
-            WHEN ams.maintenance_control_status = 'UNSERVICEABLE'
-              THEN 'CHECK_REQUIRED'
-            ELSE 'SERVICEABLE'
-          END,
-
-          updated_at =
-            (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
-
-        FROM public.aircraft_maintenance_status ams
-        WHERE af.id = ams.aircraft_id
-          AND af.airline_id = ams.airline_id
-          AND af.airline_id = $1
-        `,
-        [airlineId]
-      );
-
+       
 /* ========================================================
          PHASE 1 — COMPLETE A/B EVENTS
          --------------------------------------------------------
@@ -4820,7 +4795,7 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
          - Completed events remain immutable technical history.
          ======================================================== */
 
-      const completionResult = await client.query(
+            const completionResult = await client.query(
         `
         SELECT
           ame.id,
@@ -4828,33 +4803,74 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
           ame.aircraft_id,
           ame.check_type,
           ame.schedule_item_id,
+
+          ame.started_at,
           ame.expected_completion_at,
+          ame.scheduled_end_at,
+
+          COALESCE(
+            ame.expected_completion_at,
+            ame.scheduled_end_at,
+            ame.started_at
+              + (
+                COALESCE(
+                  NULLIF(ame.duration_minutes, 0),
+                  CASE
+                    WHEN ame.check_type = 'B_CHECK' THEN 1440
+                    ELSE 300
+                  END
+                ) * INTERVAL '1 minute'
+              )
+          ) AS technical_completion_at,
+
           ame.duration_days,
           ame.duration_minutes,
           ame.estimated_cost,
           ame.currency,
+
           af.registration,
           af.aircraft_name
+
         FROM public.aircraft_maintenance_events ame
+
         JOIN public.aircraft_fleet af
           ON af.id = ame.aircraft_id
          AND af.airline_id = ame.airline_id
+
         JOIN public.aircraft_maintenance_status ams
           ON ams.aircraft_id = ame.aircraft_id
          AND ams.airline_id = ame.airline_id
+
         WHERE ame.airline_id = $1
           AND ame.event_status = 'IN_PROGRESS'
-          AND ame.check_type IN ('A_CHECK', 'B_CHECK')
-          AND ame.expected_completion_at
-              <= acs_get_current_sim_time()
+          AND ame.check_type IN (
+            'A_CHECK',
+            'B_CHECK'
+          )
+          AND COALESCE(
+            ame.expected_completion_at,
+            ame.scheduled_end_at,
+            ame.started_at
+              + (
+                COALESCE(
+                  NULLIF(ame.duration_minutes, 0),
+                  CASE
+                    WHEN ame.check_type = 'B_CHECK' THEN 1440
+                    ELSE 300
+                  END
+                ) * INTERVAL '1 minute'
+              )
+          ) <= acs_get_current_sim_time()
+
         ORDER BY
-          ame.expected_completion_at,
+          technical_completion_at,
           CASE ame.check_type
             WHEN 'B_CHECK' THEN 1
             WHEN 'A_CHECK' THEN 2
             ELSE 3
           END,
           ame.id
+
         FOR UPDATE OF ame, af, ams
         `,
         [airlineId]
