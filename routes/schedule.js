@@ -4317,9 +4317,9 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
          ACS CONTRACT:
          - schedule_items is the player's persistent A/B plan.
          - aircraft_maintenance_events is the current technical
-           occurrence under the existing database constraint.
-         - Existing schema has:
-             uq_aircraft_maintenance_events_schedule_item
+           occurrence tracked per schedule_item_id.
+         - Duplicate prevention is enforced via an explicit
+           NOT EXISTS check on schedule_item_id at INSERT time.
            Therefore, a persistent plan cannot receive a second
            event row with the same schedule_item_id.
          - If the plan exists and the linked event is historical
@@ -4592,8 +4592,8 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
               resolved.previous_event_id,
               'persistent_schedule_item_id',
               resolved.schedule_item_id,
-              'schema_constraint',
-              'uq_aircraft_maintenance_events_schedule_item'
+              'duplicate_guard',
+              'explicit_not_exists_on_schedule_item_id'
             )::TEXT,
 
             updated_at =
@@ -4724,9 +4724,12 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
                 resolved.schedule_item_id
             )
 
-          ON CONFLICT ON CONSTRAINT
-            uq_aircraft_maintenance_events_schedule_item
-          DO NOTHING
+            AND NOT EXISTS (
+              SELECT 1
+              FROM public.aircraft_maintenance_events existing
+
+              WHERE existing.schedule_item_id = resolved.schedule_item_id
+            )
 
           RETURNING
             id
