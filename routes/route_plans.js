@@ -998,7 +998,16 @@ router.post("/routes/plans", requireAuth, async (req, res) => {
       });
     }
 
-  
+
+    const aircraftRangeNm = Math.round(
+    Number(
+    aircraft.range_nm
+    || body.aircraft_range_nm
+    || body.aircraftRangeNm
+    || 0
+    )
+   );     
+     
     const speedKts = Math.round(
       Number(
         aircraft.speed_kts
