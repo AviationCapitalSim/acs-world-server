@@ -998,20 +998,7 @@ router.post("/routes/plans", requireAuth, async (req, res) => {
       });
     }
 
-   /* ============================================================
-   🟦 ACS SLOT PRICE — BIGINT SAFE
-   ------------------------------------------------------------
-   PostgreSQL finance fields expect integer values.
-   Prevents 22P02 caused by decimal slot totals like 11882.5.
-   ============================================================ */
-
-const totalSlotPrice = Math.round(
-  (
-    (originSlotFee * 2)
-    + (destinationSlotFee * 2)
-  ) * selectedDays.length
-);
-
+  
     const speedKts = Math.round(
       Number(
         aircraft.speed_kts
@@ -1101,9 +1088,10 @@ const totalSlotPrice = Math.round(
 
     const originSlotFee = ACS_roundMoney(originAirport.slot_cost_usd);
     const destinationSlotFee =
-      ACS_roundMoney(destinationAirport.slot_cost_usd);
+    
+    ACS_roundMoney(destinationAirport.slot_cost_usd);
 
-    const totalSlotPrice = ACS_roundMoney(
+    const totalSlotPrice = Math.round(
       (
         (originSlotFee * 2)
         + (destinationSlotFee * 2)
