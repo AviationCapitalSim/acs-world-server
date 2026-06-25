@@ -6767,35 +6767,27 @@ router.delete(
          ======================================================== */
 
       const releasedSlotsResult = await client.query(
-        `
-        UPDATE public.airport_slot_bookings
-        SET
-          slot_status = 'CANCELLED',
-          updated_at = NOW()
-        WHERE airline_id = $1
-          AND slot_status = 'RESERVED'
-          AND (
-            (
-              route_plan_id = $2
-              AND weekday = $3
-              AND flight_number IN ($4, $5)
-            )
-            OR
-            (
-              schedule_item_id = $6
-            )
-          )
-        RETURNING *
-        `,
-        [
-          airlineId,
-          flight.route_plan_id,
-          ACS_text(flight.selected_day).toLowerCase(),
-          ACS_text(flight.flight_number),
-          ACS_text(flight.paired_flight_number),
-          scheduleItemId
-        ]
-      );
+  `
+  UPDATE public.airport_slot_bookings
+  SET
+    slot_status = 'CANCELLED',
+    released_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
+    updated_at = NOW()
+  WHERE airline_id = $1
+    AND route_plan_id = $2
+    AND weekday = $3
+    AND flight_number IN ($4, $5)
+    AND slot_status = 'RESERVED'
+  RETURNING *
+  `,
+  [
+    airlineId,
+    flight.route_plan_id,
+    ACS_text(flight.selected_day).toLowerCase(),
+    ACS_text(flight.flight_number),
+    ACS_text(flight.paired_flight_number)
+  ]
+);
 
       await client.query("COMMIT");
       transactionStarted = false;
