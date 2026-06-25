@@ -6623,4 +6623,217 @@ router.post("/schedule/unassign-aircraft", requireAuth, async (req, res) => {
   }
 });
 
+/* ============================================================
+   🟥 DELETE /v1/schedule/flights/:scheduleItemId
+   ------------------------------------------------------------
+   ACS OCC — DELETE FLIGHT
+
+   Purpose:
+   - Cancel one scheduled flight
+   - Release its reserved slots
+   - Remove it from Schedule Table context
+   - Keep PostgreSQL as authority
+   ============================================================ */
+
+router.delete(
+  "/schedule/flights/:scheduleItemId",
+  requireAuth,
+  async (req, res) => {
+
+    const airlineId = ACS_airlineId(req);
+    const scheduleItemId = ACS_positiveBigInt(
+      req.params.scheduleItemId
+    );
+
+    if (!airlineId) {
+      return res.status(401).json({
+        ok: false,
+        error: "NO_AIRLINE_SESSION"
+      });
+    }
+
+    if (!scheduleItemId) {
+      return res.status(400).json({
+        ok: false,
+        error: "VALIDATION_ERROR",
+        details: "scheduleItemId is required"
+      });
+    }
+
+    const client = await pool.connect();
+    let transactionStarted = false;
+
+    try {
+
+      await client.query("BEGIN");
+      transactionStarted = true;
+
+      await client.query(
+        `
+        SELECT pg_advisory_xact_lock(
+          hashtext($1)
+        )
+        `,
+        [
+          `ACS_DELETE_FLIGHT|${airlineId}|${scheduleItemId}`
+        ]
+      );
+
+      const flightResult = await client.query(
+        `
+        SELECT
+          id,
+          schedule_uid,
+          route_plan_id,
+          route_uid,
+          airline_id,
+          item_type,
+          origin,
+          destination,
+          selected_day,
+          departure,
+          arrival,
+          aircraft_id,
+          aircraft_registration,
+          flight_number,
+          paired_flight_number,
+          status
+        FROM public.schedule_items
+        WHERE id = $1
+          AND airline_id = $2
+          AND item_type = 'flight'
+        LIMIT 1
+        FOR UPDATE
+        `,
+        [
+          scheduleItemId,
+          airlineId
+        ]
+      );
+
+      if (!flightResult.rows.length) {
+        const error = new Error("FLIGHT_NOT_FOUND");
+        error.code = "FLIGHT_NOT_FOUND";
+        throw error;
+      }
+
+      const flight = flightResult.rows[0];
+
+      const status = ACS_text(flight.status).toLowerCase();
+
+      if (["in_progress", "completed"].includes(status)) {
+        const error = new Error("FLIGHT_NOT_DELETABLE");
+        error.code = "FLIGHT_NOT_DELETABLE";
+        throw error;
+      }
+
+      /* ========================================================
+         1) CANCEL SCHEDULE ITEM
+         ======================================================== */
+
+      const cancelledFlightResult = await client.query(
+        `
+        UPDATE public.schedule_items
+        SET
+          status = 'cancelled',
+          aircraft_id = NULL,
+          aircraft_registration = NULL,
+          notes = jsonb_build_object(
+            'source',
+            'ACS_DELETE_FLIGHT_OCC',
+            'deleted_schedule_item_id',
+            $1::BIGINT,
+            'deleted_flight_number',
+            $3::TEXT,
+            'deleted_at',
+            (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+          )::TEXT,
+          updated_at = NOW()
+        WHERE id = $1
+          AND airline_id = $2
+        RETURNING *
+        `,
+        [
+          scheduleItemId,
+          airlineId,
+          ACS_text(flight.flight_number)
+        ]
+      );
+
+      /* ========================================================
+         2) RELEASE SLOTS FOR THIS FLIGHT
+         --------------------------------------------------------
+         Uses route_plan_id + weekday + flight number when present.
+         ======================================================== */
+
+      const releasedSlotsResult = await client.query(
+        `
+        UPDATE public.airport_slot_bookings
+        SET
+          slot_status = 'CANCELLED',
+          updated_at = NOW()
+        WHERE airline_id = $1
+          AND slot_status = 'RESERVED'
+          AND (
+            (
+              route_plan_id = $2
+              AND weekday = $3
+              AND flight_number IN ($4, $5)
+            )
+            OR
+            (
+              schedule_item_id = $6
+            )
+          )
+        RETURNING *
+        `,
+        [
+          airlineId,
+          flight.route_plan_id,
+          ACS_text(flight.selected_day).toLowerCase(),
+          ACS_text(flight.flight_number),
+          ACS_text(flight.paired_flight_number),
+          scheduleItemId
+        ]
+      );
+
+      await client.query("COMMIT");
+      transactionStarted = false;
+
+      return res.json({
+        ok: true,
+        endpoint: "ACS_DELETE_FLIGHT_OCC",
+        authority: "POSTGRESQL_SCHEDULE_AUTHORITY",
+        airline_id: airlineId,
+        deleted_flight: cancelledFlightResult.rows[0],
+        released_slots_count: releasedSlotsResult.rows.length
+      });
+
+    } catch (error) {
+
+      if (transactionStarted) {
+        try {
+          await client.query("ROLLBACK");
+        } catch (rollbackError) {
+          console.error(
+            "ACS DELETE FLIGHT ROLLBACK ERROR:",
+            rollbackError
+          );
+        }
+      }
+
+      console.error("ACS DELETE FLIGHT ERROR:", error);
+
+      return ACS_sendError(
+        res,
+        error,
+        "DELETE_FLIGHT_FAILED"
+      );
+
+    } finally {
+      client.release();
+    }
+  }
+);
+
 export default router;
