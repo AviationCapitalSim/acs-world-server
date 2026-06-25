@@ -6304,16 +6304,19 @@ router.post("/schedule/assign-aircraft", requireAuth, async (req, res) => {
 
     const aircraft = aircraftResult.rows[0];
 
-    const dispatchable =
-      ACS_text(aircraft.status).toUpperCase() === "ACTIVE" &&
-      ACS_text(aircraft.operational_status).toUpperCase() === "AVAILABLE" &&
-      ACS_text(aircraft.maintenance_status).toUpperCase() === "SERVICEABLE";
+   /* ========================================================
+   ACS OCC — PLANNING ASSIGNMENT RULE
+   --------------------------------------------------------
+   Assign Route is planning, not dispatch.
 
-    if (!dispatchable) {
-      const error = new Error("AIRCRAFT_NOT_DISPATCHABLE");
-      error.code = "AIRCRAFT_NOT_DISPATCHABLE";
-      throw error;
-    }
+   The aircraft may be assigned to future flying even if it
+   is not dispatchable right now.
+
+   Dispatchability is validated later by the flight execution
+   layer, not here.
+   ======================================================== */
+
+    const planningAssignment = true;
 
     if (ACS_modelKey(routePlan.model_key) !== ACS_modelKey(aircraft.model_key)) {
       const error = new Error("AIRCRAFT_MODEL_MISMATCH");
