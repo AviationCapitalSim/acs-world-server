@@ -1,65 +1,230 @@
+/* ============================================================
+   ACS SKYTRACK ROUTES — POSTGRESQL AUTHORITY
+   ------------------------------------------------------------
+   File: routes/skytrack.js
+
+   Authority:
+   - PostgreSQL only
+   - req.airline_id from requireAuth
+   - No localStorage
+   - No browser authority
+   - No finance mutation
+   ============================================================ */
+
 import express from "express";
+import { pool } from "../db/pool.js";
+import { requireAuth } from "../middleware/auth.js";
 
 const router = express.Router();
 
 /* ============================================================
-   SKYTRACK CONTEXT
-   PostgreSQL authority for SkyTrack runtime
+   ACS AIRLINE AUTHORITY
    ============================================================ */
 
-router.get("/context", async (req, res) => {
+function ACS_airlineId(req) {
 
-  try {
+  const airlineId = Number(req.airline_id);
 
-    const airlineId =
-  req.user?.airline_id ||
-  req.user?.airlineId ||
-  req.airline_id ||
-  req.airlineId ||
-  req.session?.user?.airline_id ||
-  req.session?.user?.airlineId ||
-  req.session?.airline_id ||
-  req.session?.airlineId ||
-  req.query.airline_id ||
-  req.query.airlineId;
+  return Number.isInteger(airlineId) &&
+         airlineId > 0
+    ? airlineId
+    : null;
+}
+
+/* ============================================================
+   GET /v1/skytrack/context
+   ------------------------------------------------------------
+   SkyTrack operational context
+   Authority: PostgreSQL + requireAuth
+   ============================================================ */
+
+router.get(
+  "/context",
+  requireAuth,
+  async (req, res) => {
+
+    const airlineId = ACS_airlineId(req);
 
     if (!airlineId) {
       return res.status(401).json({
         ok: false,
-        error: "AIRLINE_SESSION_REQUIRED"
+        error: "NO_AIRLINE_SESSION"
       });
     }
 
-    /* ============================================================
-       TEMPORAL RESPONSE
-       (replace with PostgreSQL queries)
-       ============================================================ */
+    const client = await pool.connect();
 
-    return res.json({
-      ok: true,
-      authority: "POSTGRESQL_SKYTRACK_AUTHORITY",
-      airline_id: Number(airlineId),
+    try {
 
-      fleet: [],
+      await client.query(
+        "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY"
+      );
 
-      schedule_items: [],
+      /* ========================================================
+         CURRENT SIM TIME
+         ======================================================== */
 
-      route_plans: [],
+      const simResult =
+        await client.query(`
+          SELECT
+            acs_get_current_sim_time()
+              AS current_sim_time
+        `);
 
-      generated_at: Date.now()
-    });
+      /* ========================================================
+         AIRLINE
+         ======================================================== */
 
-  } catch (err) {
+      const airlineResult =
+        await client.query(
+          `
+          SELECT
+            airline_id,
+            airline_name,
+            iata,
+            icao
+          FROM public.airlines
+          WHERE airline_id = $1
+          LIMIT 1
+          `,
+          [airlineId]
+        );
 
-    console.error("SKYTRACK_CONTEXT_ERROR", err);
+      /* ========================================================
+         FLEET
+         ======================================================== */
 
-    return res.status(500).json({
-      ok: false,
-      error: "SKYTRACK_CONTEXT_ERROR"
-    });
+      const fleetResult =
+        await client.query(
+          `
+          SELECT
+            af.*,
 
+            ams.a_check_status,
+            ams.b_check_status,
+            ams.c_check_status,
+            ams.d_check_status,
+
+            ams.maintenance_control_status,
+            ams.maintenance_control_reason
+
+          FROM public.aircraft_fleet af
+
+          LEFT JOIN
+            public.aircraft_maintenance_status ams
+              ON ams.aircraft_id = af.id
+             AND ams.airline_id = af.airline_id
+
+          WHERE af.airline_id = $1
+
+          ORDER BY af.id
+          `,
+          [airlineId]
+        );
+
+      /* ========================================================
+         ROUTE PLANS
+         ======================================================== */
+
+      const routePlansResult =
+        await client.query(
+          `
+          SELECT *
+          FROM public.route_plans
+          WHERE airline_id = $1
+          ORDER BY id
+          `,
+          [airlineId]
+        );
+
+      /* ========================================================
+         SCHEDULE ITEMS
+         ======================================================== */
+
+      const scheduleResult =
+        await client.query(
+          `
+          SELECT *
+          FROM public.schedule_items
+          WHERE airline_id = $1
+          ORDER BY dep_abs_min,
+                   id
+          `,
+          [airlineId]
+        );
+
+      await client.query("COMMIT");
+
+      return res.json({
+
+        ok: true,
+
+        endpoint:
+          "ACS_SKYTRACK_CONTEXT",
+
+        version:
+          "v1.0",
+
+        authority:
+          "POSTGRESQL_SKYTRACK_AUTHORITY",
+
+        airline_id:
+          airlineId,
+
+        current_sim_time:
+          simResult.rows[0]
+            ?.current_sim_time,
+
+        airline:
+          airlineResult.rows[0] || null,
+
+        fleet:
+          fleetResult.rows,
+
+        route_plans:
+          routePlansResult.rows,
+
+        schedule_items:
+          scheduleResult.rows,
+
+        counts: {
+          fleet:
+            fleetResult.rows.length,
+
+          route_plans:
+            routePlansResult.rows.length,
+
+          schedule_items:
+            scheduleResult.rows.length
+        }
+
+      });
+
+    } catch (error) {
+
+      try {
+        await client.query("ROLLBACK");
+      } catch {}
+
+      console.error(
+        "ACS SKYTRACK CONTEXT ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        ok: false,
+        error:
+          "SKYTRACK_CONTEXT_FAILED",
+        details:
+          error.message
+      });
+
+    } finally {
+
+      client.release();
+
+    }
   }
-
-});
+);
 
 export default router;
