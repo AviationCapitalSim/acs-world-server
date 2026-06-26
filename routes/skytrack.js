@@ -12,10 +12,16 @@ router.get("/context", async (req, res) => {
   try {
 
     const airlineId =
-      req.user?.airline_id ||
-      req.session?.user?.airline_id ||
-      req.session?.airline_id ||
-      req.query.airline_id;
+  req.user?.airline_id ||
+  req.user?.airlineId ||
+  req.airline_id ||
+  req.airlineId ||
+  req.session?.user?.airline_id ||
+  req.session?.user?.airlineId ||
+  req.session?.airline_id ||
+  req.session?.airlineId ||
+  req.query.airline_id ||
+  req.query.airlineId;
 
     if (!airlineId) {
       return res.status(401).json({
