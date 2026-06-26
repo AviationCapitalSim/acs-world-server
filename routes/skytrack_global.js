@@ -83,13 +83,41 @@ LEFT JOIN LATERAL (
 
     FROM public.schedule_items s
 
+    CROSS JOIN (
+      SELECT
+        (
+          EXTRACT(DOW FROM acs_get_current_sim_time())::int * 1440
+          + EXTRACT(HOUR FROM acs_get_current_sim_time())::int * 60
+          + EXTRACT(MINUTE FROM acs_get_current_sim_time())::int
+        ) AS now_abs_min
+    ) t
+
     WHERE
       s.aircraft_id = af.id
       AND s.item_type = 'flight'
       AND s.status = 'assigned'
 
     ORDER BY
-      s.dep_abs_min
+      CASE
+        WHEN t.now_abs_min >= s.dep_abs_min
+         AND t.now_abs_min < s.arr_abs_min
+        THEN 0
+
+        WHEN s.dep_abs_min > t.now_abs_min
+        THEN 1
+
+        ELSE 2
+      END,
+
+      CASE
+        WHEN s.dep_abs_min > t.now_abs_min
+        THEN s.dep_abs_min
+      END ASC,
+
+      CASE
+        WHEN s.arr_abs_min <= t.now_abs_min
+        THEN s.arr_abs_min
+      END DESC
 
     LIMIT 1
 
