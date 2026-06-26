@@ -176,11 +176,16 @@ router.get(
             ?.current_sim_time,
 
         airline:
-          airlineResult.rows[0] || null,
+  airlineResult.rows[0] || null,
 
-        fleet:
-          fleetResult.rows,
+base_icao:
+  fleetResult.rows.find(a => a.base_icao)?.base_icao ||
+  fleetResult.rows.find(a => a.current_airport)?.current_airport ||
+  null,
 
+fleet:
+  fleetResult.rows,
+         
         route_plans:
           routePlansResult.rows,
 
