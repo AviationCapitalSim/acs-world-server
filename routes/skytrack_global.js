@@ -25,50 +25,84 @@ router.get("/global", async (req, res) => {
   try {
 
     const result = await client.query(`
-      SELECT
+    
+  SELECT
 
-        af.airline_id,
+    af.airline_id,
 
-        al.airline_name,
-        al.iata,
-        al.icao,
+    al.airline_name,
+    al.iata,
+    al.icao,
 
-        af.id AS aircraft_id,
-        af.registration,
-        af.model_key,
-        af.current_airport,
-        af.base_icao,
+    af.id                 AS aircraft_id,
+    af.registration,
 
-        si.flight_number,
-        si.paired_flight_number,
+    af.aircraft_name,
+    af.model_key,
 
-        si.origin,
-        si.destination,
+    af.status,
+    af.operational_status,
+    af.maintenance_status,
 
-        si.dep_abs_min,
-        si.arr_abs_min,
+    af.current_airport,
+    af.base_icao,
 
-        si.distance_nm,
+    ams.a_check_status,
+    ams.b_check_status,
+    ams.c_check_status,
+    ams.d_check_status,
 
-        si.status,
-        si.flight_direction
+    ams.maintenance_control_status,
+    ams.maintenance_control_reason,
 
-      FROM public.schedule_items si
+    si.flight_number,
+    si.paired_flight_number,
 
-      INNER JOIN public.aircraft_fleet af
-        ON af.id = si.aircraft_id
+    si.origin,
+    si.destination,
 
-      INNER JOIN public.airlines al
-        ON al.airline_id = af.airline_id
+    si.dep_abs_min,
+    si.arr_abs_min,
 
-      WHERE
+    si.distance_nm,
 
-        si.item_type = 'flight'
-        AND si.status = 'assigned'
+    si.flight_direction
 
-      ORDER BY
-        af.airline_id,
-        si.dep_abs_min
+FROM public.aircraft_fleet af
+
+INNER JOIN public.airlines al
+  ON al.airline_id = af.airline_id
+
+LEFT JOIN public.aircraft_maintenance_status ams
+  ON ams.aircraft_id = af.id
+ AND ams.airline_id = af.airline_id
+
+LEFT JOIN LATERAL (
+
+    SELECT *
+
+    FROM public.schedule_items s
+
+    WHERE
+      s.aircraft_id = af.id
+      AND s.item_type = 'flight'
+      AND s.status = 'assigned'
+
+    ORDER BY
+      s.dep_abs_min
+
+    LIMIT 1
+
+) si ON true
+
+WHERE
+
+    af.status <> 'SCRAPPED'
+
+ORDER BY
+
+    af.airline_id,
+    af.id;
     `);
 
     return res.json({
