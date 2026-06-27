@@ -30,12 +30,16 @@ router.get("/global", async (req, res) => {
 
     af.airline_id,
 
-    al.airline_name,
-    al.iata,
-    al.icao,
+al.airline_name,
+al.iata,
+al.icao,
 
-    af.id                 AS aircraft_id,
-    af.registration,
+al.color_hex,
+al.color_hsl,
+al.color_index,
+
+af.id                 AS aircraft_id,
+af.registration,
 
     af.aircraft_name,
     af.model_key,
