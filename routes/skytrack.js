@@ -65,11 +65,18 @@ router.get(
          ======================================================== */
 
       const simResult =
-        await client.query(`
-          SELECT
-            acs_get_current_sim_time()
-              AS current_sim_time
-        `);
+  await client.query(`
+    SELECT
+      acs_get_current_sim_time()
+        AS current_sim_time,
+
+      (
+        EXTRACT(DOW FROM acs_get_current_sim_time())::int * 1440
+        + EXTRACT(HOUR FROM acs_get_current_sim_time())::int * 60
+        + EXTRACT(MINUTE FROM acs_get_current_sim_time())::int
+      )::int
+        AS now_abs_min
+  `);
 
       /* ========================================================
          AIRLINE
