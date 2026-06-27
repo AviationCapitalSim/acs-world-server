@@ -8,6 +8,7 @@
 
 import express from "express";
 import { pool } from "../db/pool.js";
+import { requireAuth } from "../middleware/auth.js";
 
 const router = express.Router();
 
@@ -18,7 +19,16 @@ const router = express.Router();
    visible in SkyTrack.
    ============================================================ */
 
-router.get("/global", async (req, res) => {
+router.get("/global", requireAuth, async (req, res) => {
+
+  const airlineId = Number(req.airline_id);
+
+  if (!Number.isInteger(airlineId) || airlineId <= 0) {
+    return res.status(401).json({
+      ok: false,
+      error: "NO_AIRLINE_SESSION"
+    });
+  }
 
   const client = await pool.connect();
 
@@ -30,6 +40,12 @@ router.get("/global", async (req, res) => {
 
     af.airline_id,
 
+    (
+      EXTRACT(DOW FROM acs_get_current_sim_time())::int * 1440
+      + EXTRACT(HOUR FROM acs_get_current_sim_time())::int * 60
+      + EXTRACT(MINUTE FROM acs_get_current_sim_time())::int
+    )::int AS now_abs_min,
+    
 al.airline_name,
 al.iata,
 al.icao,
@@ -130,12 +146,13 @@ LEFT JOIN LATERAL (
 WHERE
 
     af.status <> 'SCRAPPED'
+    AND af.airline_id <> $1
 
 ORDER BY
 
     af.airline_id,
     af.id;
-    `);
+    `, [airlineId]);
 
     return res.json({
 
@@ -144,6 +161,12 @@ ORDER BY
       authority:
         "POSTGRESQL_GLOBAL_SKYTRACK",
 
+      airline_id:
+      airlineId,
+
+     now_abs_min:
+     result.rows[0]?.now_abs_min ?? null,
+       
       flights:
         result.rows,
 
