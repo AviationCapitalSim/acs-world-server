@@ -15,8 +15,11 @@ const router = express.Router();
 /* ============================================================
    GET /v1/skytrack/global
    ------------------------------------------------------------
-   Returns all active scheduled aircraft
-   visible in SkyTrack.
+   Returns active scheduled aircraft from OTHER airlines.
+   Authority:
+   - PostgreSQL
+   - Server sim time
+   - Authenticated airline session
    ============================================================ */
 
 router.get("/global", requireAuth, async (req, res) => {
@@ -34,17 +37,25 @@ router.get("/global", requireAuth, async (req, res) => {
   try {
     const timeResult = await client.query(`
       SELECT
-        acs_get_current_sim_time() AS current_sim_time,
+        acs_get_current_sim_time()
+          AS current_sim_time,
+
         (
           EXTRACT(DOW FROM acs_get_current_sim_time())::int * 1440
           + EXTRACT(HOUR FROM acs_get_current_sim_time())::int * 60
           + EXTRACT(MINUTE FROM acs_get_current_sim_time())::int
-        )::int AS now_abs_min
+        )::int
+          AS now_abs_min
     `);
 
-    const nowAbsMin = Number(timeResult.rows[0]?.now_abs_min);
+    const currentSimTime =
+      timeResult.rows[0]?.current_sim_time || null;
 
-    const result = await client.query(`
+    const nowAbsMin =
+      Number(timeResult.rows[0]?.now_abs_min);
+
+    const result = await client.query(
+      `
       SELECT
         af.airline_id,
 
@@ -73,6 +84,7 @@ router.get("/global", requireAuth, async (req, res) => {
         ams.maintenance_control_status,
         ams.maintenance_control_reason,
 
+        si.id AS schedule_item_id,
         si.flight_number,
         si.paired_flight_number,
         si.origin,
@@ -80,7 +92,8 @@ router.get("/global", requireAuth, async (req, res) => {
         si.dep_abs_min,
         si.arr_abs_min,
         si.distance_nm,
-        si.flight_direction
+        si.flight_direction,
+        si.status AS schedule_status
 
       FROM public.aircraft_fleet af
 
@@ -92,53 +105,80 @@ router.get("/global", requireAuth, async (req, res) => {
        AND ams.airline_id = af.airline_id
 
       LEFT JOIN LATERAL (
-        SELECT *
+        SELECT s.*
         FROM public.schedule_items s
         WHERE
           s.aircraft_id = af.id
+          AND s.airline_id = af.airline_id
           AND s.item_type = 'flight'
-          AND s.status = 'assigned'
+          AND LOWER(COALESCE(s.status, 'assigned')) = 'assigned'
+
         ORDER BY
           CASE
             WHEN $2 >= s.dep_abs_min
              AND $2 < s.arr_abs_min
             THEN 0
+
             WHEN s.dep_abs_min > $2
             THEN 1
+
             ELSE 2
           END,
+
           CASE
             WHEN s.dep_abs_min > $2
             THEN s.dep_abs_min
           END ASC,
+
           CASE
             WHEN s.arr_abs_min <= $2
             THEN s.arr_abs_min
           END DESC
+
         LIMIT 1
       ) si ON true
 
       WHERE
-        af.status <> 'SCRAPPED'
+        UPPER(COALESCE(af.status, '')) <> 'SCRAPPED'
         AND af.airline_id <> $1
 
       ORDER BY
         af.airline_id,
         af.id
-    `, [airlineId, nowAbsMin]);
+      `,
+      [
+        airlineId,
+        Number.isFinite(nowAbsMin) ? nowAbsMin : 0
+      ]
+    );
 
     return res.json({
       ok: true,
-      authority: "POSTGRESQL_GLOBAL_SKYTRACK",
-      airline_id: airlineId,
-      current_sim_time: timeResult.rows[0]?.current_sim_time || null,
-      now_abs_min: Number.isFinite(nowAbsMin) ? nowAbsMin : null,
-      flights: result.rows,
-      count: result.rows.length
+
+      authority:
+        "POSTGRESQL_GLOBAL_SKYTRACK",
+
+      airline_id:
+        airlineId,
+
+      current_sim_time:
+        currentSimTime,
+
+      now_abs_min:
+        Number.isFinite(nowAbsMin) ? nowAbsMin : null,
+
+      flights:
+        result.rows,
+
+      count:
+        result.rows.length
     });
 
   } catch (err) {
-    console.error("SKYTRACK_GLOBAL_ERROR", err);
+    console.error(
+      "SKYTRACK_GLOBAL_ERROR",
+      err
+    );
 
     return res.status(500).json({
       ok: false,
