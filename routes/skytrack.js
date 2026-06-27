@@ -182,6 +182,12 @@ router.get(
           simResult.rows[0]
             ?.current_sim_time,
 
+     now_abs_min:
+     Number(
+     simResult.rows[0]
+      ?.now_abs_min || 0
+    ),
+         
         airline:
   airlineResult.rows[0] || null,
 
