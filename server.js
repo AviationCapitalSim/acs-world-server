@@ -25,6 +25,8 @@ import airportsRoutes from "./routes/airports.js";
 import skytrackRoutes from "./routes/skytrack.js";
 import skytrackGlobalRoutes
   from "./routes/skytrack_global.js";
+import skytrackSnapshotRoutes
+  from "./routes/skytrack_snapshot.js";
 
 dotenv.config();
 
@@ -132,11 +134,12 @@ app.use("/v1", financeRoutes);
 app.use("/v1", usersRoutes);
 app.use("/v1", scheduleRoutes);
 app.use("/v1/skytrack", skytrackRoutes);
+app.use("/v1/skytrack", skytrackGlobalRoutes);
+app.use("/v1/skytrack", skytrackSnapshotRoutes);
 app.use("/v1", aircraftRoutes);
 app.use("/v1", routePlanRoutes);
 app.use("/v1/aircraft/factory", factoryRoutes);
 app.use("/v1", airportsRoutes);
-app.use("/v1/skytrack", skytrackGlobalRoutes);
 
 const PORT = process.env.PORT || 3000;
 
