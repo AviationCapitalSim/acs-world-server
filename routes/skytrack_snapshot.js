@@ -1,11 +1,17 @@
+```js
 /* ============================================================
-   ACS SKYTRACK GLOBAL — CANONICAL BACKEND SNAPSHOT
+   ACS SKYTRACK SNAPSHOT — POSTGRESQL CANONICAL AUTHORITY
    ------------------------------------------------------------
    Authority:
    - PostgreSQL
    - Server sim time
    - Backend-resolved operational state
-   - Frontend only renders
+   - Backend-resolved position/progress
+   - Backend airline colors
+   - Frontend render only
+
+   Endpoint:
+   GET /v1/skytrack/snapshot
    ============================================================ */
 
 import express from "express";
@@ -14,7 +20,7 @@ import { requireAuth } from "../middleware/auth.js";
 
 const router = express.Router();
 
-router.get("/global", requireAuth, async (req, res) => {
+router.get("/snapshot", requireAuth, async (req, res) => {
   const airlineId = Number(req.airline_id);
 
   if (!Number.isInteger(airlineId) || airlineId <= 0) {
@@ -80,12 +86,12 @@ router.get("/global", requireAuth, async (req, res) => {
          AND ams.airline_id = af.airline_id
 
         WHERE
-          af.airline_id <> $1
-          AND UPPER(COALESCE(af.status, '')) <> 'SCRAPPED'
+          UPPER(COALESCE(af.status, '')) <> 'SCRAPPED'
       ),
 
       active_or_context_flight AS (
         SELECT
+          f.airline_id,
           f.aircraft_id,
 
           s.id AS schedule_item_id,
@@ -140,6 +146,12 @@ router.get("/global", requireAuth, async (req, res) => {
       SELECT
         sim.current_sim_time,
         sim.now_abs_min,
+
+        CASE
+          WHEN f.airline_id = $1
+          THEN 'OWN'
+          ELSE 'GLOBAL'
+        END AS scope,
 
         f.airline_id,
         f.airline_name,
@@ -258,9 +270,11 @@ router.get("/global", requireAuth, async (req, res) => {
       FROM fleet f
       CROSS JOIN sim
       LEFT JOIN active_or_context_flight sf
-        ON sf.aircraft_id = f.aircraft_id
+        ON sf.airline_id = f.airline_id
+       AND sf.aircraft_id = f.aircraft_id
 
       ORDER BY
+        CASE WHEN f.airline_id = $1 THEN 0 ELSE 1 END,
         f.airline_id,
         f.aircraft_id
       `,
@@ -273,7 +287,7 @@ router.get("/global", requireAuth, async (req, res) => {
 
     return res.json({
       ok: true,
-      authority: "POSTGRESQL_GLOBAL_SKYTRACK_CANONICAL",
+      authority: "POSTGRESQL_SKYTRACK_SNAPSHOT_CANONICAL",
       airline_id: airlineId,
       current_sim_time: first.current_sim_time || null,
       now_abs_min: Number.isFinite(Number(first.now_abs_min))
@@ -288,11 +302,11 @@ router.get("/global", requireAuth, async (req, res) => {
       await client.query("ROLLBACK");
     } catch {}
 
-    console.error("SKYTRACK_GLOBAL_CANONICAL_ERROR", err);
+    console.error("SKYTRACK_SNAPSHOT_CANONICAL_ERROR", err);
 
     return res.status(500).json({
       ok: false,
-      error: "SKYTRACK_GLOBAL_CANONICAL_ERROR",
+      error: "SKYTRACK_SNAPSHOT_CANONICAL_ERROR",
       details: err.message
     });
 
@@ -302,3 +316,4 @@ router.get("/global", requireAuth, async (req, res) => {
 });
 
 export default router;
+```
