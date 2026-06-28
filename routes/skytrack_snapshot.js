@@ -213,110 +213,167 @@ router.get("/snapshot", requireAuth, async (req, res) => {
         f.maintenance_control_status,
         f.maintenance_control_reason,
 
-        sf.schedule_item_id,
-        sf.flight_number,
-        sf.paired_flight_number,
-        sf.origin,
-        sf.destination,
-        sf.dep_abs_min,
-        sf.arr_abs_min,
-        sf.distance_nm,
-        sf.flight_direction,
-        sf.schedule_status,
-        sf.flight_context,
+COALESCE(
+  fc.active_schedule_item_id,
+  fc.next_schedule_item_id,
+  fc.last_schedule_item_id
+) AS schedule_item_id,
 
-        CASE
-          WHEN UPPER(COALESCE(f.maintenance_control_status, '')) IN
-            ('IN_MAINTENANCE', 'UNSERVICEABLE')
-          THEN COALESCE(
-            NULLIF(UPPER(f.maintenance_control_reason), ''),
-            NULLIF(UPPER(f.maintenance_control_status), ''),
-            'MAINTENANCE'
-          )
+COALESCE(
+  fc.active_flight_number,
+  fc.next_flight_number,
+  fc.last_flight_number
+) AS flight_number,
 
-          WHEN sf.dep_abs_min IS NOT NULL
-           AND sf.arr_abs_min IS NOT NULL
-           AND sf.arr_abs_min > sf.dep_abs_min
-           AND sim.now_abs_min >= sf.dep_abs_min
-           AND sim.now_abs_min < sf.arr_abs_min
-          THEN 'EN_ROUTE'
+COALESCE(
+  fc.active_paired_flight_number,
+  fc.next_paired_flight_number,
+  fc.last_paired_flight_number
+) AS paired_flight_number,
 
-          ELSE 'GROUND'
-        END AS state,
+COALESCE(
+  fc.active_origin,
+  fc.next_origin,
+  fc.last_origin
+) AS origin,
 
-        CASE
-          WHEN sf.dep_abs_min IS NOT NULL
-           AND sf.arr_abs_min IS NOT NULL
-           AND sf.arr_abs_min > sf.dep_abs_min
-           AND sim.now_abs_min >= sf.dep_abs_min
-           AND sim.now_abs_min < sf.arr_abs_min
-           AND UPPER(COALESCE(f.maintenance_control_status, '')) NOT IN
-             ('IN_MAINTENANCE', 'UNSERVICEABLE')
-          THEN 'ROUTE'
+COALESCE(
+  fc.active_destination,
+  fc.next_destination,
+  fc.last_destination
+) AS destination,
 
-          ELSE 'AIRPORT'
-        END AS position_type,
+COALESCE(
+  fc.active_dep_abs_min,
+  fc.next_dep_abs_min,
+  fc.last_dep_abs_min
+) AS dep_abs_min,
 
-        CASE
-          WHEN UPPER(COALESCE(f.maintenance_control_status, '')) IN
-            ('IN_MAINTENANCE', 'UNSERVICEABLE')
-          THEN COALESCE(f.current_airport, f.base_icao)
+COALESCE(
+  fc.active_arr_abs_min,
+  fc.next_arr_abs_min,
+  fc.last_arr_abs_min
+) AS arr_abs_min,
 
-          WHEN sf.dep_abs_min IS NOT NULL
-           AND sf.arr_abs_min IS NOT NULL
-           AND sf.arr_abs_min > sf.dep_abs_min
-           AND sim.now_abs_min >= sf.dep_abs_min
-           AND sim.now_abs_min < sf.arr_abs_min
-          THEN NULL
+COALESCE(
+  fc.active_distance_nm,
+  fc.next_distance_nm,
+  fc.last_distance_nm
+) AS distance_nm,
 
-          WHEN sf.arr_abs_min IS NOT NULL
-          AND sf.arr_abs_min <= sim.now_abs_min
-          THEN COALESCE(
-          sf.destination,
-          f.current_airport,
-          f.base_icao
-         )
+COALESCE(
+  fc.active_flight_direction,
+  fc.next_flight_direction,
+  fc.last_flight_direction
+) AS flight_direction,
 
-          ELSE COALESCE(
-            f.current_airport,
-            f.base_icao,
-            sf.origin,
-            sf.destination
-          )
-        END AS airport,
+COALESCE(
+  fc.active_schedule_status,
+  fc.next_schedule_status,
+  fc.last_schedule_status
+) AS schedule_status,
 
-        CASE
-          WHEN sf.dep_abs_min IS NOT NULL
-           AND sf.arr_abs_min IS NOT NULL
-           AND sf.arr_abs_min > sf.dep_abs_min
-           AND sim.now_abs_min >= sf.dep_abs_min
-           AND sim.now_abs_min < sf.arr_abs_min
-           AND UPPER(COALESCE(f.maintenance_control_status, '')) NOT IN
-             ('IN_MAINTENANCE', 'UNSERVICEABLE')
-          THEN LEAST(
-            1,
-            GREATEST(
-              0,
-              ((sim.now_abs_min - sf.dep_abs_min)::numeric /
-               NULLIF((sf.arr_abs_min - sf.dep_abs_min), 0)::numeric)
-            )
-          )
+CASE
+  WHEN fc.active_schedule_item_id IS NOT NULL THEN 'ACTIVE'
+  WHEN fc.next_schedule_item_id IS NOT NULL THEN 'FUTURE'
+  WHEN fc.last_schedule_item_id IS NOT NULL THEN 'COMPLETED'
+  ELSE 'NO_FLIGHT'
+END AS flight_context,
 
-          ELSE NULL
-        END AS progress,
+CASE
+  WHEN UPPER(COALESCE(f.maintenance_control_status, '')) IN
+    ('IN_MAINTENANCE', 'UNSERVICEABLE')
+  THEN COALESCE(
+    NULLIF(UPPER(f.maintenance_control_reason), ''),
+    NULLIF(UPPER(f.maintenance_control_status), ''),
+    'MAINTENANCE'
+  )
 
-        sf.origin AS origin_icao,
-        sf.destination AS destination_icao,
-        sf.dep_abs_min AS dep_abs_min,
-        sf.arr_abs_min AS arr_abs_min,
+  WHEN fc.active_schedule_item_id IS NOT NULL
+  THEN 'EN_ROUTE'
 
-        CASE
-          WHEN sf.schedule_item_id IS NOT NULL
-           AND sf.arr_abs_min IS NOT NULL
-           AND sf.arr_abs_min <= sim.now_abs_min
-          THEN true
-          ELSE false
-        END AS arrived
+  ELSE 'GROUND'
+END AS state,
+
+CASE
+  WHEN fc.active_schedule_item_id IS NOT NULL
+   AND UPPER(COALESCE(f.maintenance_control_status, '')) NOT IN
+     ('IN_MAINTENANCE', 'UNSERVICEABLE')
+  THEN 'ROUTE'
+
+  ELSE 'AIRPORT'
+END AS position_type,
+
+CASE
+  WHEN UPPER(COALESCE(f.maintenance_control_status, '')) IN
+    ('IN_MAINTENANCE', 'UNSERVICEABLE')
+  THEN COALESCE(f.current_airport, f.base_icao)
+
+  WHEN fc.active_schedule_item_id IS NOT NULL
+  THEN NULL
+
+  WHEN fc.last_schedule_item_id IS NOT NULL
+  THEN COALESCE(
+    fc.last_destination,
+    f.current_airport,
+    f.base_icao
+  )
+
+  ELSE COALESCE(
+    f.current_airport,
+    f.base_icao,
+    fc.next_origin,
+    fc.next_destination
+  )
+END AS airport,
+
+CASE
+  WHEN fc.active_schedule_item_id IS NOT NULL
+   AND fc.active_arr_abs_min > fc.active_dep_abs_min
+   AND UPPER(COALESCE(f.maintenance_control_status, '')) NOT IN
+     ('IN_MAINTENANCE', 'UNSERVICEABLE')
+  THEN LEAST(
+    1,
+    GREATEST(
+      0,
+      ((sim.now_abs_min - fc.active_dep_abs_min)::numeric /
+       NULLIF((fc.active_arr_abs_min - fc.active_dep_abs_min), 0)::numeric)
+    )
+  )
+
+  ELSE NULL
+END AS progress,
+
+COALESCE(
+  fc.active_origin,
+  fc.next_origin,
+  fc.last_origin
+) AS origin_icao,
+
+COALESCE(
+  fc.active_destination,
+  fc.next_destination,
+  fc.last_destination
+) AS destination_icao,
+
+COALESCE(
+  fc.active_dep_abs_min,
+  fc.next_dep_abs_min,
+  fc.last_dep_abs_min
+) AS dep_abs_min,
+
+COALESCE(
+  fc.active_arr_abs_min,
+  fc.next_arr_abs_min,
+  fc.last_arr_abs_min
+) AS arr_abs_min,
+
+CASE
+  WHEN fc.last_schedule_item_id IS NOT NULL
+   AND fc.active_schedule_item_id IS NULL
+  THEN true
+  ELSE false
+END AS arrived
 
       FROM fleet f
       CROSS JOIN sim
