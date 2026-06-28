@@ -261,12 +261,12 @@ router.get("/snapshot", requireAuth, async (req, res) => {
           THEN NULL
 
           WHEN sf.arr_abs_min IS NOT NULL
-           AND sf.arr_abs_min <= sim.now_abs_min
+          AND sf.arr_abs_min <= sim.now_abs_min
           THEN COALESCE(
-            f.current_airport,
-            sf.destination,
-            f.base_icao
-          )
+          sf.destination,
+          f.current_airport,
+          f.base_icao
+         )
 
           ELSE COALESCE(
             f.current_airport,
