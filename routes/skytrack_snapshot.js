@@ -1,17 +1,6 @@
-```js
 /* ============================================================
    ACS SKYTRACK SNAPSHOT — POSTGRESQL CANONICAL AUTHORITY
-   ------------------------------------------------------------
-   Authority:
-   - PostgreSQL
-   - Server sim time
-   - Backend-resolved operational state
-   - Backend-resolved position/progress
-   - Backend airline colors
-   - Frontend render only
-
-   Endpoint:
-   GET /v1/skytrack/snapshot
+   Endpoint: GET /v1/skytrack/snapshot
    ============================================================ */
 
 import express from "express";
@@ -50,6 +39,15 @@ router.get("/snapshot", requireAuth, async (req, res) => {
       fleet AS (
         SELECT
           af.airline_id,
+          af.id AS aircraft_id,
+          af.registration,
+          af.aircraft_name,
+          af.model_key,
+          af.status,
+          af.operational_status,
+          af.maintenance_status,
+          af.current_airport,
+          af.base_icao,
 
           al.airline_name,
           al.iata,
@@ -57,17 +55,6 @@ router.get("/snapshot", requireAuth, async (req, res) => {
           COALESCE(al.color_hex, '#3A5FFF') AS color_hex,
           COALESCE(al.color_hsl, 'hsl(220,70%,50%)') AS color_hsl,
           COALESCE(al.color_index, 0) AS color_index,
-
-          af.id AS aircraft_id,
-          af.registration,
-          af.aircraft_name,
-          af.model_key,
-
-          af.status,
-          af.operational_status,
-          af.maintenance_status,
-          af.current_airport,
-          af.base_icao,
 
           ams.a_check_status,
           ams.b_check_status,
@@ -85,11 +72,10 @@ router.get("/snapshot", requireAuth, async (req, res) => {
           ON ams.aircraft_id = af.id
          AND ams.airline_id = af.airline_id
 
-        WHERE
-          UPPER(COALESCE(af.status, '')) <> 'SCRAPPED'
+        WHERE UPPER(COALESCE(af.status, '')) <> 'SCRAPPED'
       ),
 
-      active_or_context_flight AS (
+      selected_flight AS (
         SELECT
           f.airline_id,
           f.aircraft_id,
@@ -114,7 +100,7 @@ router.get("/snapshot", requireAuth, async (req, res) => {
           WHERE
             s.aircraft_id = f.aircraft_id
             AND s.airline_id = f.airline_id
-            AND s.item_type = 'flight'
+            AND LOWER(COALESCE(s.item_type, '')) = 'flight'
             AND LOWER(COALESCE(s.status, 'assigned')) = 'assigned'
 
           ORDER BY
@@ -122,22 +108,20 @@ router.get("/snapshot", requireAuth, async (req, res) => {
               WHEN sim.now_abs_min >= s.dep_abs_min
                AND sim.now_abs_min < s.arr_abs_min
               THEN 0
-
               WHEN s.dep_abs_min > sim.now_abs_min
               THEN 1
-
               ELSE 2
-            END,
+            END ASC,
 
             CASE
               WHEN s.dep_abs_min > sim.now_abs_min
               THEN s.dep_abs_min
-            END ASC,
+            END ASC NULLS LAST,
 
             CASE
               WHEN s.arr_abs_min <= sim.now_abs_min
               THEN s.arr_abs_min
-            END DESC
+            END DESC NULLS LAST
 
           LIMIT 1
         ) s ON true
@@ -148,8 +132,7 @@ router.get("/snapshot", requireAuth, async (req, res) => {
         sim.now_abs_min,
 
         CASE
-          WHEN f.airline_id = $1
-          THEN 'OWN'
+          WHEN f.airline_id = $1 THEN 'OWN'
           ELSE 'GLOBAL'
         END AS scope,
 
@@ -218,7 +201,6 @@ router.get("/snapshot", requireAuth, async (req, res) => {
            AND UPPER(COALESCE(f.maintenance_control_status, '')) NOT IN
              ('IN_MAINTENANCE', 'UNSERVICEABLE')
           THEN 'ROUTE'
-
           ELSE 'AIRPORT'
         END AS canonical_position_type,
 
@@ -258,7 +240,6 @@ router.get("/snapshot", requireAuth, async (req, res) => {
                NULLIF((sf.arr_abs_min - sf.dep_abs_min), 0)::numeric)
             )
           )
-
           ELSE NULL
         END AS canonical_progress,
 
@@ -269,7 +250,8 @@ router.get("/snapshot", requireAuth, async (req, res) => {
 
       FROM fleet f
       CROSS JOIN sim
-      LEFT JOIN active_or_context_flight sf
+
+      LEFT JOIN selected_flight sf
         ON sf.airline_id = f.airline_id
        AND sf.aircraft_id = f.aircraft_id
 
@@ -316,4 +298,3 @@ router.get("/snapshot", requireAuth, async (req, res) => {
 });
 
 export default router;
-```
