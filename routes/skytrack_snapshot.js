@@ -320,9 +320,9 @@ router.get("/snapshot", requireAuth, async (req, res) => {
 
       FROM fleet f
       CROSS JOIN sim
-      LEFT JOIN selected_flight sf
-        ON sf.airline_id = f.airline_id
-       AND sf.aircraft_id = f.aircraft_id
+      LEFT JOIN flight_context fc
+      ON fc.airline_id = f.airline_id
+      AND fc.aircraft_id = f.aircraft_id
 
       ORDER BY
         CASE WHEN f.airline_id = $1 THEN 0 ELSE 1 END,
