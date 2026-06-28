@@ -99,78 +99,87 @@ router.get("/snapshot", requireAuth, async (req, res) => {
         WHERE UPPER(COALESCE(af.status, '')) <> 'SCRAPPED'
       ),
 
-      selected_flight AS (
-        SELECT
-          f.airline_id,
-          f.aircraft_id,
+      flight_context AS (
+  SELECT
+    f.airline_id,
+    f.aircraft_id,
 
-          s.id AS schedule_item_id,
-          s.flight_number,
-          s.paired_flight_number,
-          s.origin,
-          s.destination,
-          s.dep_abs_min,
-          s.arr_abs_min,
-          s.distance_nm,
-          s.flight_direction,
-          s.status AS schedule_status,
+    af.id AS active_schedule_item_id,
+    af.flight_number AS active_flight_number,
+    af.paired_flight_number AS active_paired_flight_number,
+    af.origin AS active_origin,
+    af.destination AS active_destination,
+    af.dep_abs_min AS active_dep_abs_min,
+    af.arr_abs_min AS active_arr_abs_min,
+    af.distance_nm AS active_distance_nm,
+    af.flight_direction AS active_flight_direction,
+    af.status AS active_schedule_status,
 
-          CASE
-            WHEN sim.now_abs_min >= s.dep_abs_min
-             AND sim.now_abs_min < s.arr_abs_min
-            THEN 'ACTIVE'
+    lf.id AS last_schedule_item_id,
+    lf.flight_number AS last_flight_number,
+    lf.paired_flight_number AS last_paired_flight_number,
+    lf.origin AS last_origin,
+    lf.destination AS last_destination,
+    lf.dep_abs_min AS last_dep_abs_min,
+    lf.arr_abs_min AS last_arr_abs_min,
+    lf.distance_nm AS last_distance_nm,
+    lf.flight_direction AS last_flight_direction,
+    lf.status AS last_schedule_status,
 
-            WHEN s.arr_abs_min <= sim.now_abs_min
-            THEN 'COMPLETED'
+    nf.id AS next_schedule_item_id,
+    nf.flight_number AS next_flight_number,
+    nf.paired_flight_number AS next_paired_flight_number,
+    nf.origin AS next_origin,
+    nf.destination AS next_destination,
+    nf.dep_abs_min AS next_dep_abs_min,
+    nf.arr_abs_min AS next_arr_abs_min,
+    nf.distance_nm AS next_distance_nm,
+    nf.flight_direction AS next_flight_direction,
+    nf.status AS next_schedule_status
 
-            WHEN s.dep_abs_min > sim.now_abs_min
-            THEN 'FUTURE'
+  FROM fleet f
+  CROSS JOIN sim
 
-            ELSE 'CONTEXT'
-          END AS flight_context
+  LEFT JOIN LATERAL (
+    SELECT s.*
+    FROM public.schedule_items s
+    WHERE
+      s.aircraft_id = f.aircraft_id
+      AND s.airline_id = f.airline_id
+      AND s.item_type = 'flight'
+      AND LOWER(COALESCE(s.status, 'assigned')) = 'assigned'
+      AND sim.now_abs_min >= s.dep_abs_min
+      AND sim.now_abs_min < s.arr_abs_min
+    ORDER BY s.dep_abs_min ASC, s.id ASC
+    LIMIT 1
+  ) af ON true
 
-        FROM fleet f
-        CROSS JOIN sim
+  LEFT JOIN LATERAL (
+    SELECT s.*
+    FROM public.schedule_items s
+    WHERE
+      s.aircraft_id = f.aircraft_id
+      AND s.airline_id = f.airline_id
+      AND s.item_type = 'flight'
+      AND LOWER(COALESCE(s.status, 'assigned')) = 'assigned'
+      AND s.arr_abs_min <= sim.now_abs_min
+    ORDER BY s.arr_abs_min DESC, s.id DESC
+    LIMIT 1
+  ) lf ON true
 
-        LEFT JOIN LATERAL (
-          SELECT s.*
-          FROM public.schedule_items s
-          WHERE
-            s.aircraft_id = f.aircraft_id
-            AND s.airline_id = f.airline_id
-            AND s.item_type = 'flight'
-            AND LOWER(COALESCE(s.status, 'assigned')) = 'assigned'
-
-          ORDER BY
-            CASE
-              WHEN sim.now_abs_min >= s.dep_abs_min
-               AND sim.now_abs_min < s.arr_abs_min
-              THEN 0
-
-              WHEN s.arr_abs_min <= sim.now_abs_min
-              THEN 1
-
-              WHEN s.dep_abs_min > sim.now_abs_min
-              THEN 2
-
-              ELSE 3
-            END,
-
-            CASE
-              WHEN s.arr_abs_min <= sim.now_abs_min
-              THEN s.arr_abs_min
-            END DESC,
-
-            CASE
-              WHEN s.dep_abs_min > sim.now_abs_min
-              THEN s.dep_abs_min
-            END ASC,
-
-            s.id ASC
-
-          LIMIT 1
-        ) s ON true
-      )
+  LEFT JOIN LATERAL (
+    SELECT s.*
+    FROM public.schedule_items s
+    WHERE
+      s.aircraft_id = f.aircraft_id
+      AND s.airline_id = f.airline_id
+      AND s.item_type = 'flight'
+      AND LOWER(COALESCE(s.status, 'assigned')) = 'assigned'
+      AND s.dep_abs_min > sim.now_abs_min
+    ORDER BY s.dep_abs_min ASC, s.id ASC
+    LIMIT 1
+  ) nf ON true
+)
 
       SELECT
         CASE
