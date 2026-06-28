@@ -1,6 +1,6 @@
 /* ============================================================
    ACS SKYTRACK SNAPSHOT — POSTGRESQL CANONICAL AUTHORITY
-   Endpoint: GET /v1/skytrack/snapshot
+   Endpoint: GET  /v1/skytrack/snapshot
    ============================================================ */
 
 import express from "express";
