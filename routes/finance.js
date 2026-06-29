@@ -19,7 +19,7 @@ router.get("/finance", requireAuth, async (req,res)=>{
     await pool.query(
       `
       INSERT INTO company_finance (airline_id, capital)
-      VALUES ($1, 700000)
+      VALUES ($1, 1500000)
       ON CONFLICT (airline_id)
       DO NOTHING
       `,
