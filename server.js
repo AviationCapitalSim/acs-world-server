@@ -7,6 +7,8 @@ import systemRoutes from "./routes/system.js";
 import authRoutes from "./routes/auth.js";
 import airlineRoutes from "./routes/airlines.js";
 import hrRoutes from "./routes/hr.js";
+import flightSettlementRoutes
+  from "./routes/flight_settlement.js";
 import financeRoutes from "./routes/finance.js";
 import companySettingsRoutes from "./routes/company_settings.js";
 import companyContextRoutes from "./routes/company_context.js";
