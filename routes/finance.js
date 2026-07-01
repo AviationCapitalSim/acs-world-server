@@ -57,10 +57,22 @@ router.get("/finance", requireAuth, async (req,res)=>{
 });
 
 /* ============================================================
-   UPDATE / UPSERT COMPANY FINANCE
+   UPDATE COMPANY FINANCE — DEPRECATED / BLOCKED
+   ------------------------------------------------------------
+   ACS OCC RULE:
+   company_finance cannot be overwritten from frontend.
+   Finance is event-driven only.
    ============================================================ */
 
 router.patch("/finance/update", requireAuth, async (req,res)=>{
+
+  return res.status(410).json({
+    ok: false,
+    error: "FINANCE_UPDATE_DEPRECATED",
+    message: "company_finance is OCC event-driven. Use canonical finance events."
+  });
+
+});
    
   const toInt = (v) => {
     const n = Number(v);
