@@ -4,6 +4,14 @@ import { requireAuth } from "../middleware/auth.js";
 
 const router = express.Router();
 
+const toInt = (v) => {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 0;
+  return Math.round(n);
+};
+
+const cleanText = (v) => String(v || "").trim();
+
 /* ============================================================
    GET COMPANY FINANCE
    ============================================================ */
@@ -14,8 +22,6 @@ router.get("/finance", requireAuth, async (req,res)=>{
 
   try{
 
-    /* ✅ STEP 1 — ENSURE ROW EXISTS (ATÓMICO) */
-
     await pool.query(
       `
       INSERT INTO company_finance (airline_id, capital)
@@ -25,8 +31,6 @@ router.get("/finance", requireAuth, async (req,res)=>{
       `,
       [airlineId]
     );
-
-    /* ✅ STEP 2 — FETCH REAL STATE */
 
     const result = await pool.query(
       `
@@ -47,7 +51,7 @@ router.get("/finance", requireAuth, async (req,res)=>{
 
     console.error("FINANCE FETCH ERROR",err);
 
-    res.status(500).json({
+    return res.status(500).json({
       ok:false,
       error:err.message
     });
@@ -58,10 +62,6 @@ router.get("/finance", requireAuth, async (req,res)=>{
 
 /* ============================================================
    UPDATE COMPANY FINANCE — DEPRECATED / BLOCKED
-   ------------------------------------------------------------
-   ACS OCC RULE:
-   company_finance cannot be overwritten from frontend.
-   Finance is event-driven only.
    ============================================================ */
 
 router.patch("/finance/update", requireAuth, async (req,res)=>{
@@ -73,58 +73,18 @@ router.patch("/finance/update", requireAuth, async (req,res)=>{
   });
 
 });
-   
+
 /* ============================================================
-   ADD FINANCE LOG ENTRY
+   ADD FINANCE LOG ENTRY — DEPRECATED / BLOCKED
    ============================================================ */
 
 router.post("/finance/log", requireAuth, async (req,res)=>{
 
-  const airline_id = req.airline_id;
-
-const {
-  type,
-  source,
-  amount,
-  timestamp
-} = req.body;
-
-  try{
-
-    await pool.query(
-      `
-      INSERT INTO finance_log
-      (
-        airline_id,
-        type,
-        source,
-        amount,
-        timestamp
-      )
-      VALUES($1,$2,$3,$4,$5)
-      `,
-      [
-        airline_id,
-        type,
-        source,
-        amount,
-        timestamp
-      ]
-    );
-
-    res.json({ok:true});
-
-  }
-  catch(err){
-
-    console.error("FINANCE LOG ERROR",err);
-
-    res.status(500).json({
-      ok:false,
-      error:err.message
-    });
-
-  }
+  return res.status(410).json({
+    ok: false,
+    error: "FINANCE_LOG_DIRECT_WRITE_DEPRECATED",
+    message: "finance_log cannot be written directly. Use canonical OCC finance events."
+  });
 
 });
 
@@ -149,7 +109,7 @@ router.get("/finance/log", requireAuth, async (req,res)=>{
       [airlineId]
     );
 
-    res.json({
+    return res.json({
       ok:true,
       logs: result.rows
     });
@@ -159,7 +119,7 @@ router.get("/finance/log", requireAuth, async (req,res)=>{
 
     console.error("FINANCE LOG FETCH ERROR",err);
 
-    res.status(500).json({
+    return res.status(500).json({
       ok:false,
       error:err.message
     });
@@ -169,147 +129,257 @@ router.get("/finance/log", requireAuth, async (req,res)=>{
 });
 
 /* ============================================================
-   ✈️ FINANCE — FLIGHT EVENT (CANONICAL OCC ENGINE) ✅ FIXED
+   FINANCE — FLIGHT EVENT CANONICAL OCC
    ============================================================ */
 
 router.post("/finance/flight-event", requireAuth, async (req,res)=>{
 
-const {
-  revenue,
-  cost_fuel,
-  cost_handling,
-  cost_slot,
-  cost_navigation,
-  cost_overflight
-} = req.body;
+  const airline_id = req.airline_id;
 
-const airline_id = req.airline_id;
+  const revenue          = toInt(req.body?.revenue);
+  const cost_fuel        = toInt(req.body?.cost_fuel);
+  const cost_handling    = toInt(req.body?.cost_handling);
+  const cost_slot        = toInt(req.body?.cost_slot);
+  const cost_navigation  = toInt(req.body?.cost_navigation);
+  const cost_overflight  = toInt(req.body?.cost_overflight);
 
-  try{
+  const route_plan_id    = req.body?.route_plan_id || null;
+  const schedule_item_id = req.body?.schedule_item_id || null;
 
-    /* ============================================================
-       🔒 FORCE INTEGER (CRITICAL FIX)
-       ============================================================ */
+  const reference_uid = cleanText(req.body?.reference_uid);
 
-    const toInt = (v) => {
-      const n = Number(v);
-      if (!Number.isFinite(n)) return 0;
-      return Math.round(n);
-    };
+  if (!reference_uid) {
+    return res.status(400).json({
+      ok: false,
+      error: "REFERENCE_UID_REQUIRED"
+    });
+  }
 
-    const airlineId = toInt(airline_id);
+  if (revenue < 0) {
+    return res.status(400).json({
+      ok: false,
+      error: "INVALID_REVENUE"
+    });
+  }
 
-    const r           = toInt(revenue);
-    const fuel        = toInt(cost_fuel);
-    const handling    = toInt(cost_handling);
-    const slot        = toInt(cost_slot);
-    const navigation  = toInt(cost_navigation);
-    const overflight  = toInt(cost_overflight);
+  const airportCost =
+    cost_handling +
+    cost_slot +
+    cost_navigation +
+    cost_overflight;
 
-    const airport   = handling + slot + navigation + overflight;
-    const totalCost = fuel + airport;
-    const profit    = r - totalCost;
+  const totalCost =
+    cost_fuel +
+    airportCost;
 
-    /* ============================================================
-       📊 LOG (AGREGADO)
-       ============================================================ */
+  const profit =
+    revenue -
+    totalCost;
 
-    await pool.query(`
-      INSERT INTO finance_log
-      (airline_id, type, source, amount, timestamp)
-      VALUES($1,'INCOME','FLIGHT',$2,$3)
-    `,[
-      airlineId,
-      r,
-      Date.now()
-    ]);
+  const incomeRef  = `FLIGHT:${reference_uid}:INCOME`;
+  const expenseRef = `FLIGHT:${reference_uid}:EXPENSE`;
 
-    /* ============================================================
-       🏦 UPDATE COMPANY FINANCE
-       ============================================================ */
+  const client = await pool.connect();
 
-    await pool.query(`
-      UPDATE company_finance
-      SET
-        revenue        = COALESCE(revenue,0) + $2,
-        expenses       = COALESCE(expenses,0) + $3,
-        profit         = COALESCE(profit,0) + $4,
-        capital        = COALESCE(capital,0) + $4,
+  try {
 
-        live_revenue   = COALESCE(live_revenue,0) + $2,
+    await client.query("BEGIN");
 
-        cost_fuel      = COALESCE(cost_fuel,0) + $5,
-
-        cost_handling  = COALESCE(cost_handling,0) + $6,
-        cost_slots     = COALESCE(cost_slots,0) + $7,
-        cost_navigation= COALESCE(cost_navigation,0) + $8,
-        cost_overflight= COALESCE(cost_overflight,0) + $9,
-
-        cost_airport   = COALESCE(cost_airport,0) + $10,
-
-        updated_at = NOW()
-
-      WHERE airline_id = $1
-    `,[
-      airlineId,
-      r,
-      totalCost,
-      profit,
-      fuel,
-      handling,
-      slot,
-      navigation,
-      overflight,
-      airport
-    ]);
-
-    /* ============================================================
-       📥 RETURN SNAPSHOT
-       ============================================================ */
-
-    const result = await pool.query(
-      `SELECT * FROM company_finance WHERE airline_id = $1`,
-      [airlineId]
+    await client.query(
+      `
+      INSERT INTO company_finance (airline_id, capital)
+      VALUES ($1, 1500000)
+      ON CONFLICT (airline_id)
+      DO NOTHING
+      `,
+      [airline_id]
     );
 
-    res.json({
-      ok:true,
-      finance: result.rows[0]
+    const incomeLog = await client.query(
+      `
+      INSERT INTO finance_log
+      (
+        airline_id,
+        type,
+        source,
+        amount,
+        timestamp,
+        route_plan_id,
+        schedule_item_id,
+        reference_uid,
+        description
+      )
+      VALUES
+      (
+        $1,
+        'INCOME',
+        'FLIGHT_REVENUE',
+        $2,
+        $3,
+        $4,
+        $5,
+        $6,
+        $7
+      )
+      ON CONFLICT (reference_uid)
+      DO NOTHING
+      RETURNING id
+      `,
+      [
+        airline_id,
+        revenue,
+        Date.now(),
+        route_plan_id,
+        schedule_item_id,
+        incomeRef,
+        "Flight revenue settled by ACS OCC"
+      ]
+    );
+
+    const expenseLog = await client.query(
+      `
+      INSERT INTO finance_log
+      (
+        airline_id,
+        type,
+        source,
+        amount,
+        timestamp,
+        route_plan_id,
+        schedule_item_id,
+        reference_uid,
+        description
+      )
+      VALUES
+      (
+        $1,
+        'EXPENSE',
+        'FLIGHT_COST',
+        $2,
+        $3,
+        $4,
+        $5,
+        $6,
+        $7
+      )
+      ON CONFLICT (reference_uid)
+      DO NOTHING
+      RETURNING id
+      `,
+      [
+        airline_id,
+        totalCost,
+        Date.now(),
+        route_plan_id,
+        schedule_item_id,
+        expenseRef,
+        "Flight costs settled by ACS OCC"
+      ]
+    );
+
+    if (
+      incomeLog.rows.length === 0 &&
+      expenseLog.rows.length === 0
+    ) {
+      const snapshot = await client.query(
+        `SELECT * FROM company_finance WHERE airline_id = $1`,
+        [airline_id]
+      );
+
+      await client.query("COMMIT");
+
+      return res.json({
+        ok: true,
+        already_settled: true,
+        finance: snapshot.rows[0]
+      });
+    }
+
+    if (
+      incomeLog.rows.length !== 1 ||
+      expenseLog.rows.length !== 1
+    ) {
+      throw new Error("PARTIAL_FLIGHT_EVENT_CONFLICT");
+    }
+
+    await client.query(
+      `
+      UPDATE company_finance
+      SET
+        revenue         = COALESCE(revenue,0) + $2,
+        expenses        = COALESCE(expenses,0) + $3,
+        profit          = COALESCE(profit,0) + $4,
+        capital         = COALESCE(capital,0) + $4,
+
+        live_revenue    = COALESCE(live_revenue,0) + $2,
+
+        cost_fuel       = COALESCE(cost_fuel,0) + $5,
+        cost_handling   = COALESCE(cost_handling,0) + $6,
+        cost_slots      = COALESCE(cost_slots,0) + $7,
+        cost_navigation = COALESCE(cost_navigation,0) + $8,
+        cost_overflight = COALESCE(cost_overflight,0) + $9,
+        cost_airport    = COALESCE(cost_airport,0) + $10,
+
+        updated_at = NOW()
+      WHERE airline_id = $1
+      `,
+      [
+        airline_id,
+        revenue,
+        totalCost,
+        profit,
+        cost_fuel,
+        cost_handling,
+        cost_slot,
+        cost_navigation,
+        cost_overflight,
+        airportCost
+      ]
+    );
+
+    const snapshot = await client.query(
+      `SELECT * FROM company_finance WHERE airline_id = $1`,
+      [airline_id]
+    );
+
+    await client.query("COMMIT");
+
+    return res.json({
+      ok: true,
+      applied: true,
+      finance: snapshot.rows[0]
     });
 
   }
   catch(err){
 
+    await client.query("ROLLBACK");
+
     console.error("FLIGHT EVENT ERROR",err);
 
-    res.status(500).json({
+    return res.status(500).json({
       ok:false,
       error:err.message
     });
+
+  }
+  finally {
+
+    client.release();
 
   }
 
 });
 
 /* ============================================================
-   💰 FINANCE — MONTHLY PAYROLL EVENT (BACKEND AUTHORITY)
-   ------------------------------------------------------------
-   • Ejecuta payroll mensual UNA sola vez por month_key
-   • Backend = autoridad de capital
-   • Idempotencia por airline_id + month_key
+   FINANCE — MONTHLY PAYROLL CANONICAL OCC
    ============================================================ */
 
 router.post("/finance/payroll", requireAuth, async (req,res)=>{
 
   const airline_id = req.airline_id;
 
-  const toInt = (v) => {
-    const n = Number(v);
-    if (!Number.isFinite(n)) return 0;
-    return Math.round(n);
-  };
-
-  const month_key = String(req.body?.month_key || "").trim();
+  const month_key = cleanText(req.body?.month_key);
   const amount    = toInt(req.body?.amount);
 
   if (!month_key || !/^\d{4}-\d{2}$/.test(month_key)) {
@@ -326,6 +396,7 @@ router.post("/finance/payroll", requireAuth, async (req,res)=>{
     });
   }
 
+  const reference_uid = `PAYROLL:${airline_id}:${month_key}`;
   const sourceKey = `HR_PAYROLL_${month_key}`;
 
   const client = await pool.connect();
@@ -334,45 +405,56 @@ router.post("/finance/payroll", requireAuth, async (req,res)=>{
 
     await client.query("BEGIN");
 
-    /* ============================================================
-       1) ENSURE COMPANY FINANCE ROW EXISTS
-       ============================================================ */
-
     await client.query(
       `
       INSERT INTO company_finance (airline_id, capital)
-      VALUES ($1, 700000)
+      VALUES ($1, 1500000)
       ON CONFLICT (airline_id)
       DO NOTHING
       `,
       [airline_id]
     );
 
-    /* ============================================================
-       2) IDEMPOTENCY CHECK
-       Una sola aplicación por mes
-       ============================================================ */
-
-    const existingLog = await client.query(
+    const logResult = await client.query(
       `
-      SELECT id
-      FROM finance_log
-      WHERE airline_id = $1
-        AND type = 'EXPENSE'
-        AND source = $2
-      LIMIT 1
+      INSERT INTO finance_log
+      (
+        airline_id,
+        type,
+        source,
+        amount,
+        timestamp,
+        reference_uid,
+        description
+      )
+      VALUES
+      (
+        $1,
+        'EXPENSE',
+        $2,
+        $3,
+        $4,
+        $5,
+        $6
+      )
+      ON CONFLICT (reference_uid)
+      DO NOTHING
+      RETURNING id
       `,
-      [airline_id, sourceKey]
+      [
+        airline_id,
+        sourceKey,
+        amount,
+        Date.now(),
+        reference_uid,
+        "Monthly payroll settled by ACS OCC"
+      ]
     );
 
-    if (existingLog.rows.length > 0) {
+    if (logResult.rows.length === 0) {
 
       const snapshot = await client.query(
-        `
-        SELECT *
-        FROM company_finance
-        WHERE airline_id = $1
-        `,
+        `SELECT * FROM company_finance WHERE airline_id = $1`,
         [airline_id]
       );
 
@@ -385,10 +467,6 @@ router.post("/finance/payroll", requireAuth, async (req,res)=>{
         finance: snapshot.rows[0]
       });
     }
-
-    /* ============================================================
-       3) APPLY MONTHLY PAYROLL TO LEDGER
-       ============================================================ */
 
     await client.query(
       `
@@ -404,40 +482,8 @@ router.post("/finance/payroll", requireAuth, async (req,res)=>{
       [airline_id, amount]
     );
 
-    /* ============================================================
-       4) LOG EVENT
-       ============================================================ */
-
-    await client.query(
-      `
-      INSERT INTO finance_log
-      (
-        airline_id,
-        type,
-        source,
-        amount,
-        timestamp
-      )
-      VALUES ($1, 'EXPENSE', $2, $3, $4)
-      `,
-      [
-        airline_id,
-        sourceKey,
-        amount,
-        Date.now()
-      ]
-    );
-
-    /* ============================================================
-       5) RETURN UPDATED SNAPSHOT
-       ============================================================ */
-
     const snapshot = await client.query(
-      `
-      SELECT *
-      FROM company_finance
-      WHERE airline_id = $1
-      `,
+      `SELECT * FROM company_finance WHERE airline_id = $1`,
       [airline_id]
     );
 
