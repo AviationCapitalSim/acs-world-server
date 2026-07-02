@@ -319,8 +319,7 @@ function ACS_sendError(res, error, fallback = "SCHEDULE_OPERATION_FAILED") {
   COMPANY_FINANCE_NOT_FOUND: 409,
   INSUFFICIENT_CAPITAL_FOR_MAINTENANCE: 409,
   MAINTENANCE_FINANCE_STATE_CONFLICT: 409,
-  MAINTENANCE_FINANCE_ALREADY_CHARGED: 409,
-  
+
   MAINTENANCE_EVENT_NOT_EDITABLE: 409,
   MAINTENANCE_DURATION_INVALID: 409,
   MAINTENANCE_EDIT_STATE_CONFLICT: 409,
@@ -2401,76 +2400,68 @@ const eventExpectedCompletionAt =
 
       if (immediateStart) {
 
-      const financeLogResult =
-  await client.query(
-    `
-    INSERT INTO public.finance_log (
-      airline_id,
-      type,
-      source,
-      amount,
-      timestamp,
-      schedule_item_id,
-      reference_uid,
-      description
-    )
-    VALUES (
-      $1,
-      'EXPENSE',
-      $2,
-      $3,
-      (
-        EXTRACT(
-          EPOCH
-          FROM acs_get_current_sim_time()
-        ) * 1000
-      )::BIGINT,
-      $4,
-      $5,
-      $6
-    )
-    ON CONFLICT (reference_uid)
-    DO NOTHING
-    RETURNING id
-    `,
-    [
-      airlineId,
+        const financeLogResult =
+          await client.query(
+            `
+            INSERT INTO public.finance_log (
+              airline_id,
+              type,
+              source,
+              amount,
+              timestamp,
 
-      `AIRCRAFT ${checkType} — ` +
-      `${
-        aircraft.registration ||
-        "UNREGISTERED"
-      } ` +
-      `${aircraft.aircraft_name}`,
+              schedule_item_id,
+              reference_uid,
 
-      estimatedCost,
+              description
+            )
+            VALUES (
+              $1,
+              'EXPENSE',
+              $2,
+              $3,
 
-      scheduleItem.id,
+              (
+                EXTRACT(
+                  EPOCH
+                  FROM acs_get_current_sim_time()
+                ) * 1000
+              )::BIGINT,
 
-      `MAINTENANCE:${maintenanceEvent.event_uid}`,
+              $4,
+              $5,
+              $6
+            )
 
-      `${ACS_checkDisplayName(
-        checkType
-      )} maintenance`
-    ]
-  );
+            RETURNING id
+            `,
+            [
+              airlineId,
 
-if (!financeLogResult.rows.length) {
+              `AIRCRAFT ${checkType} — ` +
+              `${
+                aircraft.registration ||
+                "UNREGISTERED"
+              } ` +
+              `${aircraft.aircraft_name}`,
 
-  const error =
-    new Error(
-      "MAINTENANCE_FINANCE_ALREADY_CHARGED"
-    );
+              estimatedCost,
 
-  error.code =
-    "MAINTENANCE_FINANCE_ALREADY_CHARGED";
+              scheduleItem.id,
 
-  throw error;
-}
+              String(
+                maintenanceEvent.event_uid
+              ),
 
-financeLogId =
-  financeLogResult.rows[0].id;
-         
+              `${ACS_checkDisplayName(
+                checkType
+              )} maintenance`
+            ]
+          );
+
+        financeLogId =
+          financeLogResult.rows[0].id;
+
         const financeUpdateResult =
           await client.query(
             `
