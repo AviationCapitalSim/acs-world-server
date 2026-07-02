@@ -143,17 +143,82 @@ export async function ACS_settleFlight(
     economicsResult.rows[0];
 
   /* ============================================================
-     6. LOAD FACTOR
-     ============================================================ */
+   6. LOAD FACTOR — ACS OCC STARTER ROUTE MODEL
+   ------------------------------------------------------------
+   - First 4 active routes get strong startup support.
+   - This makes the game feel alive early.
+   - Later, Marketing / Reputation / Competition will take over.
+   ============================================================ */
 
-  const routeAgeDays = 60;
+const routePositionResult = await client.query(
+  `
+  SELECT
+    id,
+    ROW_NUMBER() OVER (
+      PARTITION BY airline_id
+      ORDER BY created_at ASC, id ASC
+    ) AS route_position
+  FROM route_plans
+  WHERE airline_id = $1
+    AND UPPER(COALESCE(route_state, 'ACTIVE')) = 'ACTIVE'
+  ORDER BY created_at ASC, id ASC
+  `,
+  [airlineId]
+);
 
-  let loadFactor = 0.35;
+const routePositionRow =
+  routePositionResult.rows.find(
+    r => Number(r.id) === Number(route.id)
+  );
 
-  if (routeAgeDays >= 14) loadFactor = 0.50;
-  if (routeAgeDays >= 28) loadFactor = 0.65;
-  if (routeAgeDays >= 42) loadFactor = 0.78;
-  if (routeAgeDays >= 56) loadFactor = 0.88;
+const routePosition =
+  Number(routePositionRow?.route_position || 999);
+
+const routeAgeDays =
+  Math.max(
+    0,
+    Math.floor(
+      (
+        new Date().getTime() -
+        new Date(route.created_at || schedule.created_at).getTime()
+      ) / 86400000
+    )
+  );
+
+let loadFactor = 0.42;
+
+/*
+  First 4 starter routes:
+  Strong early boost, but not permanent.
+*/
+if (routePosition <= 4) {
+  loadFactor = 0.68;
+
+  if (routeAgeDays >= 7) loadFactor = 0.74;
+  if (routeAgeDays >= 14) loadFactor = 0.80;
+  if (routeAgeDays >= 28) loadFactor = 0.82;
+} else {
+  /*
+    Normal routes:
+    Slower organic growth.
+  */
+  loadFactor = 0.32;
+
+  if (routeAgeDays >= 7) loadFactor = 0.38;
+  if (routeAgeDays >= 14) loadFactor = 0.44;
+  if (routeAgeDays >= 28) loadFactor = 0.50;
+  if (routeAgeDays >= 42) loadFactor = 0.55;
+  if (routeAgeDays >= 56) loadFactor = 0.58;
+}
+
+/*
+  Safety limits.
+*/
+loadFactor =
+  Math.max(
+    0.20,
+    Math.min(loadFactor, 0.88)
+  );
 
   /* ============================================================
      7. PASSENGERS
