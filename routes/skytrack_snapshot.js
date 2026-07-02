@@ -46,7 +46,7 @@ router.get("/snapshot", requireAuth, async (req, res) => {
     airline_id
   FROM public.schedule_items
   WHERE item_type = 'flight'
-    AND LOWER(COALESCE(status, '')) = 'completed'
+    AND LOWER(COALESCE(status, '')) = 'assigned'
     AND finance_settled IS NOT TRUE
     AND arr_abs_min IS NOT NULL
     AND arr_abs_min <= $1
