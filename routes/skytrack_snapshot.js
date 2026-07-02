@@ -39,13 +39,11 @@ router.get("/snapshot", requireAuth, async (req, res) => {
       throw new Error("SKYTRACK_SIM_TIME_INVALID");
     }
 
-    const dueFlightsResult = await client.query(
+ const dueFlightsResult = await client.query(
   `
   SELECT
     id,
-    airline_id,
-    aircraft_id,
-    destination
+    airline_id
   FROM public.schedule_items
   WHERE item_type = 'flight'
     AND LOWER(COALESCE(status, '')) = 'assigned'
@@ -53,55 +51,54 @@ router.get("/snapshot", requireAuth, async (req, res) => {
     AND arr_abs_min IS NOT NULL
     AND arr_abs_min <= $1
   ORDER BY arr_abs_min ASC, id ASC
-  LIMIT 50
+  LIMIT 25
   FOR UPDATE SKIP LOCKED
   `,
   [nowAbsMin]
 );
 
 for (const flight of dueFlightsResult.rows) {
-  await client.query(
-    `
-    UPDATE public.schedule_items
-    SET
-      status = 'completed',
-      updated_at = NOW()
-    WHERE id = $1
-      AND airline_id = $2
-    `,
-    [flight.id, flight.airline_id]
-  );
+  try {
+    await client.query(`SAVEPOINT skytrack_flight_close`);
 
-  await client.query(
-    `
-    UPDATE public.aircraft_fleet
-    SET
-      current_airport = $3,
-      operational_status = 'AVAILABLE',
-      updated_at = NOW()
-    WHERE id = $1
-      AND airline_id = $2
-    `,
-    [flight.aircraft_id, flight.airline_id, flight.destination]
-  );
+    await client.query(
+      `
+      UPDATE public.schedule_items
+      SET
+        status = 'completed',
+        updated_at = NOW()
+      WHERE id = $1
+        AND airline_id = $2
+      `,
+      [flight.id, flight.airline_id]
+    );
 
-  const settlement = await ACS_settleFlight(
-    client,
-    flight.airline_id,
-    flight.id
-  );
+    const settlement = await ACS_settleFlight(
+      client,
+      flight.airline_id,
+      flight.id
+    );
 
-  if (!settlement?.ok) {
-    throw new Error(
-      `SKYTRACK_SETTLEMENT_FAILED schedule_item_id=${flight.id} error=${settlement?.error || "UNKNOWN"}`
+    if (!settlement?.ok) {
+      throw new Error(
+        `SETTLEMENT_FAILED ${settlement?.error || "UNKNOWN"}`
+      );
+    }
+
+    await client.query(`RELEASE SAVEPOINT skytrack_flight_close`);
+
+    console.log(
+      `[ACS SKYTRACK] Flight closed and settled schedule_item_id=${flight.id}`
+    );
+
+  } catch (flightErr) {
+    await client.query(`ROLLBACK TO SAVEPOINT skytrack_flight_close`);
+
+    console.error(
+      `[ACS SKYTRACK] Flight close failed schedule_item_id=${flight.id}`,
+      flightErr
     );
   }
-}
-
-if (dueFlightsResult.rows.length > 0) {
-  console.log(
-    `[ACS SKYTRACK] Closed and settled ${dueFlightsResult.rows.length} arrived flight(s)`
-  );
 }
      
     const result = await client.query(
