@@ -179,47 +179,52 @@ export async function ACS_settleFlight(client, airlineId, scheduleItemId) {
   const expenses = fuel + airportCost;
   const profit = revenue - expenses;
 
-  await client.query(
-    `
-    INSERT INTO public.finance_log (
-      airline_id,
-      type,
-      source,
-      amount,
-      timestamp,
-      route_plan_id,
-      schedule_item_id,
-      reference_uid,
-      description,
-      created_at
-    )
-    VALUES
-      ($1, 'INCOME',  'FLIGHT_REVENUE',    $2, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, $5, $6, NOW()),
-      ($1, 'EXPENSE', 'FLIGHT_FUEL',       $7, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, $5, $8, NOW()),
-      ($1, 'EXPENSE', 'FLIGHT_HANDLING',   $9, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, $5, $10, NOW()),
-      ($1, 'EXPENSE', 'FLIGHT_LANDING',    $11, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, $5, $12, NOW()),
-      ($1, 'EXPENSE', 'FLIGHT_NAVIGATION', $13, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, $5, $14, NOW()),
-      ($1, 'EXPENSE', 'FLIGHT_OVERFLIGHT', $15, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, $5, $16, NOW())
-    `,
-    [
-      airlineId,
-      revenue,
-      route.id,
-      schedule.id,
-      schedule.schedule_uid || route.route_uid,
-      `Flight revenue ${schedule.origin}-${schedule.destination} ${schedule.flight_number}`,
-      fuel,
-      `Fuel cost ${schedule.origin}-${schedule.destination} ${schedule.flight_number}`,
-      handling,
-      `Handling cost ${schedule.origin}-${schedule.destination} ${schedule.flight_number}`,
-      landing,
-      `Landing fee ${schedule.origin}-${schedule.destination} ${schedule.flight_number}`,
-      navigation,
-      `Navigation cost ${schedule.origin}-${schedule.destination} ${schedule.flight_number}`,
-      overflight,
-      `Overflight cost ${schedule.origin}-${schedule.destination} ${schedule.flight_number}`
-    ]
-  );
+ const financeLogResult = await client.query(
+  `
+  INSERT INTO public.finance_log (
+    airline_id,
+    type,
+    source,
+    amount,
+    timestamp,
+    route_plan_id,
+    schedule_item_id,
+    reference_uid,
+    description,
+    created_at
+  )
+  VALUES
+    ($1, 'INCOME',  'FLIGHT_REVENUE',    $2,  EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, $5, $6,  NOW()),
+    ($1, 'EXPENSE', 'FLIGHT_FUEL',       $7,  EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, $5, $8,  NOW()),
+    ($1, 'EXPENSE', 'FLIGHT_HANDLING',   $9,  EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, $5, $10, NOW()),
+    ($1, 'EXPENSE', 'FLIGHT_LANDING',    $11, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, $5, $12, NOW()),
+    ($1, 'EXPENSE', 'FLIGHT_NAVIGATION', $13, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, $5, $14, NOW()),
+    ($1, 'EXPENSE', 'FLIGHT_OVERFLIGHT', $15, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, $5, $16, NOW())
+  RETURNING id, type, source
+  `,
+  [
+    airlineId,
+    revenue,
+    route.id,
+    schedule.id,
+    schedule.schedule_uid || route.route_uid,
+    `Flight revenue ${schedule.origin}-${schedule.destination} ${schedule.flight_number}`,
+    fuel,
+    `Fuel cost ${schedule.origin}-${schedule.destination} ${schedule.flight_number}`,
+    handling,
+    `Handling cost ${schedule.origin}-${schedule.destination} ${schedule.flight_number}`,
+    landing,
+    `Landing fee ${schedule.origin}-${schedule.destination} ${schedule.flight_number}`,
+    navigation,
+    `Navigation cost ${schedule.origin}-${schedule.destination} ${schedule.flight_number}`,
+    overflight,
+    `Overflight cost ${schedule.origin}-${schedule.destination} ${schedule.flight_number}`
+  ]
+);
+
+const mainFinanceLogId = financeLogResult.rows.find(
+  r => r.type === "INCOME" && r.source === "FLIGHT_REVENUE"
+)?.id;
 
   await client.query(
     `
@@ -258,14 +263,17 @@ export async function ACS_settleFlight(client, airlineId, scheduleItemId) {
   await client.query(
     `
     UPDATE public.schedule_items
-    SET
-      finance_settled = TRUE,
-      finance_settled_at = NOW(),
-      updated_at = NOW()
+SET
+  finance_settled = TRUE,
+  finance_log_id = $3,
+  finance_settled_at = NOW(),
+  updated_at = NOW()
+WHERE id = $1
+  AND airline_id = $2
     WHERE id = $1
       AND airline_id = $2
     `,
-    [scheduleItemId, airlineId]
+    [scheduleItemId, airlineId, mainFinanceLogId]
   );
 
   const financeResult = await client.query(
