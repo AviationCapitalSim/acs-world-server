@@ -167,7 +167,7 @@ if (dueFlightsResult.rows.length > 0) {
         FROM public.schedule_items s
         WHERE
           s.item_type = 'flight'
-          AND LOWER(COALESCE(s.status, 'assigned')) = 'assigned'
+          AND LOWER(COALESCE(s.status, 'assigned')) IN ('assigned', 'completed')
       ),
 
       generated_return AS (
