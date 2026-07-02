@@ -2400,68 +2400,76 @@ const eventExpectedCompletionAt =
 
       if (immediateStart) {
 
-        const financeLogResult =
-          await client.query(
-            `
-            INSERT INTO public.finance_log (
-              airline_id,
-              type,
-              source,
-              amount,
-              timestamp,
+      const financeLogResult =
+  await client.query(
+    `
+    INSERT INTO public.finance_log (
+      airline_id,
+      type,
+      source,
+      amount,
+      timestamp,
+      schedule_item_id,
+      reference_uid,
+      description
+    )
+    VALUES (
+      $1,
+      'EXPENSE',
+      $2,
+      $3,
+      (
+        EXTRACT(
+          EPOCH
+          FROM acs_get_current_sim_time()
+        ) * 1000
+      )::BIGINT,
+      $4,
+      $5,
+      $6
+    )
+    ON CONFLICT (reference_uid)
+    DO NOTHING
+    RETURNING id
+    `,
+    [
+      airlineId,
 
-              schedule_item_id,
-              reference_uid,
+      `AIRCRAFT ${checkType} — ` +
+      `${
+        aircraft.registration ||
+        "UNREGISTERED"
+      } ` +
+      `${aircraft.aircraft_name}`,
 
-              description
-            )
-            VALUES (
-              $1,
-              'EXPENSE',
-              $2,
-              $3,
+      estimatedCost,
 
-              (
-                EXTRACT(
-                  EPOCH
-                  FROM acs_get_current_sim_time()
-                ) * 1000
-              )::BIGINT,
+      scheduleItem.id,
 
-              $4,
-              $5,
-              $6
-            )
+      `MAINTENANCE:${maintenanceEvent.event_uid}`,
 
-            RETURNING id
-            `,
-            [
-              airlineId,
+      `${ACS_checkDisplayName(
+        checkType
+      )} maintenance`
+    ]
+  );
 
-              `AIRCRAFT ${checkType} — ` +
-              `${
-                aircraft.registration ||
-                "UNREGISTERED"
-              } ` +
-              `${aircraft.aircraft_name}`,
+if (!financeLogResult.rows.length) {
 
-              estimatedCost,
+  const error =
+    new Error(
+      "MAINTENANCE_FINANCE_ALREADY_CHARGED"
+    );
 
-              scheduleItem.id,
+  error.code =
+    "MAINTENANCE_FINANCE_ALREADY_CHARGED";
 
-              String(
-                maintenanceEvent.event_uid
-              ),
+  throw error;
+}
 
-              `${ACS_checkDisplayName(
-                checkType
-              )} maintenance`
-            ]
-          );
-
-        financeLogId =
-          financeLogResult.rows[0].id;
-
+financeLogId =
+  financeLogResult.rows[0].id;
+         
         const financeUpdateResult =
           await client.query(
             `
