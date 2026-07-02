@@ -5563,6 +5563,7 @@ const financeLogResult = await client.query(
     $6
   )
   ON CONFLICT (reference_uid)
+  WHERE reference_uid IS NOT NULL
   DO NOTHING
   RETURNING id
   `,
