@@ -74,21 +74,45 @@ export async function ACS_settleFlight(client, airlineId, scheduleItemId) {
   const route = routeResult.rows[0];
 
   const aircraftResult = await client.query(
-    `
-    SELECT *
-    FROM public.aircraft_catalog
-    WHERE model_key = $1
-    LIMIT 1
-    `,
-    [schedule.model_key]
-  );
+  `
+  SELECT
+    af.id AS fleet_aircraft_id,
+    af.airline_id,
+    af.registration,
+    af.aircraft_name,
+    af.model_key AS fleet_model_key,
 
-  if (!aircraftResult.rows.length) {
-    return { ok: false, error: "AIRCRAFT_NOT_FOUND" };
-  }
+    ac.model_key AS catalog_model_key,
+    ac.seats,
+    ac.fuel_burn_kgph,
+    ac.speed_kts,
+    ac.range_nm,
+    ac.aircraft_category
+  FROM public.aircraft_fleet af
+  LEFT JOIN public.aircraft_catalog ac
+    ON ac.model_key = af.model_key
+  WHERE af.id = $1
+    AND af.airline_id = $2
+  LIMIT 1
+  `,
+  [schedule.aircraft_id, airlineId]
+);
 
-  const aircraft = aircraftResult.rows[0];
+if (!aircraftResult.rows.length) {
+  return { ok: false, error: "AIRCRAFT_FLEET_NOT_FOUND" };
+}
 
+const aircraft = aircraftResult.rows[0];
+
+if (!aircraft.catalog_model_key) {
+  return {
+    ok: false,
+    error: "AIRCRAFT_CATALOG_MODEL_NOT_FOUND",
+    model_key: aircraft.fleet_model_key,
+    aircraft_id: schedule.aircraft_id
+  };
+}
+   
   const simResult = await client.query(`
     SELECT
       acs_get_current_sim_time() AS sim_time,
