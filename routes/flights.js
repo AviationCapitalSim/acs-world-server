@@ -1,12 +1,14 @@
 import express from "express";
 import { pool } from "../db/pool.js";
 import { requireAuth } from "../middleware/auth.js";
+import { ACS_settleFlight } from "./flight_settlement.js";
 
 const router = express.Router();
 
 // =============================================
 // GET FLIGHTS
 // =============================================
+
 router.get("/flights", async (req, res) => {
 
   try {
@@ -159,36 +161,130 @@ router.post("/flight/departure", requireAuth, async (req, res) => {
 // FLIGHT ARRIVAL
 // =============================================
 
-router.post("/flight/arrival", requireAuth, async (req,res)=>{
+router.post("/flight/arrival", requireAuth, async (req, res) => {
+  const client = await pool.connect();
 
-  try{
+  try {
+    const { flight_id, schedule_item_id } = req.body || {};
 
-    const { flight_id } = req.body || {};
-
-    if(!flight_id){
-      return res.status(400).json({ status:"error", msg:"flight_id required" });
+    if (!flight_id && !schedule_item_id) {
+      return res.status(400).json({
+        status: "error",
+        msg: "flight_id or schedule_item_id required"
+      });
     }
 
-    await pool.query(
-      `DELETE FROM global_flights WHERE flight_id=$1`,
-      [flight_id]
-    );
+    await client.query("BEGIN");
 
-    res.json({ status:"ok", server_time:Date.now() });
+    let scheduleItemId = Number(schedule_item_id) || null;
 
-  }catch(err){
+    if (!scheduleItemId && flight_id) {
+      const flightResult = await client.query(
+        `
+        SELECT
+          id,
+          airline_id
+        FROM schedule_items
+        WHERE
+          item_type = 'flight'
+          AND (
+            schedule_uid = $1
+            OR route_uid = $1
+            OR flight_number = $1
+          )
+        ORDER BY id DESC
+        LIMIT 1
+        FOR UPDATE
+        `,
+        [flight_id]
+      );
 
-    console.error("ARRIVAL ERROR:",err);
+      if (flightResult.rows.length) {
+        scheduleItemId = Number(flightResult.rows[0].id);
+      }
+    }
 
-    res.status(500).json({
-      status:"error",
-      msg:"arrival failure",
-      error:err.message
+    let settlement = null;
+
+    if (scheduleItemId) {
+      const scheduleResult = await client.query(
+        `
+        SELECT *
+        FROM schedule_items
+        WHERE id = $1
+        FOR UPDATE
+        `,
+        [scheduleItemId]
+      );
+
+      if (!scheduleResult.rows.length) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({
+          status: "error",
+          msg: "schedule_item not found"
+        });
+      }
+
+      const schedule = scheduleResult.rows[0];
+
+      if (schedule.item_type !== "flight") {
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          status: "error",
+          msg: "schedule_item is not a flight"
+        });
+      }
+
+      if (schedule.status !== "cancelled") {
+        await client.query(
+          `
+          UPDATE schedule_items
+          SET
+            status = 'completed',
+            updated_at = NOW()
+          WHERE id = $1
+          `,
+          [scheduleItemId]
+        );
+
+        settlement = await ACS_settleFlight(
+          client,
+          schedule.airline_id,
+          scheduleItemId
+        );
+      }
+    }
+
+    if (flight_id) {
+      await client.query(
+        `DELETE FROM global_flights WHERE flight_id = $1`,
+        [flight_id]
+      );
+    }
+
+    await client.query("COMMIT");
+
+    return res.json({
+      status: "ok",
+      server_time: Date.now(),
+      schedule_item_id: scheduleItemId,
+      settlement
     });
 
+  } catch (err) {
+    await client.query("ROLLBACK");
+
+    console.error("ARRIVAL ERROR:", err);
+
+    return res.status(500).json({
+      status: "error",
+      msg: "arrival failure",
+      error: err.message
+    });
+
+  } finally {
+    client.release();
   }
-
 });
-
 
 export default router;
