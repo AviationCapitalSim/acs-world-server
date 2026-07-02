@@ -305,6 +305,90 @@ loadFactor =
     expenses;
 
   /* ============================================================
+   10. FINANCE SETTLEMENT
+   ============================================================ */
+
+const referenceUid =
+  `FLIGHT_SETTLEMENT:${scheduleItemId}`;
+
+const financeLogResult =
+  await client.query(
+    `
+    INSERT INTO finance_log (
+      airline_id,
+      type,
+      source,
+      amount,
+      timestamp,
+      schedule_item_id,
+      route_plan_id,
+      reference_uid,
+      description,
+      created_at
+    )
+    VALUES (
+      $1,
+      'INCOME',
+      'FLIGHT PASSENGER REVENUE',
+      $2,
+      EXTRACT(EPOCH FROM NOW())::BIGINT * 1000,
+      $3,
+      $4,
+      $5,
+      $6,
+      NOW()
+    )
+    ON CONFLICT DO NOTHING
+    RETURNING id
+    `,
+    [
+      airlineId,
+      revenue,
+      scheduleItemId,
+      route.id,
+      referenceUid,
+      `${schedule.flight_number} ${schedule.origin}-${schedule.destination}`
+    ]
+  );
+
+if (financeLogResult.rows.length) {
+
+  await client.query(
+    `
+    UPDATE company_finance
+    SET
+      revenue =
+        COALESCE(revenue,0) + $2,
+      live_revenue =
+        COALESCE(live_revenue,0) + $2,
+      profit =
+        COALESCE(profit,0) + $2,
+      updated_at = NOW()
+    WHERE airline_id = $1
+    `,
+    [
+      airlineId,
+      revenue
+    ]
+  );
+
+  await client.query(
+    `
+    UPDATE schedule_items
+    SET
+      finance_settled = TRUE,
+      finance_log_id = $2,
+      finance_settled_at = NOW()
+    WHERE id = $1
+    `,
+    [
+      scheduleItemId,
+      financeLogResult.rows[0].id
+    ]
+  );
+}
+   
+  /* ============================================================
      RETURN PREVIEW
      ============================================================ */
 
