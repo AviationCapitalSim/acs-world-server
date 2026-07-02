@@ -6,6 +6,7 @@
 import express from "express";
 import { pool } from "../db/pool.js";
 import { requireAuth } from "../middleware/auth.js";
+import { ACS_settleFlight } from "./flight_settlement.js";
 
 const router = express.Router();
 
@@ -19,7 +20,7 @@ router.get("/snapshot", requireAuth, async (req, res) => {
   const client = await pool.connect();
 
   try {
-    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    await client.query("BEGIN");
 
     const simResult = await client.query(`
       SELECT
