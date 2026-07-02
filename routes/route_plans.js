@@ -1432,90 +1432,88 @@ router.post("/routes/plans", requireAuth, async (req, res) => {
     let financeLog = null;
 
     if (totalSlotPrice > 0) {
-      await client.query(
-        `
-      const financeLogResult = await client.query(
-        `
-        INSERT INTO public.finance_log (
-          airline_id,
-          type,
-          source,
-          amount,
-          timestamp,
-          route_plan_id,
-          schedule_item_id,
-          reference_uid,
-          description,
-          created_at
-        )
-        VALUES (
-          $1,
-          'EXPENSE',
-          'AIRPORT SLOT FEE',
-          $2,
-          EXTRACT(EPOCH FROM NOW())::BIGINT * 1000,
-          $3,
-          NULL,
-          $4,
-          $5,
-          NOW()
-        )
-        RETURNING *
-        `,
-        [
-          airlineId,
-          totalSlotPrice,
-          routePlan.id,
-          routePlan.route_uid,
-          `Airport slot fee for route ${origin}-${destination} flights ${flightNumberOut}/${flightNumberIn} — ACS year ${officialTime.sim_year}`
-        ]
-      );
+  const financeLogResult = await client.query(
+    `
+    INSERT INTO public.finance_log (
+      airline_id,
+      type,
+      source,
+      amount,
+      timestamp,
+      route_plan_id,
+      schedule_item_id,
+      reference_uid,
+      description,
+      created_at
+    )
+    VALUES (
+      $1,
+      'EXPENSE',
+      'AIRPORT SLOT FEE',
+      $2,
+      EXTRACT(EPOCH FROM NOW())::BIGINT * 1000,
+      $3,
+      NULL,
+      $4,
+      $5,
+      NOW()
+    )
+    RETURNING *
+    `,
+    [
+      airlineId,
+      totalSlotPrice,
+      routePlan.id,
+      routePlan.route_uid,
+      `Airport slot fee for route ${origin}-${destination} flights ${flightNumberOut}/${flightNumberIn} — ACS year ${officialTime.sim_year}`
+    ]
+  );
 
-      financeLog = financeLogResult.rows[0];
+  financeLog = financeLogResult.rows[0];
 
-      await client.query(
-  `
-  UPDATE public.company_finance
-  SET
-    capital = COALESCE(capital,0) - $2,
-    expenses = COALESCE(expenses,0) + $2,
-    profit = COALESCE(profit,0) - $2,
-    cost_slots = COALESCE(cost_slots,0) + $2,
-    updated_at = NOW()
-  WHERE airline_id = $1
-  `,
-  [
-    airlineId,
-    totalSlotPrice
-  ]
-);
-    
-      const updatedRouteResult = await client.query(
-        `
-        UPDATE public.route_plans
-        SET
-          origin_slot_price = $1,
-          destination_slot_price = $2,
-          total_slot_price = $3,
-          selected_schedule_cost = $3,
-          finance_applied = TRUE,
-          finance_transaction_id = $4,
-          updated_at = NOW()
-        WHERE id = $5
-        RETURNING *
-        `,
-        [
-          originSlotFee,
-          destinationSlotFee,
-          totalSlotPrice,
-          String(financeLog.id),
-          routePlan.id
-        ]
-      );
+  await client.query(
+    `
+    UPDATE public.company_finance
+    SET
+      capital = COALESCE(capital,0) - $2,
+      expenses = COALESCE(expenses,0) + $2,
+      profit = COALESCE(profit,0) - $2,
+      cost_slots = COALESCE(cost_slots,0) + $2,
+      updated_at = NOW()
+    WHERE airline_id = $1
+    `,
+    [
+      airlineId,
+      totalSlotPrice
+    ]
+  );
 
-      routePlan = updatedRouteResult.rows[0];
-    }
+  const updatedRouteResult = await client.query(
+    `
+    UPDATE public.route_plans
+    SET
+      origin_slot_price = $1,
+      destination_slot_price = $2,
+      total_slot_price = $3,
+      selected_schedule_cost = $3,
+      finance_applied = TRUE,
+      finance_transaction_id = $4,
+      updated_at = NOW()
+    WHERE id = $5
+    RETURNING *
+    `,
+    [
+      originSlotFee,
+      destinationSlotFee,
+      totalSlotPrice,
+      String(financeLog.id),
+      routePlan.id
+    ]
+  );
 
+  routePlan = updatedRouteResult.rows[0];
+}
+     
     await client.query("COMMIT");
     transactionStarted = false;
 
