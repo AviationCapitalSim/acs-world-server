@@ -27,6 +27,7 @@ import skytrackGlobalRoutes
   from "./routes/skytrack_global.js";
 import skytrackSnapshotRoutes
   from "./routes/skytrack_snapshot.js";
+import flightSettlementRoutes from "./routes/flight_settlement.js";
 
 dotenv.config();
 
@@ -140,6 +141,7 @@ app.use("/v1", aircraftRoutes);
 app.use("/v1", routePlanRoutes);
 app.use("/v1/aircraft/factory", factoryRoutes);
 app.use("/v1", airportsRoutes);
+app.use("/v1", flightSettlementRoutes);
 
 const PORT = process.env.PORT || 3000;
 
