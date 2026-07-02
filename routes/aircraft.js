@@ -4207,10 +4207,12 @@ if (!(simTime instanceof Date) || Number.isNaN(simTime.getTime())) {
       `
       UPDATE company_finance
       SET
-        capital = COALESCE(capital, 0) - $2,
-        expenses = COALESCE(expenses, 0) + $2,
-        profit = COALESCE(profit, 0) - $2,
-        updated_at = NOW()
+      capital = COALESCE(capital, 0) - $2,
+      expenses = COALESCE(expenses, 0) + $2,
+      profit = COALESCE(profit, 0) - $2,
+      cost_used_aircraft_purchase =
+      COALESCE(cost_used_aircraft_purchase, 0) + $2,
+      updated_at = NOW()
       WHERE airline_id = $1
       `,
       [airlineId, purchasePrice]
