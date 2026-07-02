@@ -39,6 +39,71 @@ router.get("/snapshot", requireAuth, async (req, res) => {
       throw new Error("SKYTRACK_SIM_TIME_INVALID");
     }
 
+    const dueFlightsResult = await client.query(
+  `
+  SELECT
+    id,
+    airline_id,
+    aircraft_id,
+    destination
+  FROM public.schedule_items
+  WHERE item_type = 'flight'
+    AND LOWER(COALESCE(status, '')) = 'assigned'
+    AND finance_settled IS NOT TRUE
+    AND arr_abs_min IS NOT NULL
+    AND arr_abs_min <= $1
+  ORDER BY arr_abs_min ASC, id ASC
+  LIMIT 50
+  FOR UPDATE SKIP LOCKED
+  `,
+  [nowAbsMin]
+);
+
+for (const flight of dueFlightsResult.rows) {
+  await client.query(
+    `
+    UPDATE public.schedule_items
+    SET
+      status = 'completed',
+      updated_at = NOW()
+    WHERE id = $1
+      AND airline_id = $2
+    `,
+    [flight.id, flight.airline_id]
+  );
+
+  await client.query(
+    `
+    UPDATE public.aircraft_fleet
+    SET
+      current_airport = $3,
+      operational_status = 'AVAILABLE',
+      updated_at = NOW()
+    WHERE id = $1
+      AND airline_id = $2
+    `,
+    [flight.aircraft_id, flight.airline_id, flight.destination]
+  );
+
+  const settlement = await ACS_settleFlight(
+    client,
+    flight.airline_id,
+    flight.id
+  );
+
+  if (!settlement?.ok) {
+    throw new Error(
+      `SKYTRACK_SETTLEMENT_FAILED schedule_item_id=${flight.id} error=${settlement?.error || "UNKNOWN"}`
+    );
+  }
+}
+
+if (dueFlightsResult.rows.length > 0) {
+  console.log(
+    `[ACS SKYTRACK] Closed and settled ${dueFlightsResult.rows.length} arrived flight(s)`
+  );
+}
+     
     const result = await client.query(
       `
       WITH sim AS (
