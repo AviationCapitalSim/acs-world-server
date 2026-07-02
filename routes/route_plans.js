@@ -1434,17 +1434,6 @@ router.post("/routes/plans", requireAuth, async (req, res) => {
     if (totalSlotPrice > 0) {
       await client.query(
         `
-        UPDATE public.company_finance
-        SET
-          capital = COALESCE(capital, 0) - $2,
-          expenses = COALESCE(expenses, 0) + $2,
-          cost_slots = COALESCE(cost_slots, 0) + $2,
-          updated_at = NOW()
-        WHERE airline_id = $1
-        `,
-        [airlineId, totalSlotPrice]
-      );
-
       const financeLogResult = await client.query(
         `
         INSERT INTO public.finance_log (
@@ -1484,6 +1473,23 @@ router.post("/routes/plans", requireAuth, async (req, res) => {
 
       financeLog = financeLogResult.rows[0];
 
+      await client.query(
+  `
+  UPDATE public.company_finance
+  SET
+    capital = COALESCE(capital,0) - $2,
+    expenses = COALESCE(expenses,0) + $2,
+    profit = COALESCE(profit,0) - $2,
+    cost_slots = COALESCE(cost_slots,0) + $2,
+    updated_at = NOW()
+  WHERE airline_id = $1
+  `,
+  [
+    airlineId,
+    totalSlotPrice
+  ]
+);
+    
       const updatedRouteResult = await client.query(
         `
         UPDATE public.route_plans
