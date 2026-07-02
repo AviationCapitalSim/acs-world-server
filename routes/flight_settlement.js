@@ -10,25 +10,24 @@
    - Backend authority only
    - 700+ players ready
    ============================================================ */
-
+import express from "express";
 import { pool } from "../db/pool.js";
+import { requireAuth } from "../middleware/auth.js";
 
-export async function ACS_settleFlight(
-  client,
-  airlineId,
-  scheduleItemId
-) {
+const router = express.Router();
 
-  /* ============================================================
-     1. LOCK FLIGHT
-     ============================================================ */
+const ACS_money = (v) => {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 0;
+  return Math.round(n);
+};
 
+export async function ACS_settleFlight(client, airlineId, scheduleItemId) {
   const scheduleResult = await client.query(
     `
     SELECT *
-    FROM schedule_items
-    WHERE
-      id = $1
+    FROM public.schedule_items
+    WHERE id = $1
       AND airline_id = $2
     FOR UPDATE
     `,
@@ -36,10 +35,7 @@ export async function ACS_settleFlight(
   );
 
   if (!scheduleResult.rows.length) {
-    return {
-      ok: false,
-      error: "SCHEDULE_NOT_FOUND"
-    };
+    return { ok: false, error: "SCHEDULE_NOT_FOUND" };
   }
 
   const schedule = scheduleResult.rows[0];
@@ -48,41 +44,39 @@ export async function ACS_settleFlight(
     return {
       ok: true,
       skipped: true,
-      reason: "ALREADY_SETTLED"
+      reason: "ALREADY_SETTLED",
+      schedule_item_id: scheduleItemId
     };
   }
 
-  /* ============================================================
-     2. ROUTE
-     ============================================================ */
+  if (String(schedule.status || "").toUpperCase() === "CANCELLED") {
+    return {
+      ok: false,
+      error: "CANNOT_SETTLE_CANCELLED_FLIGHT"
+    };
+  }
 
   const routeResult = await client.query(
     `
     SELECT *
-    FROM route_plans
+    FROM public.route_plans
     WHERE id = $1
+      AND airline_id = $2
     LIMIT 1
     `,
-    [schedule.route_plan_id]
+    [schedule.route_plan_id, airlineId]
   );
 
   if (!routeResult.rows.length) {
-    return {
-      ok: false,
-      error: "ROUTE_NOT_FOUND"
-    };
+    return { ok: false, error: "ROUTE_NOT_FOUND" };
   }
 
   const route = routeResult.rows[0];
 
-  /* ============================================================
-     3. AIRCRAFT
-     ============================================================ */
-
   const aircraftResult = await client.query(
     `
     SELECT *
-    FROM aircraft_catalog
+    FROM public.aircraft_catalog
     WHERE model_key = $1
     LIMIT 1
     `,
@@ -90,343 +84,272 @@ export async function ACS_settleFlight(
   );
 
   if (!aircraftResult.rows.length) {
-    return {
-      ok: false,
-      error: "AIRCRAFT_NOT_FOUND"
-    };
+    return { ok: false, error: "AIRCRAFT_NOT_FOUND" };
   }
 
   const aircraft = aircraftResult.rows[0];
 
-  /* ============================================================
-     4. CURRENT ACS YEAR
-     ============================================================ */
-
   const simResult = await client.query(`
     SELECT
-      EXTRACT(
-        YEAR
-        FROM acs_get_current_sim_time()
-      )::int AS sim_year
+      acs_get_current_sim_time() AS sim_time,
+      EXTRACT(YEAR FROM acs_get_current_sim_time())::int AS sim_year
   `);
 
-  const simYear =
-    Number(simResult.rows[0]?.sim_year || 1940);
-
-  /* ============================================================
-     5. ECONOMIC PERIOD
-     ============================================================ */
+  const simYear = Number(simResult.rows[0]?.sim_year || 1940);
 
   const economicsResult = await client.query(
     `
     SELECT fe.*
-    FROM flight_economics fe
-    INNER JOIN acs_economic_periods ep
+    FROM public.flight_economics fe
+    INNER JOIN public.acs_economic_periods ep
       ON ep.id = fe.period_id
-    WHERE
-      $1 BETWEEN
-        ep.era_start_year
-        AND ep.era_end_year
+    WHERE $1 BETWEEN ep.era_start_year AND ep.era_end_year
     LIMIT 1
     `,
     [simYear]
   );
 
   if (!economicsResult.rows.length) {
-    return {
-      ok: false,
-      error: "ECONOMICS_NOT_FOUND"
-    };
+    return { ok: false, error: "ECONOMICS_NOT_FOUND" };
   }
 
-  const economics =
-    economicsResult.rows[0];
+  const economics = economicsResult.rows[0];
 
-  /* ============================================================
-   6. LOAD FACTOR — ACS OCC STARTER ROUTE MODEL
-   ------------------------------------------------------------
-   - First 4 active routes get strong startup support.
-   - This makes the game feel alive early.
-   - Later, Marketing / Reputation / Competition will take over.
-   ============================================================ */
-
-const routePositionResult = await client.query(
-  `
-  SELECT
-    id,
-    ROW_NUMBER() OVER (
-      PARTITION BY airline_id
-      ORDER BY created_at ASC, id ASC
-    ) AS route_position
-  FROM route_plans
-  WHERE airline_id = $1
-    AND UPPER(COALESCE(route_state, 'ACTIVE')) = 'ACTIVE'
-  ORDER BY created_at ASC, id ASC
-  `,
-  [airlineId]
-);
-
-const routePositionRow =
-  routePositionResult.rows.find(
-    r => Number(r.id) === Number(route.id)
+  const routeOrderResult = await client.query(
+    `
+    SELECT COUNT(*)::int AS route_number
+    FROM public.route_plans
+    WHERE airline_id = $1
+      AND id <= $2
+    `,
+    [airlineId, route.id]
   );
 
-const routePosition =
-  Number(routePositionRow?.route_position || 999);
+  const routeNumber = Number(routeOrderResult.rows[0]?.route_number || 999);
+  const starterBoost = routeNumber <= 4 ? 1.18 : 1.0;
 
-const routeAgeDays =
-  Math.max(
-    0,
-    Math.floor(
-      (
-        new Date().getTime() -
-        new Date(route.created_at || schedule.created_at).getTime()
-      ) / 86400000
-    )
+  const distanceNm = ACS_money(schedule.distance_nm || route.distance_nm);
+  const blockHours = Math.max(
+    0.25,
+    Number(schedule.block_time_min || route.block_time_min || 60) / 60
   );
 
-let loadFactor = 0.42;
+  let loadFactor = 0.62;
 
-/*
-  First 4 starter routes:
-  Strong early boost, but not permanent.
-*/
-if (routePosition <= 4) {
-  loadFactor = 0.68;
+  if (routeNumber <= 4) loadFactor = 0.74;
 
-  if (routeAgeDays >= 7) loadFactor = 0.74;
-  if (routeAgeDays >= 14) loadFactor = 0.80;
-  if (routeAgeDays >= 28) loadFactor = 0.82;
-} else {
-  /*
-    Normal routes:
-    Slower organic growth.
-  */
-  loadFactor = 0.32;
+  loadFactor = Math.min(0.92, loadFactor * starterBoost);
 
-  if (routeAgeDays >= 7) loadFactor = 0.38;
-  if (routeAgeDays >= 14) loadFactor = 0.44;
-  if (routeAgeDays >= 28) loadFactor = 0.50;
-  if (routeAgeDays >= 42) loadFactor = 0.55;
-  if (routeAgeDays >= 56) loadFactor = 0.58;
-}
+  const seats = ACS_money(aircraft.seats || 0);
 
-/*
-  Safety limits.
-*/
-loadFactor =
-  Math.max(
-    0.20,
-    Math.min(loadFactor, 0.88)
+  const passengers = Math.max(
+    1,
+    Math.round(seats * loadFactor)
   );
 
-  /* ============================================================
-     7. PASSENGERS
-     ============================================================ */
+  const revenue = ACS_money(
+    passengers *
+    distanceNm *
+    Number(economics.passenger_yield_usd_per_pax_mile || 0) *
+    Number(economics.demand_multiplier || 1)
+  );
 
-  const passengers =
-    Math.max(
-      1,
-      Math.round(
-        Number(aircraft.seats || 0) *
-        loadFactor
-      )
-    );
+  const fuelKg = Number(aircraft.fuel_burn_kgph || 0) * blockHours;
+  const fuelGallons = fuelKg / 3.04;
 
-  /* ============================================================
-     8. REVENUE
-     ============================================================ */
+  const fuel = ACS_money(
+    fuelGallons *
+    Number(economics.fuel_price_usd_per_gallon || 0)
+  );
 
-  const revenue =
-    Math.round(
-      passengers *
-      Number(route.distance_nm || 0) *
-      Number(
-        economics.passenger_yield_usd_per_pax_mile || 0
-      ) *
-      Number(
-        economics.demand_multiplier || 1
-      )
-    );
+  const handling = ACS_money(economics.handling_base_usd || 0);
+  const landing = ACS_money(economics.landing_fee_base_usd || 0);
 
-  /* ============================================================
-     9. COSTS
-     ============================================================ */
+  const navigation = ACS_money(
+    distanceNm *
+    Number(economics.navigation_usd_per_nm || 0)
+  );
 
-  const fuel =
-    Math.round(
-      Number(
-        aircraft.fuel_burn_kgph || 0
-      ) *
-      Number(
-        economics.fuel_price_usd_per_gallon || 0
-      )
-    );
+  const overflight = ACS_money(
+    distanceNm *
+    Number(economics.overflight_usd_per_nm || 0)
+  );
 
-  const handling =
-    Math.round(
-      Number(
-        economics.handling_base_usd || 0
-      )
-    );
+  const airportCost = handling + landing + navigation + overflight;
+  const expenses = fuel + airportCost;
+  const profit = revenue - expenses;
 
-  const landing =
-    Math.round(
-      Number(
-        economics.landing_fee_base_usd || 0
-      )
-    );
-
-  const navigation =
-    Math.round(
-      Number(route.distance_nm || 0) *
-      Number(
-        economics.navigation_usd_per_nm || 0
-      )
-    );
-
-  const overflight =
-    Math.round(
-      Number(route.distance_nm || 0) *
-      Number(
-        economics.overflight_usd_per_nm || 0
-      )
-    );
-
-  const expenses =
-    fuel +
-    handling +
-    landing +
-    navigation +
-    overflight;
-
-  const profit =
-    revenue -
-    expenses;
-
-  /* ============================================================
-   10. FINANCE SETTLEMENT
-   ============================================================ */
-
-const referenceUid =
-  `FLIGHT_SETTLEMENT:${scheduleItemId}`;
-
-const financeLogResult =
   await client.query(
     `
-    INSERT INTO finance_log (
+    INSERT INTO public.finance_log (
       airline_id,
       type,
       source,
       amount,
       timestamp,
-      schedule_item_id,
       route_plan_id,
+      schedule_item_id,
       reference_uid,
       description,
       created_at
     )
-    VALUES (
-      $1,
-      'INCOME',
-      'FLIGHT PASSENGER REVENUE',
-      $2,
-      EXTRACT(EPOCH FROM NOW())::BIGINT * 1000,
-      $3,
-      $4,
-      $5,
-      $6,
-      NOW()
-    )
-    ON CONFLICT DO NOTHING
-    RETURNING id
+    VALUES
+      ($1, 'INCOME',  'FLIGHT_REVENUE',    $2, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, $5, $6, NOW()),
+      ($1, 'EXPENSE', 'FLIGHT_FUEL',       $7, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, $5, $8, NOW()),
+      ($1, 'EXPENSE', 'FLIGHT_HANDLING',   $9, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, $5, $10, NOW()),
+      ($1, 'EXPENSE', 'FLIGHT_LANDING',    $11, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, $5, $12, NOW()),
+      ($1, 'EXPENSE', 'FLIGHT_NAVIGATION', $13, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, $5, $14, NOW()),
+      ($1, 'EXPENSE', 'FLIGHT_OVERFLIGHT', $15, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, $5, $16, NOW())
     `,
     [
       airlineId,
       revenue,
-      scheduleItemId,
       route.id,
-      referenceUid,
-      `${schedule.flight_number} ${schedule.origin}-${schedule.destination}`
+      schedule.id,
+      schedule.schedule_uid || route.route_uid,
+      `Flight revenue ${schedule.origin}-${schedule.destination} ${schedule.flight_number}`,
+      fuel,
+      `Fuel cost ${schedule.origin}-${schedule.destination} ${schedule.flight_number}`,
+      handling,
+      `Handling cost ${schedule.origin}-${schedule.destination} ${schedule.flight_number}`,
+      landing,
+      `Landing fee ${schedule.origin}-${schedule.destination} ${schedule.flight_number}`,
+      navigation,
+      `Navigation cost ${schedule.origin}-${schedule.destination} ${schedule.flight_number}`,
+      overflight,
+      `Overflight cost ${schedule.origin}-${schedule.destination} ${schedule.flight_number}`
     ]
   );
 
-if (financeLogResult.rows.length) {
-
   await client.query(
     `
-    UPDATE company_finance
+    UPDATE public.company_finance
     SET
-      revenue =
-        COALESCE(revenue,0) + $2,
-      live_revenue =
-        COALESCE(live_revenue,0) + $2,
-      profit =
-        COALESCE(profit,0) + $2,
+      revenue = COALESCE(revenue, 0) + $2,
+      live_revenue = COALESCE(live_revenue, 0) + $2,
+      weekly_revenue = COALESCE(weekly_revenue, 0) + $2,
+
+      expenses = COALESCE(expenses, 0) + $3,
+      profit = COALESCE(profit, 0) + $4,
+      capital = COALESCE(capital, 0) + $4,
+
+      cost_fuel = COALESCE(cost_fuel, 0) + $5,
+      cost_handling = COALESCE(cost_handling, 0) + $6,
+      cost_navigation = COALESCE(cost_navigation, 0) + $7,
+      cost_overflight = COALESCE(cost_overflight, 0) + $8,
+      cost_airport = COALESCE(cost_airport, 0) + $9,
+
       updated_at = NOW()
     WHERE airline_id = $1
     `,
     [
       airlineId,
-      revenue
+      revenue,
+      expenses,
+      profit,
+      fuel,
+      handling + landing,
+      navigation,
+      overflight,
+      airportCost
     ]
   );
 
   await client.query(
     `
-    UPDATE schedule_items
+    UPDATE public.schedule_items
     SET
       finance_settled = TRUE,
-      finance_log_id = $2,
-      finance_settled_at = NOW()
+      finance_settled_at = NOW(),
+      updated_at = NOW()
     WHERE id = $1
+      AND airline_id = $2
     `,
-    [
-      scheduleItemId,
-      financeLogResult.rows[0].id
-    ]
+    [scheduleItemId, airlineId]
   );
-}
-   
-  /* ============================================================
-     RETURN PREVIEW
-     ============================================================ */
+
+  const financeResult = await client.query(
+    `
+    SELECT *
+    FROM public.company_finance
+    WHERE airline_id = $1
+    `,
+    [airlineId]
+  );
 
   return {
-
     ok: true,
-
-    airline_id:
-      airlineId,
-
-    schedule_item_id:
-      scheduleItemId,
-
-    sim_year:
-      simYear,
-
-    aircraft:
-      aircraft.aircraft_name,
-
-    passengers,
-
-    load_factor:
-      loadFactor,
-
-    revenue,
-
-    fuel,
-
-    handling,
-
-    landing,
-
-    navigation,
-
-    overflight,
-
-    expenses,
-
-    profit
+    airline_id: airlineId,
+    schedule_item_id: scheduleItemId,
+    route_plan_id: route.id,
+    sim_year: simYear,
+    flight: {
+      origin: schedule.origin,
+      destination: schedule.destination,
+      flight_number: schedule.flight_number,
+      aircraft: schedule.aircraft,
+      registration: schedule.aircraft_registration
+    },
+    settlement: {
+      passengers,
+      load_factor: loadFactor,
+      revenue,
+      fuel,
+      handling,
+      landing,
+      navigation,
+      overflight,
+      expenses,
+      profit
+    },
+    finance: financeResult.rows[0]
   };
 }
+
+router.post("/finance/flight-settlement", requireAuth, async (req, res) => {
+  const airlineId = req.airline_id;
+  const scheduleItemId = Number(req.body.schedule_item_id);
+
+  if (!Number.isInteger(scheduleItemId) || scheduleItemId <= 0) {
+    return res.status(400).json({
+      ok: false,
+      error: "INVALID_SCHEDULE_ITEM_ID"
+    });
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const result = await ACS_settleFlight(
+      client,
+      airlineId,
+      scheduleItemId
+    );
+
+    if (!result.ok) {
+      await client.query("ROLLBACK");
+      return res.status(409).json(result);
+    }
+
+    await client.query("COMMIT");
+    return res.json(result);
+
+  } catch (err) {
+    await client.query("ROLLBACK");
+
+    console.error("ACS FLIGHT SETTLEMENT ERROR", err);
+
+    return res.status(500).json({
+      ok: false,
+      error: "FLIGHT_SETTLEMENT_ERROR",
+      message: err.message
+    });
+
+  } finally {
+    client.release();
+  }
+});
+
+export default router;
