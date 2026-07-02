@@ -5536,50 +5536,64 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
 
           break;
         }
+const financeLogResult = await client.query(
+  `
+  INSERT INTO public.finance_log (
+    airline_id,
+    type,
+    source,
+    amount,
+    timestamp,
+    schedule_item_id,
+    reference_uid,
+    description
+  )
+  VALUES (
+    $1,
+    'EXPENSE',
+    $2,
+    $3,
+    (
+      EXTRACT(
+        EPOCH FROM acs_get_current_sim_time()
+      ) * 1000
+    )::BIGINT,
+    $4,
+    $5,
+    $6
+  )
+  ON CONFLICT (reference_uid)
+  DO NOTHING
+  RETURNING id
+  `,
+  [
+    airlineId,
+    `AIRCRAFT ${checkType} — ` +
+      `${event.registration || "UNREGISTERED"} ` +
+      `${event.aircraft_name}`,
+    cost,
+    event.schedule_item_id,
+    String(event.event_uid),
+    `${ACS_checkDisplayName(checkType)} ` +
+      `started automatically by ACS Time`
+  ]
+);
 
-        const financeLogResult = await client.query(
-          `
-          INSERT INTO public.finance_log (
-            airline_id,
-            type,
-            source,
-            amount,
-            timestamp,
-            schedule_item_id,
-            reference_uid,
-            description
-          )
-          VALUES (
-            $1,
-            'EXPENSE',
-            $2,
-            $3,
-            (
-              EXTRACT(
-                EPOCH FROM acs_get_current_sim_time()
-              ) * 1000
-            )::BIGINT,
-            $4,
-            $5,
-            $6
-          )
-          RETURNING id
-          `,
-          [
-            airlineId,
-            `AIRCRAFT ${checkType} — ` +
-              `${event.registration || "UNREGISTERED"} ` +
-              `${event.aircraft_name}`,
-            cost,
-            event.schedule_item_id,
-            String(event.event_uid),
-            `${ACS_checkDisplayName(checkType)} ` +
-              `started automatically by ACS Time`
-          ]
-        );
+if (!financeLogResult.rows.length) {
+  blockedEvents.push({
+    event_id: event.id,
+    aircraft_id: event.aircraft_id,
+    registration: event.registration,
+    check_type: checkType,
+    reason: "FINANCE_ALREADY_CHARGED",
+    reference_uid: String(event.event_uid)
+  });
 
-        const financeLogId =
-          financeLogResult.rows[0].id;
+  break;
+}
+
+const financeLogId =
+  financeLogResult.rows[0].id;
 
         const financeUpdateResult = await client.query(
           `
