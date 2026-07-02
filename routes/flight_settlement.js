@@ -284,21 +284,19 @@ const mainFinanceLogId = financeLogResult.rows.find(
     ]
   );
 
-  await client.query(
-    `
-    UPDATE public.schedule_items
-SET
-  finance_settled = TRUE,
-  finance_log_id = $3,
-  finance_settled_at = NOW(),
-  updated_at = NOW()
-WHERE id = $1
-  AND airline_id = $2
-    WHERE id = $1
-      AND airline_id = $2
-    `,
-    [scheduleItemId, airlineId, mainFinanceLogId]
-  );
+await client.query(
+  `
+  UPDATE public.schedule_items
+  SET
+    finance_settled = TRUE,
+    finance_log_id = $3,
+    finance_settled_at = NOW(),
+    updated_at = NOW()
+  WHERE id = $1
+    AND airline_id = $2
+  `,
+  [scheduleItemId, airlineId, mainFinanceLogId]
+);
 
   const financeResult = await client.query(
     `
