@@ -1,6 +1,7 @@
 import express from "express";
 import { pool } from "../db/pool.js";
 import { requireAuth } from "../middleware/auth.js";
+import { ACS_settleFlight } from "./flight_settlement.js";
 
 const router = express.Router();
 
@@ -515,6 +516,64 @@ router.post("/finance/payroll", requireAuth, async (req,res)=>{
 
   }
 
+});
+
+router.post("/finance/flight-settlement", requireAuth, async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const airlineId = Number(req.airline_id);
+    const scheduleItemId = Number(req.body?.schedule_item_id);
+
+    if (!airlineId || !Number.isInteger(airlineId)) {
+      return res.status(401).json({
+        ok: false,
+        error: "NO_AIRLINE_SESSION"
+      });
+    }
+
+    if (!scheduleItemId || !Number.isInteger(scheduleItemId)) {
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_SCHEDULE_ITEM_ID"
+      });
+    }
+
+    await client.query("BEGIN");
+
+    const settlement = await ACS_settleFlight(
+      client,
+      airlineId,
+      scheduleItemId
+    );
+
+    if (!settlement.ok) {
+      await client.query("ROLLBACK");
+      return res.status(409).json(settlement);
+    }
+
+    await client.query("COMMIT");
+
+    return res.json({
+      ok: true,
+      endpoint: "ACS_FLIGHT_SETTLEMENT",
+      settlement
+    });
+
+  } catch (err) {
+    await client.query("ROLLBACK");
+
+    console.error("ACS FLIGHT SETTLEMENT ERROR:", err);
+
+    return res.status(500).json({
+      ok: false,
+      error: "FLIGHT_SETTLEMENT_FAILED",
+      details: err.message
+    });
+
+  } finally {
+    client.release();
+  }
 });
 
 export default router;
