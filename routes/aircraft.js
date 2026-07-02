@@ -991,21 +991,21 @@ router.post("/aircraft/fleet/:id/maintenance/start", requireAuth, async (req, re
     );
 
     const financeLogId = financeLogResult.rows[0].id;
-
-    const financeAfterResult = await client.query(
-      `
-      UPDATE company_finance
-SET
-  capital = COALESCE(capital, 0) - $2,
-  expenses = COALESCE(expenses, 0) + $2,
-  profit = COALESCE(profit, 0) - $2,
-  cost_used_aircraft_purchase = COALESCE(cost_used_aircraft_purchase, 0) + $2,
-  updated_at = NOW()
-WHERE airline_id = $1
-      RETURNING *
-      `,
-      [airlineId, serviceCost]
-    );
+     
+const financeAfterResult = await client.query(
+  `
+  UPDATE company_finance
+  SET
+    capital = COALESCE(capital, 0) - $2,
+    expenses = COALESCE(expenses, 0) + $2,
+    profit = COALESCE(profit, 0) - $2,
+    cost_maintenance = COALESCE(cost_maintenance, 0) + $2,
+    updated_at = NOW()
+  WHERE airline_id = $1
+  RETURNING *
+  `,
+  [airlineId, serviceCost]
+);
 
     const eventResult = await client.query(
       `
