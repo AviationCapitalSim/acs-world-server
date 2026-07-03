@@ -218,12 +218,12 @@ if (!aircraft.catalog_model_key) {
     created_at
   )
   VALUES
-    ($1, 'INCOME',  'FLIGHT_REVENUE',    $2,  EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, $5, $6,  NOW()),
-    ($1, 'EXPENSE', 'FLIGHT_FUEL',       $7,  EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, $5, $8,  NOW()),
-    ($1, 'EXPENSE', 'FLIGHT_HANDLING',   $9,  EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, $5, $10, NOW()),
-    ($1, 'EXPENSE', 'FLIGHT_LANDING',    $11, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, $5, $12, NOW()),
-    ($1, 'EXPENSE', 'FLIGHT_NAVIGATION', $13, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, $5, $14, NOW()),
-    ($1, 'EXPENSE', 'FLIGHT_OVERFLIGHT', $15, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, $5, $16, NOW())
+  ($1, 'INCOME',  'FLIGHT_REVENUE',    $2,  EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, ($5 || ':REVENUE'),    $6,  NOW()),
+  ($1, 'EXPENSE', 'FLIGHT_FUEL',       $7,  EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, ($5 || ':FUEL'),       $8,  NOW()),
+  ($1, 'EXPENSE', 'FLIGHT_HANDLING',   $9,  EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, ($5 || ':HANDLING'),   $10, NOW()),
+  ($1, 'EXPENSE', 'FLIGHT_LANDING',    $11, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, ($5 || ':LANDING'),    $12, NOW()),
+  ($1, 'EXPENSE', 'FLIGHT_NAVIGATION', $13, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, ($5 || ':NAVIGATION'), $14, NOW()),
+  ($1, 'EXPENSE', 'FLIGHT_OVERFLIGHT', $15, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, ($5 || ':OVERFLIGHT'), $16, NOW())
   RETURNING id, type, source
   `,
   [
