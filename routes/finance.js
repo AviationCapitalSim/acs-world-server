@@ -61,11 +61,13 @@ ORDER BY id
 );
     
     return res.json({
-      ok:true,
-      finance: result.rows[0]
-    });
+  ok: true,
+  finance: result.rows[0],
+  leasing_contracts: leasing.rows
+  });
 
   }
+    
   catch(err){
 
     console.error("FINANCE FETCH ERROR",err);
