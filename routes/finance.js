@@ -42,6 +42,24 @@ router.get("/finance", requireAuth, async (req,res)=>{
       [airlineId]
     );
 
+    const leasing = await pool.query(
+`
+SELECT
+  aircraft_name,
+  manufacturer,
+  model_key,
+  monthly_payment,
+  lease_start_date,
+  lease_end_date,
+  lease_years,
+  status
+FROM aircraft_leasing_contracts
+WHERE airline_id=$1
+ORDER BY id
+`,
+[airlineId]
+);
+    
     return res.json({
       ok:true,
       finance: result.rows[0]
@@ -352,6 +370,7 @@ router.post("/finance/flight-event", requireAuth, async (req,res)=>{
     });
 
   }
+    
   catch(err){
 
     await client.query("ROLLBACK");
