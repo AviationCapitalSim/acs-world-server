@@ -92,12 +92,14 @@ for (const flight of dueFlightsResult.rows) {
     );
 
   } catch (flightErr) {
-    await client.query(`ROLLBACK TO SAVEPOINT skytrack_flight_close`);
+  await client.query(`ROLLBACK TO SAVEPOINT skytrack_flight_close`);
 
-    console.error(
-      `[ACS SKYTRACK] Flight close failed schedule_item_id=${flight.id}`,
-      flightErr
-    );
+  console.error(
+    `[ACS SKYTRACK] Flight close failed schedule_item_id=${flight.id}`,
+    flightErr
+  );
+
+  throw flightErr;
   }
 }
      
@@ -360,10 +362,11 @@ for (const flight of dueFlightsResult.rows) {
         END AS progress,
 
         CASE
-          WHEN fc.last_schedule_item_id IS NOT NULL
-           AND fc.active_schedule_item_id IS NULL
-          THEN true
-          ELSE false
+        WHEN fc.last_schedule_item_id IS NOT NULL
+        AND fc.active_schedule_item_id IS NULL
+        AND LOWER(COALESCE(fc.last_schedule_status, '')) = 'completed'
+        THEN true
+        ELSE false
         END AS arrived
 
       FROM fleet f
