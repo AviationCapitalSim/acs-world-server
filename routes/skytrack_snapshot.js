@@ -61,18 +61,7 @@ for (const flight of dueFlightsResult.rows) {
   try {
     await client.query(`SAVEPOINT skytrack_flight_close`);
 
-    await client.query(
-      `
-      UPDATE public.schedule_items
-      SET
-        status = 'completed',
-        updated_at = NOW()
-      WHERE id = $1
-        AND airline_id = $2
-      `,
-      [flight.id, flight.airline_id]
-    );
-
+    
     const settlement = await ACS_settleFlight(
       client,
       flight.airline_id,
