@@ -4,14 +4,22 @@
 
 import express from "express";
 import { pool } from "../db/pool.js";
+import { requireAuth } from "../middleware/auth.js";
 
 const router = express.Router();
 
-router.get("/users/profile/:userId", async (req, res) => {
+router.get("/users/profile/:userId", requireAuth, async (req, res) => {
 
   try {
 
     const { userId } = req.params;
+
+    if (req.user_id !== userId) {
+      return res.status(403).json({
+        status: "error",
+        message: "FORBIDDEN"
+      });
+    }
 
     console.log("[ACS PROFILE] Request:", userId);
 
