@@ -40,6 +40,49 @@ function ACS_modelKey(value) {
   return ACS_text(value).toLowerCase();
 }
 
+async function ACS_ensureScheduleAircraftMaintenanceStatus(client, aircraftId, airlineId) {
+  const result = await client.query(
+    `
+    INSERT INTO public.aircraft_maintenance_status (
+      aircraft_id,
+      airline_id,
+      registration,
+      aircraft_name,
+      a_check_status,
+      b_check_status,
+      c_check_status,
+      d_check_status,
+      maintenance_control_status,
+      maintenance_control_reason,
+      created_at,
+      updated_at
+    )
+    SELECT
+      af.id,
+      af.airline_id,
+      af.registration,
+      af.aircraft_name,
+      'SCHEDULED',
+      'SCHEDULED',
+      'SCHEDULED',
+      'SCHEDULED',
+      'SERVICEABLE',
+      NULL,
+      NOW(),
+      NOW()
+    FROM public.aircraft_fleet af
+    WHERE af.id = $1
+      AND af.airline_id = $2
+    ON CONFLICT (aircraft_id)
+    DO NOTHING
+    RETURNING aircraft_id
+    `,
+    [Number(aircraftId), Number(airlineId)]
+  );
+
+  return result.rows[0] || null;
+}
+
 /* ============================================================
    ACS A/B MAINTENANCE QUOTE HELPERS
    ------------------------------------------------------------
