@@ -350,6 +350,162 @@ async function applyHRMoraleMonthlyResolver(airlineId) {
 }
 
 /* ============================================================
+   ACS HR OPERATIONAL RISK RESOLVER — PHASE 3A
+   ------------------------------------------------------------
+   Server-side only.
+   Calculates HR operational risk per airline.
+   Does NOT delay, cancel, or modify flights yet.
+============================================================ */
+
+const HR_OPERATIONAL_RULES = {
+  pilots_small:  { area: "flight_crew", critical: true,  hardBlock: true,  weight: 35 },
+  pilots_medium: { area: "flight_crew", critical: true,  hardBlock: true,  weight: 35 },
+  pilots_large:  { area: "flight_crew", critical: true,  hardBlock: true,  weight: 35 },
+  pilots_vlarge: { area: "flight_crew", critical: true,  hardBlock: true,  weight: 35 },
+
+  cabin:       { area: "cabin_crew",  critical: true,  hardBlock: true,  weight: 28 },
+  flightops:   { area: "dispatch",    critical: true,  hardBlock: true,  weight: 22 },
+  maintenance: { area: "maintenance", critical: true,  hardBlock: true,  weight: 25 },
+  ground:      { area: "ground_ops",  critical: true,  hardBlock: true,  weight: 24 },
+
+  routes:      { area: "planning",    critical: false, hardBlock: false, weight: 12 },
+  customers:   { area: "service",     critical: false, hardBlock: false, weight: 10 },
+  quality:     { area: "quality",     critical: false, hardBlock: false, weight: 10 },
+  security:    { area: "safety",      critical: false, hardBlock: false, weight: 12 },
+
+  ceo:       { area: "admin", critical: false, hardBlock: false, weight: 4 },
+  vp:        { area: "admin", critical: false, hardBlock: false, weight: 4 },
+  middle:    { area: "admin", critical: false, hardBlock: false, weight: 4 },
+  economics: { area: "admin", critical: false, hardBlock: false, weight: 4 },
+  comms:     { area: "admin", critical: false, hardBlock: false, weight: 3 },
+  hr:        { area: "admin", critical: false, hardBlock: false, weight: 5 }
+};
+
+function ACS_HR_classifyDepartmentRisk(dept) {
+  const deptId = String(dept.dept_id || "");
+  const rule = HR_OPERATIONAL_RULES[deptId] || {
+    area: "general",
+    critical: false,
+    hardBlock: false,
+    weight: 5
+  };
+
+  const staff = Math.max(0, Number(dept.staff || 0));
+  const required = Math.max(0, Number(dept.required || 0));
+  const deficit = Math.max(0, required - staff);
+
+  if (required <= 0 || deficit <= 0) {
+    return {
+      dept_id: deptId,
+      dept_name: dept.dept_name,
+      area: rule.area,
+      staff,
+      required,
+      deficit: 0,
+      coveragePct: 100,
+      severity: "OK",
+      hardBlock: false,
+      riskPoints: 0
+    };
+  }
+
+  const coverage = staff / required;
+  const coveragePct = Math.round(coverage * 100);
+  const deficitRatio = deficit / required;
+
+  let severity = "WARNING";
+  let hardBlock = false;
+
+  if (rule.hardBlock && staff <= 0) {
+    severity = "BLOCKED";
+    hardBlock = true;
+  } else if (rule.critical && coverage < 0.5) {
+    severity = "CRITICAL";
+  } else if (deficitRatio >= 0.5) {
+    severity = "CRITICAL";
+  }
+
+  const riskPoints = Math.round(rule.weight * deficitRatio);
+
+  return {
+    dept_id: deptId,
+    dept_name: dept.dept_name,
+    area: rule.area,
+    staff,
+    required,
+    deficit,
+    coveragePct,
+    severity,
+    hardBlock,
+    riskPoints
+  };
+}
+
+export async function resolveHROperationalRisk(airlineId) {
+  await ensureHRInitialized(airlineId);
+
+  if (typeof recalculateHRRequired === "function") {
+    await recalculateHRRequired(airlineId);
+  }
+
+  const result = await pool.query(
+    `
+    SELECT
+      dept_id,
+      dept_name,
+      staff,
+      required,
+      morale
+    FROM public.hr_departments
+    WHERE airline_id = $1
+    ORDER BY dept_id
+    `,
+    [airlineId]
+  );
+
+  const departments = result.rows.map(ACS_HR_classifyDepartmentRisk);
+
+  const totalRiskPoints = departments.reduce(
+    (sum, d) => sum + Number(d.riskPoints || 0),
+    0
+  );
+
+  const blockedDepartments = departments.filter(d => d.severity === "BLOCKED");
+  const criticalDepartments = departments.filter(d => d.severity === "CRITICAL");
+  const warningDepartments = departments.filter(d => d.severity === "WARNING");
+
+  const dispatchBlocked = blockedDepartments.length > 0;
+
+  let operationalStatus = "OK";
+
+  if (dispatchBlocked) {
+    operationalStatus = "BLOCKED";
+  } else if (criticalDepartments.length > 0) {
+    operationalStatus = "CRITICAL";
+  } else if (warningDepartments.length > 0) {
+    operationalStatus = "WARNING";
+  }
+
+  const delayRiskPct = Math.min(95, Math.max(0, totalRiskPoints));
+  const cancelRiskPct = dispatchBlocked
+    ? Math.min(85, Math.max(35, Math.round(totalRiskPoints * 0.75)))
+    : Math.min(70, Math.max(0, Math.round(totalRiskPoints * 0.45)));
+
+  return {
+    ok: true,
+    airline_id: Number(airlineId),
+    operationalStatus,
+    dispatchBlocked,
+    delayRiskPct,
+    cancelRiskPct,
+    blockedDepartments,
+    criticalDepartments,
+    warningDepartments,
+    departments
+  };
+}
+
+/* ============================================================
    GET HR DEPARTMENTS
    ------------------------------------------------------------
    • Server authority
@@ -554,5 +710,25 @@ export function stopHRMoraleScheduler() {
 
   console.log("[ACS HR] Morale scheduler stopped");
 }
+
+/* ============================================================
+   GET HR OPERATIONAL RISK
+   ============================================================ */
+
+router.get("/hr/ops-risk/:airlineId", async (req, res) => {
+  const airlineId = Number(req.params.airlineId);
+
+  try {
+    const risk = await resolveHROperationalRisk(airlineId);
+    res.json(risk);
+  } catch (err) {
+    console.error("HR OPS RISK ERROR:", err);
+
+    res.status(500).json({
+      ok: false,
+      error: err.message
+    });
+  }
+});
 
 export default router;
