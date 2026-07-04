@@ -1292,6 +1292,12 @@ router.post(
         ]
       );
 
+      await ACS_ensureScheduleAircraftMaintenanceStatus(
+      client,
+      aircraftId,
+      airlineId
+      );
+       
       /* ========================================================
          AIRCRAFT + MAINTENANCE AUTHORITY
          ======================================================== */
