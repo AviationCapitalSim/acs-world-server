@@ -256,11 +256,7 @@ async function applyHRMoraleMonthlyResolver(airlineId) {
   const simMonth = Number(simResult.rows[0]?.sim_month);
 
   if (!Number.isInteger(simYear) || !Number.isInteger(simMonth)) {
-    return {
-      ok: false,
-      skipped: true,
-      reason: "INVALID_SIM_TIME"
-    };
+    return { ok: false, skipped: true, reason: "INVALID_SIM_TIME" };
   }
 
   const departmentsResult = await pool.query(
@@ -288,8 +284,6 @@ async function applyHRMoraleMonthlyResolver(airlineId) {
     const required = Number(dep.required || 0);
     const morale = Number(dep.morale || 100);
 
-    if (required <= 0) continue;
-
     if (
       Number(dep.morale_last_sim_year) === simYear &&
       Number(dep.morale_last_sim_month) === simMonth
@@ -299,39 +293,37 @@ async function applyHRMoraleMonthlyResolver(airlineId) {
 
     const deficit = Math.max(0, required - staff);
 
-    let moraleDrop = 0;
+    let moraleDelta = 0;
 
-    if (deficit > 0) {
+    if (required > 0 && deficit > 0) {
       const ratio = deficit / required;
 
-      if (ratio >= 1) moraleDrop = 8;
-      else if (ratio >= 0.76) moraleDrop = 6;
-      else if (ratio >= 0.51) moraleDrop = 4;
-      else if (ratio >= 0.26) moraleDrop = 2;
-      else moraleDrop = 1;
+      if (ratio >= 1) moraleDelta = -8;
+      else if (ratio >= 0.76) moraleDelta = -6;
+      else if (ratio >= 0.51) moraleDelta = -4;
+      else if (ratio >= 0.26) moraleDelta = -2;
+      else moraleDelta = -1;
+    } else if (deficit === 0 && morale < 100) {
+      moraleDelta = 1;
     }
 
-    const newMorale = Math.max(40, morale - moraleDrop);
+    const newMorale = Math.max(
+      40,
+      Math.min(100, morale + moraleDelta)
+    );
 
     await pool.query(
       `
       UPDATE public.hr_departments
       SET
-        morale = $4,
-        morale_last_sim_year = $5,
-        morale_last_sim_month = $6,
+        morale = $3,
+        morale_last_sim_year = $4,
+        morale_last_sim_month = $5,
         updated_at = NOW()
       WHERE airline_id = $1
         AND dept_id = $2
       `,
-      [
-        airlineId,
-        dep.dept_id,
-        moraleDrop,
-        newMorale,
-        simYear,
-        simMonth
-      ]
+      [airlineId, dep.dept_id, newMorale, simYear, simMonth]
     );
 
     updates.push({
@@ -341,7 +333,7 @@ async function applyHRMoraleMonthlyResolver(airlineId) {
       required,
       deficit,
       old_morale: morale,
-      morale_drop: moraleDrop,
+      morale_delta: moraleDelta,
       new_morale: newMorale
     });
   }
@@ -496,5 +488,69 @@ router.get("/hr/payroll/:airlineId", async (req, res) => {
 
 });
 
+let HR_MORALE_SCHEDULER = null;
+let HR_MORALE_RUNNING = false;
+
+async function runHRMoraleSchedulerTick() {
+  if (HR_MORALE_RUNNING) return;
+
+  HR_MORALE_RUNNING = true;
+
+  const client = await pool.connect();
+
+  try {
+    const lock = await client.query(
+      "SELECT pg_try_advisory_lock(35702026) AS locked"
+    );
+
+    if (lock.rows[0]?.locked !== true) return;
+
+    const airlinesResult = await client.query(`
+      SELECT DISTINCT airline_id
+      FROM public.hr_departments
+      ORDER BY airline_id
+    `);
+
+    for (const row of airlinesResult.rows) {
+      const airlineId = Number(row.airline_id);
+      if (!Number.isInteger(airlineId)) continue;
+
+      await recalculateHRRequired(airlineId);
+      await applyHRMoraleMonthlyResolver(airlineId);
+    }
+
+  } catch (err) {
+    console.error("HR MORALE SCHEDULER ERROR:", err);
+  } finally {
+    try {
+      await client.query("SELECT pg_advisory_unlock(35702026)");
+    } catch (_) {}
+
+    client.release();
+    HR_MORALE_RUNNING = false;
+  }
+}
+
+export function startHRMoraleScheduler() {
+  if (HR_MORALE_SCHEDULER) return;
+
+  HR_MORALE_SCHEDULER = setInterval(
+    runHRMoraleSchedulerTick,
+    60 * 1000
+  );
+
+  runHRMoraleSchedulerTick();
+
+  console.log("[ACS HR] Morale scheduler started");
+}
+
+export function stopHRMoraleScheduler() {
+  if (!HR_MORALE_SCHEDULER) return;
+
+  clearInterval(HR_MORALE_SCHEDULER);
+  HR_MORALE_SCHEDULER = null;
+
+  console.log("[ACS HR] Morale scheduler stopped");
+}
 
 export default router;
