@@ -5418,7 +5418,15 @@ if (
       ]
     );
 
-    insertedAircraft.push(fleetResult.rows[0]);
+      const fleetAircraft = fleetResult.rows[0];
+
+    await ACS_ensureAircraftMaintenanceStatus(
+      client,
+      fleetAircraft.id,
+      fleetAircraft.airline_id || airlineId
+    );
+
+    insertedAircraft.push(fleetAircraft);
   }
 
   /* ============================================================
