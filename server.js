@@ -6,7 +6,10 @@ import worldRoutes from "./routes/world.js";
 import systemRoutes from "./routes/system.js";
 import authRoutes from "./routes/auth.js";
 import airlineRoutes from "./routes/airlines.js";
-import hrRoutes from "./routes/hr.js";
+import hrRoutes, {
+  startHRMoraleScheduler,
+  stopHRMoraleScheduler
+} from "./routes/hr.js";
 import financeRoutes from "./routes/finance.js";
 import companySettingsRoutes from "./routes/company_settings.js";
 import companyContextRoutes from "./routes/company_context.js";
@@ -157,6 +160,7 @@ const server = app.listen(PORT, "0.0.0.0", () => {
   console.log("ACS World Server running on port", PORT);
 
   startMaintenanceScheduler();
+  startHRMoraleScheduler();
 });
 
 /* ============================================================
@@ -179,7 +183,8 @@ function ACS_shutdown(signal) {
   console.log(`[ACS] ${signal} received. Shutting down safely...`);
 
   stopMaintenanceScheduler();
-
+  stopHRMoraleScheduler();
+  
   server.close(() => {
     console.log("[ACS] HTTP server closed");
     process.exit(0);
