@@ -209,6 +209,38 @@ function ACS_RA_registrationMatchesRule(registration, rule) {
   return reg.startsWith(prefix);
 }
 
+async function ACS_ensureAircraftMaintenanceStatus(client, aircraftId, airlineId) {
+  await client.query(
+    `
+    INSERT INTO public.aircraft_maintenance_status (
+      aircraft_id,
+      airline_id,
+      a_check_status,
+      b_check_status,
+      c_check_status,
+      d_check_status,
+      maintenance_control_status,
+      maintenance_control_reason,
+      updated_at
+    )
+    VALUES (
+      $1,
+      $2,
+      'SCHEDULED',
+      'SCHEDULED',
+      'SCHEDULED',
+      'SCHEDULED',
+      'SERVICEABLE',
+      NULL,
+      NOW()
+    )
+    ON CONFLICT (aircraft_id, airline_id)
+    DO NOTHING
+    `,
+    [Number(aircraftId), Number(airlineId)]
+  );
+}
+
 /* ============================================================
    🟩 HEALTH CHECK
    ============================================================ */
