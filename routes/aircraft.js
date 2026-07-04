@@ -3569,15 +3569,29 @@ router.get("/aircraft/used-market", requireAuth, async (req, res) => {
 
     const seedStatus = await ACS_seedUsedAircraftMarketIfNeeded(client);
 
-    const refreshResult = await client.query(
-      `
-      SELECT *
-      FROM public.acs_used_market_system_refresh_resolver($1::date)
-      `,
-      [simDatePayload.sim_date]
-    );
+    const agedSystemCleanupResult = await client.query(
+  `
+  DELETE FROM public.used_aircraft_market
+  WHERE listing_status = 'AVAILABLE'
+    AND system_generated IS TRUE
+    AND market_source = 'SYSTEM_GENERATED'
+    AND year_built IS NOT NULL
+    AND ($1::int - year_built) > 21
+  RETURNING
+    id,
+    manufacturer,
+    aircraft_name,
+    year_built
+  `,
+  [simDatePayload.sim_year]
+);
 
-    const systemRefresh = refreshResult.rows[0] || null;
+const systemRefresh = {
+  policy: "ACS_USED_MARKET_DELETE_SYSTEM_OVER_21_YEARS_V1",
+  sim_year: simDatePayload.sim_year,
+  deleted_count: agedSystemCleanupResult.rowCount,
+  deleted_listings: agedSystemCleanupResult.rows
+};
 
     const result = await client.query(
   `
