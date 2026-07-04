@@ -235,6 +235,127 @@ async function recalculateHRRequired(airlineId) {
 }
 
 /* ============================================================
+   ACS HR MORALE MONTHLY RESOLVER — BACKEND AUTHORITY
+   ------------------------------------------------------------
+   - PostgreSQL authority
+   - Runs once per sim month per department
+   - Penalizes morale only when staff < required
+   - Does not hire staff
+   - Does not touch finance
+============================================================ */
+
+async function applyHRMoraleMonthlyResolver(airlineId) {
+
+  const simResult = await pool.query(`
+    SELECT
+      EXTRACT(YEAR FROM acs_get_current_sim_time())::int AS sim_year,
+      EXTRACT(MONTH FROM acs_get_current_sim_time())::int AS sim_month
+  `);
+
+  const simYear = Number(simResult.rows[0]?.sim_year);
+  const simMonth = Number(simResult.rows[0]?.sim_month);
+
+  if (!Number.isInteger(simYear) || !Number.isInteger(simMonth)) {
+    return {
+      ok: false,
+      skipped: true,
+      reason: "INVALID_SIM_TIME"
+    };
+  }
+
+  const departmentsResult = await pool.query(
+    `
+    SELECT
+      dept_id,
+      dept_name,
+      staff,
+      required,
+      morale,
+      morale_last_sim_year,
+      morale_last_sim_month
+    FROM public.hr_departments
+    WHERE airline_id = $1
+    FOR UPDATE
+    `,
+    [airlineId]
+  );
+
+  const updates = [];
+
+  for (const dep of departmentsResult.rows) {
+
+    const staff = Number(dep.staff || 0);
+    const required = Number(dep.required || 0);
+    const morale = Number(dep.morale || 100);
+
+    if (required <= 0) continue;
+
+    if (
+      Number(dep.morale_last_sim_year) === simYear &&
+      Number(dep.morale_last_sim_month) === simMonth
+    ) {
+      continue;
+    }
+
+    const deficit = Math.max(0, required - staff);
+
+    let moraleDrop = 0;
+
+    if (deficit > 0) {
+      const ratio = deficit / required;
+
+      if (ratio >= 1) moraleDrop = 8;
+      else if (ratio >= 0.76) moraleDrop = 6;
+      else if (ratio >= 0.51) moraleDrop = 4;
+      else if (ratio >= 0.26) moraleDrop = 2;
+      else moraleDrop = 1;
+    }
+
+    const newMorale = Math.max(40, morale - moraleDrop);
+
+    await pool.query(
+      `
+      UPDATE public.hr_departments
+      SET
+        morale = $4,
+        morale_last_sim_year = $5,
+        morale_last_sim_month = $6,
+        updated_at = NOW()
+      WHERE airline_id = $1
+        AND dept_id = $2
+      `,
+      [
+        airlineId,
+        dep.dept_id,
+        moraleDrop,
+        newMorale,
+        simYear,
+        simMonth
+      ]
+    );
+
+    updates.push({
+      dept_id: dep.dept_id,
+      dept_name: dep.dept_name,
+      staff,
+      required,
+      deficit,
+      old_morale: morale,
+      morale_drop: moraleDrop,
+      new_morale: newMorale
+    });
+  }
+
+  return {
+    ok: true,
+    sim_year: simYear,
+    sim_month: simMonth,
+    updated_count: updates.length,
+    updates
+  };
+}
+
+/* ============================================================
    GET HR DEPARTMENTS
    ------------------------------------------------------------
    • Server authority
@@ -254,6 +375,8 @@ router.get("/hr/departments/:airlineId", async (req, res) => {
     await ensureHRInitialized(airlineId);
 
     await recalculateHRRequired(airlineId);
+
+    await applyHRMoraleMonthlyResolver(airlineId);
      
     /* --------------------------------------------------------
        2️⃣ Obtener departamentos
