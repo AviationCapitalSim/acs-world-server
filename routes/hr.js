@@ -111,6 +111,128 @@ DO NOTHING
 
 }
 
+/* ============================================================
+   ACS HR REQUIRED RESOLVER — BACKEND AUTHORITY
+   ------------------------------------------------------------
+   - PostgreSQL is authority
+   - Calculates required staff from real assigned schedule
+   - Does NOT hire staff
+   - Does NOT touch finance
+   - Does NOT use localStorage
+============================================================ */
+
+async function recalculateHRRequired(airlineId) {
+
+  const result = await pool.query(
+    `
+    WITH active_flights AS (
+      SELECT
+        si.airline_id,
+        si.aircraft_id,
+        si.route_plan_id,
+        COALESCE(af.model_key, si.model_key, rp.model_key) AS model_key,
+        COALESCE(si.distance_nm, rp.distance_nm, 0) AS distance_nm,
+        COALESCE(si.block_time_min, rp.block_time_min, 0) AS block_time_min
+      FROM public.schedule_items si
+      LEFT JOIN public.route_plans rp
+        ON rp.id = si.route_plan_id
+       AND rp.airline_id = si.airline_id
+      LEFT JOIN public.aircraft_fleet af
+        ON af.id = si.aircraft_id
+       AND af.airline_id = si.airline_id
+      WHERE si.airline_id = $1
+        AND LOWER(COALESCE(si.status, '')) = 'assigned'
+        AND si.item_type = 'flight'
+        AND si.aircraft_id IS NOT NULL
+    ),
+    aircraft_week AS (
+      SELECT
+        af.airline_id,
+        af.aircraft_id,
+        af.model_key,
+        COUNT(*) AS weekly_legs,
+        SUM(af.block_time_min) AS weekly_block_minutes,
+        MAX(ac.seats) AS seats,
+        MAX(ac.mtow_kg) AS mtow_kg,
+        MAX(ac.engines) AS engines
+      FROM active_flights af
+      LEFT JOIN public.aircraft_catalog ac
+        ON LOWER(ac.model_key) = LOWER(af.model_key)
+      GROUP BY af.airline_id, af.aircraft_id, af.model_key
+    )
+    SELECT
+      COUNT(*)::int AS active_aircraft,
+      COALESCE(SUM(weekly_legs), 0)::int AS assigned_flights,
+      COALESCE(SUM(weekly_block_minutes), 0)::int AS weekly_block_minutes,
+
+      COALESCE(SUM(CASE WHEN COALESCE(seats, 0) <= 19 THEN 4 ELSE 0 END), 0)::int AS pilots_small,
+      COALESCE(SUM(CASE WHEN COALESCE(seats, 0) > 19 AND COALESCE(seats, 0) <= 70 THEN 6 ELSE 0 END), 0)::int AS pilots_medium,
+      COALESCE(SUM(CASE WHEN COALESCE(seats, 0) > 70 AND COALESCE(seats, 0) <= 150 THEN 10 ELSE 0 END), 0)::int AS pilots_large,
+      COALESCE(SUM(CASE WHEN COALESCE(seats, 0) > 150 THEN 16 ELSE 0 END), 0)::int AS pilots_vlarge,
+
+      COALESCE(SUM(
+        CASE
+          WHEN COALESCE(seats, 0) <= 9 THEN 0
+          WHEN COALESCE(seats, 0) <= 19 THEN 1
+          WHEN COALESCE(seats, 0) <= 70 THEN 4
+          WHEN COALESCE(seats, 0) <= 150 THEN 8
+          ELSE 14
+        END
+      ), 0)::int AS cabin,
+
+      GREATEST(1, CEIL(COUNT(*) * 1.0))::int AS maintenance,
+      GREATEST(1, CEIL(COUNT(*) * 1.0))::int AS ground,
+      GREATEST(1, CEIL(COALESCE(SUM(weekly_legs), 0) / 20.0))::int AS flightops,
+      GREATEST(1, CEIL(COUNT(DISTINCT model_key) / 2.0))::int AS quality,
+      GREATEST(1, CEIL(COALESCE(SUM(weekly_legs), 0) / 25.0))::int AS routes,
+      GREATEST(0, CEIL(COALESCE(SUM(weekly_legs), 0) / 25.0))::int AS customers,
+      GREATEST(0, CEIL(COUNT(*) / 4.0))::int AS security
+    FROM aircraft_week
+    `,
+    [airlineId]
+  );
+
+  const r = result.rows[0] || {};
+
+  const required = {
+    ceo: 1,
+    vp: 0,
+    middle: 1,
+    economics: 1,
+    comms: 0,
+    hr: 1,
+
+    quality: Number(r.quality || 1),
+    security: Number(r.security || 0),
+    customers: Number(r.customers || 0),
+    flightops: Number(r.flightops || 1),
+    maintenance: Number(r.maintenance || 0),
+    ground: Number(r.ground || 0),
+    routes: Number(r.routes || 1),
+
+    pilots_small: Number(r.pilots_small || 0),
+    pilots_medium: Number(r.pilots_medium || 0),
+    pilots_large: Number(r.pilots_large || 0),
+    pilots_vlarge: Number(r.pilots_vlarge || 0),
+    cabin: Number(r.cabin || 0)
+  };
+
+  for (const [deptId, requiredStaff] of Object.entries(required)) {
+    await pool.query(
+      `
+      UPDATE public.hr_departments
+      SET
+        required = $3,
+        updated_at = NOW()
+      WHERE airline_id = $1
+        AND dept_id = $2
+      `,
+      [airlineId, deptId, requiredStaff]
+    );
+  }
+
+  return required;
+}
 
 /* ============================================================
    GET HR DEPARTMENTS
@@ -131,6 +253,8 @@ router.get("/hr/departments/:airlineId", async (req, res) => {
 
     await ensureHRInitialized(airlineId);
 
+    await recalculateHRRequired(airlineId);
+     
     /* --------------------------------------------------------
        2️⃣ Obtener departamentos
     -------------------------------------------------------- */
