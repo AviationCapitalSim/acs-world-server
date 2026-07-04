@@ -1102,6 +1102,44 @@ const financeAfterResult = await client.query(
       ]
     );
 
+    await client.query(
+  `
+  UPDATE public.aircraft_maintenance_status
+  SET
+    c_check_status = CASE
+      WHEN $3 = 'C_CHECK'
+        THEN 'IN_PROGRESS'
+      ELSE c_check_status
+    END,
+
+    d_check_status = CASE
+      WHEN $3 = 'D_CHECK'
+        THEN 'IN_PROGRESS'
+      ELSE d_check_status
+    END,
+
+    maintenance_control_status = 'IN_MAINTENANCE',
+
+    maintenance_control_reason = CASE
+      WHEN $3 = 'C_CHECK'
+        THEN 'C_CHECK'
+      WHEN $3 = 'D_CHECK'
+        THEN 'D_CHECK'
+      ELSE maintenance_control_reason
+    END,
+
+    updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+
+  WHERE aircraft_id = $1
+    AND airline_id = $2
+  `,
+  [
+    aircraftId,
+    airlineId,
+    checkType
+  ]
+);
+     
     const updatedAircraftResult = await client.query(
       `
       UPDATE aircraft_fleet
