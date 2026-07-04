@@ -1842,7 +1842,7 @@ const immediateStart =
         }
       }
 
-      if (conflict) {
+      if (conflict && checkType === "A_CHECK") {
 
         const error =
           new Error(
@@ -3203,7 +3203,7 @@ router.patch(
         }
       }
 
-      if (conflict) {
+      if (conflict && checkType === "A_CHECK") {
         const error =
           new Error(
             "MAINTENANCE_SCHEDULE_CONFLICT"
