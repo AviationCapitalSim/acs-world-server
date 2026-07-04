@@ -10,6 +10,7 @@
    - Backend authority only
    - 700+ players ready
    ============================================================ */
+
 import express from "express";
 import { pool } from "../db/pool.js";
 import { requireAuth } from "../middleware/auth.js";
@@ -23,7 +24,8 @@ const ACS_money = (v) => {
 };
 
 export async function ACS_settleFlight(client, airlineId, scheduleItemId) {
-  const scheduleResult = await client.query(
+  
+   const scheduleResult = await client.query(
     `
     SELECT *
     FROM public.schedule_items
@@ -114,6 +116,7 @@ if (!aircraft.catalog_model_key) {
 }
    
   const simResult = await client.query(`
+  
     SELECT
       acs_get_current_sim_time() AS sim_time,
       EXTRACT(YEAR FROM acs_get_current_sim_time())::int AS sim_year
@@ -203,6 +206,21 @@ if (!aircraft.catalog_model_key) {
   const expenses = fuel + airportCost;
   const profit = revenue - expenses;
 
+   const flightHoursToAdd = Math.max(
+    1,
+    Math.round(blockHours)
+  );
+
+  const flightCyclesToAdd = 1;
+
+  const conditionWearPct = Math.max(
+    0.1,
+    Math.min(
+      2.5,
+      Math.round((0.2 + blockHours * 0.12) * 10) / 10
+    )
+  );
+ 
  const financeLogResult = await client.query(
   `
   INSERT INTO public.finance_log (
@@ -284,6 +302,34 @@ const mainFinanceLogId = financeLogResult.rows.find(
     ]
   );
 
+await client.query(
+  `
+  UPDATE public.aircraft_fleet
+  SET
+    total_hours = COALESCE(total_hours, 0) + $3,
+    total_cycles = COALESCE(total_cycles, 0) + $4,
+    condition_pct = GREATEST(
+      0,
+      ROUND(
+        (COALESCE(condition_pct, 100)::numeric - $5::numeric),
+        1
+      )
+    ),
+    current_airport = COALESCE($6, current_airport),
+    updated_at = NOW()
+  WHERE id = $1
+    AND airline_id = $2
+  `,
+  [
+    schedule.aircraft_id,
+    airlineId,
+    flightHoursToAdd,
+    flightCyclesToAdd,
+    conditionWearPct,
+    schedule.destination || null
+  ]
+);
+   
 await client.query(
   `
   UPDATE public.schedule_items
