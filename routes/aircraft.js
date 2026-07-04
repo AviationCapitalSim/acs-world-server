@@ -221,6 +221,7 @@ async function ACS_ensureAircraftMaintenanceStatus(client, aircraftId, airlineId
       d_check_status,
       maintenance_control_status,
       maintenance_control_reason,
+      created_at,
       updated_at
     )
     VALUES (
@@ -232,9 +233,10 @@ async function ACS_ensureAircraftMaintenanceStatus(client, aircraftId, airlineId
       'SCHEDULED',
       'SERVICEABLE',
       NULL,
+      NOW(),
       NOW()
     )
-    ON CONFLICT (aircraft_id, airline_id)
+    ON CONFLICT (aircraft_id)
     DO NOTHING
     `,
     [Number(aircraftId), Number(airlineId)]
