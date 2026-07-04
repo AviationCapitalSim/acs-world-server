@@ -170,23 +170,25 @@ async function recalculateHRRequired(airlineId) {
       COALESCE(SUM(CASE WHEN COALESCE(seats, 0) > 70 AND COALESCE(seats, 0) <= 150 THEN 10 ELSE 0 END), 0)::int AS pilots_large,
       COALESCE(SUM(CASE WHEN COALESCE(seats, 0) > 150 THEN 16 ELSE 0 END), 0)::int AS pilots_vlarge,
 
-      COALESCE(SUM(
-        CASE
-          WHEN COALESCE(seats, 0) <= 9 THEN 0
-          WHEN COALESCE(seats, 0) <= 19 THEN 1
-          WHEN COALESCE(seats, 0) <= 70 THEN 4
-          WHEN COALESCE(seats, 0) <= 150 THEN 8
-          ELSE 14
-        END
-      ), 0)::int AS cabin,
+     COALESCE(SUM(
+  CASE
+    WHEN COALESCE(seats, 0) <= 9 THEN 0
+    WHEN COALESCE(seats, 0) <= 19 THEN 2
+    WHEN COALESCE(seats, 0) <= 50 THEN 4
+    WHEN COALESCE(seats, 0) <= 100 THEN 6
+    WHEN COALESCE(seats, 0) <= 180 THEN 10
+    WHEN COALESCE(seats, 0) <= 300 THEN 16
+    ELSE 24
+  END
+), 0)::int AS cabin,
 
-      GREATEST(1, CEIL(COUNT(*) * 1.0))::int AS maintenance,
-      GREATEST(1, CEIL(COUNT(*) * 1.0))::int AS ground,
-      GREATEST(1, CEIL(COALESCE(SUM(weekly_legs), 0) / 20.0))::int AS flightops,
-      GREATEST(1, CEIL(COUNT(DISTINCT model_key) / 2.0))::int AS quality,
-      GREATEST(1, CEIL(COALESCE(SUM(weekly_legs), 0) / 25.0))::int AS routes,
-      GREATEST(0, CEIL(COALESCE(SUM(weekly_legs), 0) / 25.0))::int AS customers,
-      GREATEST(0, CEIL(COUNT(*) / 4.0))::int AS security
+GREATEST(1, CEIL(COUNT(*) * 1.2))::int AS maintenance,
+GREATEST(1, CEIL(COUNT(*) * 2.0))::int AS ground,
+GREATEST(1, CEIL(COALESCE(SUM(weekly_legs), 0) / 18.0))::int AS flightops,
+GREATEST(1, CEIL(COUNT(DISTINCT model_key) / 2.0))::int AS quality,
+GREATEST(1, CEIL(COALESCE(SUM(weekly_legs), 0) / 22.0))::int AS routes,
+GREATEST(0, CEIL(COALESCE(SUM(weekly_legs), 0) / 18.0))::int AS customers,
+GREATEST(0, CEIL(COUNT(*) / 3.0))::int AS security
     FROM aircraft_week
     `,
     [airlineId]
