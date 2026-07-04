@@ -1065,7 +1065,7 @@ router.post(
         }
       }
 
-      if (conflict) {
+      if (conflict && checkType === "A_CHECK") {
         await client.query("ROLLBACK");
 
         const checkLabel =
