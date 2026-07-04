@@ -4199,53 +4199,6 @@ if (!(simTime instanceof Date) || Number.isNaN(simTime.getTime())) {
 
     const aircraft = aircraftResult.rows[0];
 
-   /* ============================================================
-   4.1) CREATE AIRCRAFT MAINTENANCE STATUS
-   ------------------------------------------------------------
-   ACS OCC:
-   Every aircraft_fleet row must have a technical maintenance
-   status row before finance/log/listing finalization.
-   ============================================================ */
-
-await client.query(
-  `
-  INSERT INTO aircraft_maintenance_status (
-    aircraft_id,
-    airline_id,
-
-    a_check_status,
-    b_check_status,
-    c_check_status,
-    d_check_status,
-
-    maintenance_control_status,
-    maintenance_control_reason,
-
-    updated_at
-  )
-  VALUES (
-    $1,
-    $2,
-
-    'SCHEDULED',
-    'SCHEDULED',
-    'SCHEDULED',
-    'SCHEDULED',
-
-    'SERVICEABLE',
-    NULL,
-
-    NOW()
-  )
-  ON CONFLICT (aircraft_id, airline_id)
-  DO NOTHING
-  `,
-  [
-    aircraft.id,
-    airlineId
-  ]
-);
-
     /* ============================================================
        5) APPLY FINANCE IMPACT
        ============================================================ */
