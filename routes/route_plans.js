@@ -1073,17 +1073,19 @@ router.post("/routes/plans", requireAuth, async (req, res) => {
       });
     }
 
-    const slotMovements = ACS_buildSlotMovements({
-      origin,
-      destination,
-      selectedDays,
-      departure,
-      blockTimeMin,
-      turnaroundMin,
-      flightNumberOut,
-      flightNumberIn
-    });
-
+    const slotMovements = ACS_sortSlotMovementsForLocking(
+  ACS_buildSlotMovements({
+    origin,
+    destination,
+    selectedDays,
+    departure,
+    blockTimeMin,
+    turnaroundMin,
+    flightNumberOut,
+    flightNumberIn
+  })
+);
+     
     if (!slotMovements.length) {
       await client.query("ROLLBACK");
       transactionStarted = false;
