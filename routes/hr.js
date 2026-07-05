@@ -1183,6 +1183,7 @@ router.post("/hr/ops-impact/apply/:airlineId", async (req, res) => {
 /* ============================================================
    GET HR OPS IMPACTS FOR CURRENT SIM DAY
    ============================================================ */
+
 router.get("/hr/ops-impact/:airlineId", async (req, res) => {
   const airlineId = Number(req.params.airlineId);
 
@@ -1196,7 +1197,7 @@ router.get("/hr/ops-impact/:airlineId", async (req, res) => {
 
     const sim = simResult.rows[0];
 
-    const existingResult = await pool.query(
+    const countResult = await pool.query(
       `
       SELECT COUNT(*)::int AS count
       FROM public.skytrack_ops_impacts
@@ -1208,11 +1209,51 @@ router.get("/hr/ops-impact/:airlineId", async (req, res) => {
       [airlineId, sim.sim_year, sim.sim_month, sim.sim_day]
     );
 
-    const existingCount = Number(existingResult.rows[0]?.count || 0);
+    let existingCount = Number(countResult.rows[0]?.count || 0);
     let autoApply = null;
 
     if (existingCount === 0) {
-      autoApply = await applyHROpsImpactForAirline(airlineId);
+      const lockName = `hr_ops_impact:${airlineId}:${sim.sim_year}:${sim.sim_month}:${sim.sim_day}`;
+      const lockClient = await pool.connect();
+
+      try {
+        await lockClient.query(
+          `SELECT pg_advisory_lock(hashtext($1)::bigint)`,
+          [lockName]
+        );
+
+        const recheckResult = await pool.query(
+          `
+          SELECT COUNT(*)::int AS count
+          FROM public.skytrack_ops_impacts
+          WHERE airline_id = $1
+            AND sim_year = $2
+            AND sim_month = $3
+            AND sim_day = $4
+          `,
+          [airlineId, sim.sim_year, sim.sim_month, sim.sim_day]
+        );
+
+        existingCount = Number(recheckResult.rows[0]?.count || 0);
+
+        if (existingCount === 0) {
+          autoApply = await applyHROpsImpactForAirline(airlineId);
+        } else {
+          autoApply = {
+            ok: true,
+            skipped: true,
+            reason: "ALREADY_CREATED_BY_ANOTHER_OCC_REQUEST",
+            existing_count: existingCount
+          };
+        }
+      } finally {
+        await lockClient.query(
+          `SELECT pg_advisory_unlock(hashtext($1)::bigint)`,
+          [lockName]
+        );
+
+        lockClient.release();
+      }
     }
 
     const result = await pool.query(
@@ -1232,7 +1273,11 @@ router.get("/hr/ops-impact/:airlineId", async (req, res) => {
       ok: true,
       airline_id: airlineId,
       sim,
-      autoApply,
+      occ_auto_ensure: {
+        checked: true,
+        created_now: Boolean(autoApply && autoApply.applied_count > 0),
+        autoApply
+      },
       impacts: result.rows
     });
   } catch (err) {
