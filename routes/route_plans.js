@@ -799,7 +799,8 @@ router.get(
    POST /v1/routes/plans
    ============================================================ */
 
-router.post("/routes/plans", requireAuth, async (req, res) => {
+async function ACS_createRoutePlanOnce(req, res) {
+   
   const client = await pool.connect();
   let transactionStarted = false;
 
@@ -1629,6 +1630,10 @@ router.post("/routes/plans", requireAuth, async (req, res) => {
 
     console.error("ACS ROUTE PLAN CREATE ERROR:", error);
 
+    if (["40P01", "40001"].includes(String(error.code || ""))) {
+     throw error;
+     }
+     
     const knownClientErrors = new Set([
       "AIRLINE_NOT_FOUND",
       "AIRLINE_IATA_NOT_CONFIGURED",
@@ -1651,8 +1656,53 @@ router.post("/routes/plans", requireAuth, async (req, res) => {
       details: error.message
     });
 
-  } finally {
+    } finally {
     client.release();
+  }
+}
+
+router.post("/routes/plans", requireAuth, async (req, res) => {
+  const maxAttempts = 3;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await ACS_createRoutePlanOnce(req, res);
+    } catch (error) {
+      const retryable =
+        ["40P01", "40001"].includes(String(error.code || ""));
+
+      if (res.headersSent) return;
+
+      if (!retryable || attempt >= maxAttempts) {
+        console.error("ACS ROUTE PLAN CREATE FINAL FAILURE:", {
+          code: error.code,
+          message: error.message,
+          attempt
+        });
+
+        return res.status(503).json({
+          ok: false,
+          error: "ROUTE_CONFIRMATION_TEMPORARILY_BUSY",
+          details:
+            "Route confirmation was busy. Please try again.",
+          retryable,
+          db_code: error.code || null
+        });
+      }
+
+      const waitMs =
+        150 * attempt + Math.floor(Math.random() * 120);
+
+      console.warn("ACS ROUTE PLAN CREATE RETRY:", {
+        code: error.code,
+        message: error.message,
+        attempt,
+        next_attempt: attempt + 1,
+        wait_ms: waitMs
+      });
+
+      await new Promise(resolve => setTimeout(resolve, waitMs));
+    }
   }
 });
 
