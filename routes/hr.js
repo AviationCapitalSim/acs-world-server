@@ -506,6 +506,175 @@ export async function resolveHROperationalRisk(airlineId) {
 }
 
 /* ============================================================
+   ACS HR → SKYTRACK FLIGHT RISK FEED — PHASE 3B
+   ------------------------------------------------------------
+   Server-side diagnostic only.
+   Does NOT update schedule_items.
+   Does NOT cancel flights.
+   Does NOT write delays.
+   Gives SkyTrack a personnel-risk view per flight.
+============================================================ */
+
+function ACS_HR_getPilotDeptForSeats(seats) {
+  const s = Number(seats || 0);
+
+  if (s <= 19) return "pilots_small";
+  if (s <= 70) return "pilots_medium";
+  if (s <= 150) return "pilots_large";
+  return "pilots_vlarge";
+}
+
+function ACS_HR_buildFlightPersonnelRisk(flight, riskByDept, globalRisk) {
+  const seats = Number(flight.seats || 0);
+  const pilotDept = ACS_HR_getPilotDeptForSeats(seats);
+
+  const relevantDeptIds = [
+    pilotDept,
+    "flightops",
+    "maintenance",
+    "ground"
+  ];
+
+  if (seats > 9) {
+    relevantDeptIds.push("cabin");
+  }
+
+  const problems = relevantDeptIds
+    .map(deptId => riskByDept.get(deptId))
+    .filter(dep => dep && Number(dep.deficit || 0) > 0);
+
+  const blocked = problems.some(dep => dep.severity === "BLOCKED");
+  const critical = problems.some(dep => dep.severity === "CRITICAL");
+  const warning = problems.some(dep => dep.severity === "WARNING");
+
+  let opsStatus = "ON TIME";
+  let delayMinutes = 0;
+
+  if (blocked) {
+    opsStatus = "CANCELLED - PERSONNEL";
+    delayMinutes = null;
+  } else if (critical || warning) {
+    opsStatus = "DELAYED - PERSONNEL";
+
+    const localRiskPoints = problems.reduce(
+      (sum, dep) => sum + Number(dep.riskPoints || 0),
+      0
+    );
+
+    const riskScore = Math.max(
+      Number(globalRisk.delayRiskPct || 0),
+      localRiskPoints
+    );
+
+    delayMinutes = critical
+      ? Math.min(120, Math.max(30, Math.round(riskScore * 1.5)))
+      : Math.min(60, Math.max(15, Math.round(riskScore * 1.1)));
+  }
+
+  return {
+    schedule_item_id: flight.id,
+    flight_number: flight.flight_number,
+    aircraft_registration: flight.aircraft_registration,
+    aircraft: flight.aircraft,
+    model_key: flight.model_key,
+    seats,
+    origin: flight.origin,
+    destination: flight.destination,
+    selected_day: flight.selected_day,
+    departure: flight.departure,
+    arrival: flight.arrival,
+    schedule_status: flight.status,
+
+    opsStatus,
+    delayMinutes,
+
+    personnelRisk: {
+      globalStatus: globalRisk.operationalStatus,
+      delayRiskPct: globalRisk.delayRiskPct,
+      cancelRiskPct: globalRisk.cancelRiskPct,
+      pilotDept,
+      affectedDepartments: problems.map(dep => ({
+        dept_id: dep.dept_id,
+        dept_name: dep.dept_name,
+        area: dep.area,
+        staff: dep.staff,
+        required: dep.required,
+        deficit: dep.deficit,
+        coveragePct: dep.coveragePct,
+        severity: dep.severity
+      }))
+    },
+
+    reasons: problems.map(dep =>
+      `${dep.dept_name}: ${dep.staff}/${dep.required}`
+    )
+  };
+}
+
+export async function resolveHRSkyTrackRiskFeed(airlineId) {
+  const globalRisk = await resolveHROperationalRisk(airlineId);
+
+  const riskByDept = new Map(
+    globalRisk.departments.map(dep => [dep.dept_id, dep])
+  );
+
+  const flightsResult = await pool.query(
+    `
+    SELECT
+      si.id,
+      si.airline_id,
+      si.route_plan_id,
+      si.aircraft_id,
+      si.flight_number,
+      si.origin,
+      si.destination,
+      si.selected_day,
+      si.departure,
+      si.arrival,
+      si.status,
+      si.aircraft_registration,
+      si.aircraft,
+      COALESCE(af.model_key, si.model_key, rp.model_key) AS model_key,
+      COALESCE(ac.seats, 0)::int AS seats
+    FROM public.schedule_items si
+    LEFT JOIN public.route_plans rp
+      ON rp.id = si.route_plan_id
+     AND rp.airline_id = si.airline_id
+    LEFT JOIN public.aircraft_fleet af
+      ON af.id = si.aircraft_id
+     AND af.airline_id = si.airline_id
+    LEFT JOIN public.aircraft_catalog ac
+      ON LOWER(ac.model_key) = LOWER(COALESCE(af.model_key, si.model_key, rp.model_key))
+    WHERE si.airline_id = $1
+      AND si.item_type = 'flight'
+      AND LOWER(COALESCE(si.status, '')) = 'assigned'
+      AND si.aircraft_id IS NOT NULL
+    ORDER BY si.id DESC
+    LIMIT 250
+    `,
+    [airlineId]
+  );
+
+  const flights = flightsResult.rows.map(flight =>
+    ACS_HR_buildFlightPersonnelRisk(flight, riskByDept, globalRisk)
+  );
+
+  return {
+    ok: true,
+    airline_id: Number(airlineId),
+    source: "HR_PERSONNEL_RISK",
+    mode: "DIAGNOSTIC_ONLY",
+    globalRisk: {
+      operationalStatus: globalRisk.operationalStatus,
+      dispatchBlocked: globalRisk.dispatchBlocked,
+      delayRiskPct: globalRisk.delayRiskPct,
+      cancelRiskPct: globalRisk.cancelRiskPct
+    },
+    flights
+  };
+}
+
+/* ============================================================
    GET HR DEPARTMENTS
    ------------------------------------------------------------
    • Server authority
@@ -723,6 +892,26 @@ router.get("/hr/ops-risk/:airlineId", async (req, res) => {
     res.json(risk);
   } catch (err) {
     console.error("HR OPS RISK ERROR:", err);
+
+    res.status(500).json({
+      ok: false,
+      error: err.message
+    });
+  }
+});
+
+/* ============================================================
+   GET HR → SKYTRACK PERSONNEL RISK FEED
+   ============================================================ */
+
+router.get("/hr/skytrack-risk/:airlineId", async (req, res) => {
+  const airlineId = Number(req.params.airlineId);
+
+  try {
+    const feed = await resolveHRSkyTrackRiskFeed(airlineId);
+    res.json(feed);
+  } catch (err) {
+    console.error("HR SKYTRACK RISK FEED ERROR:", err);
 
     res.status(500).json({
       ok: false,
