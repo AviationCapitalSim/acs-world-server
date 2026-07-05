@@ -675,6 +675,246 @@ export async function resolveHRSkyTrackRiskFeed(airlineId) {
 }
 
 /* ============================================================
+   ACS HR OPS IMPACT WRITER — PHASE 3E
+   ------------------------------------------------------------
+   Persists personnel delay/cancellation into SkyTrack ops table.
+   Global logic:
+   - per airline_id
+   - per aircraft_registration
+   - per sim day
+   - delay propagates through same aircraft daily rotation
+   - resets next sim day based on current HR state
+   - does NOT touch finance/passengers/reputation
+============================================================ */
+
+function ACS_HR_clampDelayMinutes(value) {
+  const n = Number(value || 0);
+  return Math.max(0, Math.min(240, Math.round(n)));
+}
+
+function ACS_HR_getDayCarryRecoveryMinutes(flight) {
+  const turnaround = Number(flight.turnaround_min || 0);
+
+  if (turnaround >= 60) return 30;
+  if (turnaround >= 35) return 20;
+  return 12;
+}
+
+function ACS_HR_shouldCancelForPersonnel(flightRisk, carriedDelay) {
+  if (flightRisk.opsStatus === "CANCELLED - PERSONNEL") return true;
+  if (Number(carriedDelay || 0) >= 240) return true;
+  return false;
+}
+
+export async function applyHROpsImpactForAirline(airlineId) {
+  const simResult = await pool.query(`
+    SELECT
+      EXTRACT(YEAR FROM acs_get_current_sim_time())::int AS sim_year,
+      EXTRACT(MONTH FROM acs_get_current_sim_time())::int AS sim_month,
+      EXTRACT(DAY FROM acs_get_current_sim_time())::int AS sim_day,
+      LOWER(TRIM(TO_CHAR(acs_get_current_sim_time(), 'dy'))) AS sim_dow
+  `);
+
+  const sim = simResult.rows[0];
+
+  const simYear = Number(sim?.sim_year);
+  const simMonth = Number(sim?.sim_month);
+  const simDay = Number(sim?.sim_day);
+  const simDow = String(sim?.sim_dow || "").slice(0, 3);
+
+  if (!Number.isInteger(simYear) || !Number.isInteger(simMonth) || !Number.isInteger(simDay) || !simDow) {
+    return {
+      ok: false,
+      skipped: true,
+      reason: "INVALID_SIM_TIME"
+    };
+  }
+
+  const globalRisk = await resolveHROperationalRisk(airlineId);
+
+  const riskByDept = new Map(
+    globalRisk.departments.map(dep => [dep.dept_id, dep])
+  );
+
+  const flightsResult = await pool.query(
+    `
+    SELECT
+      si.id,
+      si.airline_id,
+      si.route_plan_id,
+      si.aircraft_id,
+      si.flight_number,
+      si.origin,
+      si.destination,
+      si.selected_day,
+      si.departure,
+      si.arrival,
+      si.status,
+      si.dep_abs_min,
+      si.arr_abs_min,
+      si.turnaround_min,
+      si.aircraft_registration,
+      si.aircraft,
+      COALESCE(af.model_key, si.model_key, rp.model_key) AS model_key,
+      COALESCE(ac.seats, 0)::int AS seats
+    FROM public.schedule_items si
+    LEFT JOIN public.route_plans rp
+      ON rp.id = si.route_plan_id
+     AND rp.airline_id = si.airline_id
+    LEFT JOIN public.aircraft_fleet af
+      ON af.id = si.aircraft_id
+     AND af.airline_id = si.airline_id
+    LEFT JOIN public.aircraft_catalog ac
+      ON LOWER(ac.model_key) = LOWER(COALESCE(af.model_key, si.model_key, rp.model_key))
+    WHERE si.airline_id = $1
+      AND si.item_type = 'flight'
+      AND LOWER(COALESCE(si.status, '')) = 'assigned'
+      AND LOWER(COALESCE(si.selected_day, '')) = $2
+      AND si.aircraft_id IS NOT NULL
+    ORDER BY
+      si.aircraft_registration ASC NULLS LAST,
+      COALESCE(si.dep_abs_min, 0) ASC,
+      si.id ASC
+    `,
+    [airlineId, simDow]
+  );
+
+  const carryByAircraft = new Map();
+  const applied = [];
+
+  for (const flight of flightsResult.rows) {
+    const aircraftReg = String(flight.aircraft_registration || `AIRCRAFT-${flight.aircraft_id}`);
+    const baseRisk = ACS_HR_buildFlightPersonnelRisk(flight, riskByDept, globalRisk);
+
+    const previousCarry = Number(carryByAircraft.get(aircraftReg) || 0);
+    const baseDelay = ACS_HR_clampDelayMinutes(baseRisk.delayMinutes || 0);
+    let finalDelay = Math.max(baseDelay, previousCarry);
+
+    let opsStatus = "ON TIME";
+    let cancelReason = null;
+
+    if (ACS_HR_shouldCancelForPersonnel(baseRisk, finalDelay)) {
+      opsStatus = "CANCELLED - PERSONNEL";
+      finalDelay = 0;
+      cancelReason = "HR_PERSONNEL_SHORTAGE";
+      carryByAircraft.set(aircraftReg, Math.max(previousCarry, 90));
+    } else if (finalDelay > 0) {
+      opsStatus = "DELAYED - PERSONNEL";
+
+      const recovery = ACS_HR_getDayCarryRecoveryMinutes(flight);
+      const nextCarry = Math.max(0, finalDelay - recovery);
+
+      carryByAircraft.set(aircraftReg, nextCarry);
+    } else {
+      carryByAircraft.set(aircraftReg, 0);
+    }
+
+    const riskPayload = {
+      globalStatus: globalRisk.operationalStatus,
+      dispatchBlocked: globalRisk.dispatchBlocked,
+      delayRiskPct: globalRisk.delayRiskPct,
+      cancelRiskPct: globalRisk.cancelRiskPct,
+      personnelRisk: baseRisk.personnelRisk,
+      reasons: baseRisk.reasons,
+      carriedDelayIn: previousCarry,
+      finalDelayMinutes: finalDelay
+    };
+
+    await pool.query(
+      `
+      INSERT INTO public.skytrack_ops_impacts (
+        airline_id,
+        schedule_item_id,
+        sim_year,
+        sim_month,
+        sim_day,
+        sim_dow,
+        aircraft_registration,
+        flight_number,
+        origin,
+        destination,
+        ops_status,
+        delay_minutes,
+        delay_source,
+        cancel_reason,
+        risk_source,
+        risk_payload,
+        updated_at
+      )
+      VALUES (
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
+        CASE WHEN $12 > 0 THEN 'HR_PERSONNEL' ELSE NULL END,
+        $13,
+        'HR_PERSONNEL_RISK',
+        $14::jsonb,
+        NOW()
+      )
+      ON CONFLICT (airline_id, schedule_item_id, sim_year, sim_month, sim_day)
+      DO UPDATE SET
+        sim_dow = EXCLUDED.sim_dow,
+        aircraft_registration = EXCLUDED.aircraft_registration,
+        flight_number = EXCLUDED.flight_number,
+        origin = EXCLUDED.origin,
+        destination = EXCLUDED.destination,
+        ops_status = EXCLUDED.ops_status,
+        delay_minutes = EXCLUDED.delay_minutes,
+        delay_source = EXCLUDED.delay_source,
+        cancel_reason = EXCLUDED.cancel_reason,
+        risk_source = EXCLUDED.risk_source,
+        risk_payload = EXCLUDED.risk_payload,
+        updated_at = NOW()
+      `,
+      [
+        airlineId,
+        flight.id,
+        simYear,
+        simMonth,
+        simDay,
+        simDow,
+        flight.aircraft_registration,
+        flight.flight_number,
+        flight.origin,
+        flight.destination,
+        opsStatus,
+        finalDelay,
+        cancelReason,
+        JSON.stringify(riskPayload)
+      ]
+    );
+
+    applied.push({
+      schedule_item_id: flight.id,
+      flight_number: flight.flight_number,
+      aircraft_registration: flight.aircraft_registration,
+      origin: flight.origin,
+      destination: flight.destination,
+      opsStatus,
+      delayMinutes: finalDelay,
+      carriedDelayIn: previousCarry,
+      reasons: baseRisk.reasons
+    });
+  }
+
+  return {
+    ok: true,
+    mode: "PERSISTED",
+    airline_id: Number(airlineId),
+    sim_year: simYear,
+    sim_month: simMonth,
+    sim_day: simDay,
+    sim_dow: simDow,
+    globalRisk: {
+      operationalStatus: globalRisk.operationalStatus,
+      dispatchBlocked: globalRisk.dispatchBlocked,
+      delayRiskPct: globalRisk.delayRiskPct,
+      cancelRiskPct: globalRisk.cancelRiskPct
+    },
+    applied_count: applied.length,
+    applied
+  };
+}
+
+/* ============================================================
    GET HR DEPARTMENTS
    ------------------------------------------------------------
    • Server authority
@@ -912,6 +1152,72 @@ router.get("/hr/skytrack-risk/:airlineId", async (req, res) => {
     res.json(feed);
   } catch (err) {
     console.error("HR SKYTRACK RISK FEED ERROR:", err);
+
+    res.status(500).json({
+      ok: false,
+      error: err.message
+    });
+  }
+});
+
+/* ============================================================
+   APPLY HR OPS IMPACT — MANUAL TEST / PHASE 3E
+   ============================================================ */
+
+router.post("/hr/ops-impact/apply/:airlineId", async (req, res) => {
+  const airlineId = Number(req.params.airlineId);
+
+  try {
+    const result = await applyHROpsImpactForAirline(airlineId);
+    res.json(result);
+  } catch (err) {
+    console.error("HR OPS IMPACT APPLY ERROR:", err);
+
+    res.status(500).json({
+      ok: false,
+      error: err.message
+    });
+  }
+});
+
+/* ============================================================
+   GET HR OPS IMPACTS FOR CURRENT SIM DAY
+   ============================================================ */
+
+router.get("/hr/ops-impact/:airlineId", async (req, res) => {
+  const airlineId = Number(req.params.airlineId);
+
+  try {
+    const simResult = await pool.query(`
+      SELECT
+        EXTRACT(YEAR FROM acs_get_current_sim_time())::int AS sim_year,
+        EXTRACT(MONTH FROM acs_get_current_sim_time())::int AS sim_month,
+        EXTRACT(DAY FROM acs_get_current_sim_time())::int AS sim_day
+    `);
+
+    const sim = simResult.rows[0];
+
+    const result = await pool.query(
+      `
+      SELECT *
+      FROM public.skytrack_ops_impacts
+      WHERE airline_id = $1
+        AND sim_year = $2
+        AND sim_month = $3
+        AND sim_day = $4
+      ORDER BY aircraft_registration, id
+      `,
+      [airlineId, sim.sim_year, sim.sim_month, sim.sim_day]
+    );
+
+    res.json({
+      ok: true,
+      airline_id: airlineId,
+      sim,
+      impacts: result.rows
+    });
+  } catch (err) {
+    console.error("HR OPS IMPACT FETCH ERROR:", err);
 
     res.status(500).json({
       ok: false,
