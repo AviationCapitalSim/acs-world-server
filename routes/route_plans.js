@@ -187,6 +187,28 @@ function ACS_buildSlotMovements({
   return movements;
 }
 
+function ACS_sortSlotMovementsForLocking(movements) {
+  return [...(movements || [])].sort((a, b) => {
+    const left = [
+      a.airport_icao,
+      a.weekday,
+      a.time_local,
+      a.movement_type,
+      a.flight_number
+    ].map(v => String(v || "")).join("|");
+
+    const right = [
+      b.airport_icao,
+      b.weekday,
+      b.time_local,
+      b.movement_type,
+      b.flight_number
+    ].map(v => String(v || "")).join("|");
+
+    return left.localeCompare(right);
+  });
+}
+
 /* ============================================================
    POSTGRESQL WORLD TIME AUTHORITY
    ============================================================ */
