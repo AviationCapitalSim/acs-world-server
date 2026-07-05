@@ -911,6 +911,13 @@ router.post("/routes/plans", requireAuth, async (req, res) => {
     await client.query("BEGIN");
     transactionStarted = true;
 
+    await client.query(
+    `
+    SELECT pg_advisory_xact_lock(hashtext($1))
+    `,
+    [`ACS_ROUTE_PLAN_CREATE|${airlineId}|${aircraftId}`]
+   );
+     
     const officialTime = await ACS_getOfficialSimTime(client);
 
     const originAirport = await ACS_getAirportHistoricalAuthority(
