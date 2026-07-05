@@ -1183,9 +1183,9 @@ router.post("/hr/ops-impact/apply/:airlineId", async (req, res) => {
 /* ============================================================
    GET HR OPS IMPACTS FOR CURRENT SIM DAY
    ============================================================ */
-
 router.get("/hr/ops-impact/:airlineId", async (req, res) => {
   const airlineId = Number(req.params.airlineId);
+  const startedAt = Date.now();
 
   try {
     const simResult = await pool.query(`
@@ -1196,6 +1196,7 @@ router.get("/hr/ops-impact/:airlineId", async (req, res) => {
     `);
 
     const sim = simResult.rows[0];
+    const simKey = `${sim.sim_year}-${sim.sim_month}-${sim.sim_day}`;
 
     const countResult = await pool.query(
       `
@@ -1209,11 +1210,16 @@ router.get("/hr/ops-impact/:airlineId", async (req, res) => {
       [airlineId, sim.sim_year, sim.sim_month, sim.sim_day]
     );
 
-    let existingCount = Number(countResult.rows[0]?.count || 0);
-    let autoApply = null;
+    const existingBefore = Number(countResult.rows[0]?.count || 0);
 
-    if (existingCount === 0) {
-      const lockName = `hr_ops_impact:${airlineId}:${sim.sim_year}:${sim.sim_month}:${sim.sim_day}`;
+    let autoApply = null;
+    let occReason = "EXISTING_IMPACTS";
+    let lockUsed = false;
+
+    if (existingBefore === 0) {
+      lockUsed = true;
+
+      const lockName = `hr_ops_impact:${airlineId}:${simKey}`;
       const lockClient = await pool.connect();
 
       try {
@@ -1234,17 +1240,13 @@ router.get("/hr/ops-impact/:airlineId", async (req, res) => {
           [airlineId, sim.sim_year, sim.sim_month, sim.sim_day]
         );
 
-        existingCount = Number(recheckResult.rows[0]?.count || 0);
+        const existingAfterLock = Number(recheckResult.rows[0]?.count || 0);
 
-        if (existingCount === 0) {
+        if (existingAfterLock === 0) {
           autoApply = await applyHROpsImpactForAirline(airlineId);
+          occReason = "CREATED_BY_OCC_AUTO_ENSURE";
         } else {
-          autoApply = {
-            ok: true,
-            skipped: true,
-            reason: "ALREADY_CREATED_BY_ANOTHER_OCC_REQUEST",
-            existing_count: existingCount
-          };
+          occReason = "ALREADY_CREATED_BY_ANOTHER_OCC_REQUEST";
         }
       } finally {
         await lockClient.query(
@@ -1269,14 +1271,25 @@ router.get("/hr/ops-impact/:airlineId", async (req, res) => {
       [airlineId, sim.sim_year, sim.sim_month, sim.sim_day]
     );
 
+    const createdNow =
+      occReason === "CREATED_BY_OCC_AUTO_ENSURE" &&
+      Number(autoApply?.applied_count || 0) > 0;
+
     res.json({
       ok: true,
       airline_id: airlineId,
       sim,
       occ_auto_ensure: {
         checked: true,
-        created_now: Boolean(autoApply && autoApply.applied_count > 0),
-        autoApply
+        sim_key: simKey,
+        reason: occReason,
+        lock_used: lockUsed,
+        existing_before: existingBefore,
+        existing_after: result.rows.length,
+        created_now: createdNow,
+        applied_count: Number(autoApply?.applied_count || 0),
+        globalRisk: autoApply?.globalRisk || null,
+        elapsed_ms: Date.now() - startedAt
       },
       impacts: result.rows
     });
