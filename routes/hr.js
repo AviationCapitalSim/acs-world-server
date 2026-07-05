@@ -1183,7 +1183,6 @@ router.post("/hr/ops-impact/apply/:airlineId", async (req, res) => {
 /* ============================================================
    GET HR OPS IMPACTS FOR CURRENT SIM DAY
    ============================================================ */
-
 router.get("/hr/ops-impact/:airlineId", async (req, res) => {
   const airlineId = Number(req.params.airlineId);
 
@@ -1196,6 +1195,25 @@ router.get("/hr/ops-impact/:airlineId", async (req, res) => {
     `);
 
     const sim = simResult.rows[0];
+
+    const existingResult = await pool.query(
+      `
+      SELECT COUNT(*)::int AS count
+      FROM public.skytrack_ops_impacts
+      WHERE airline_id = $1
+        AND sim_year = $2
+        AND sim_month = $3
+        AND sim_day = $4
+      `,
+      [airlineId, sim.sim_year, sim.sim_month, sim.sim_day]
+    );
+
+    const existingCount = Number(existingResult.rows[0]?.count || 0);
+    let autoApply = null;
+
+    if (existingCount === 0) {
+      autoApply = await applyHROpsImpactForAirline(airlineId);
+    }
 
     const result = await pool.query(
       `
@@ -1214,6 +1232,7 @@ router.get("/hr/ops-impact/:airlineId", async (req, res) => {
       ok: true,
       airline_id: airlineId,
       sim,
+      autoApply,
       impacts: result.rows
     });
   } catch (err) {
