@@ -31,6 +31,7 @@ import skytrackGlobalRoutes
 import skytrackSnapshotRoutes
   from "./routes/skytrack_snapshot.js";
 import flightSettlementRoutes from "./routes/flight_settlement.js";
+import occAlertsRoutes from "./routes/occ_alerts.js";
 
 dotenv.config();
 
@@ -137,6 +138,7 @@ app.use("/v1", companyContextRoutes);
 app.use("/v1", financeRoutes);
 app.use("/v1", usersRoutes);
 app.use("/v1", scheduleRoutes);
+app.use("/v1", occAlertsRoutes);
 app.use("/v1/skytrack", skytrackRoutes);
 app.use("/v1/skytrack", skytrackGlobalRoutes);
 app.use("/v1/skytrack", skytrackSnapshotRoutes);
