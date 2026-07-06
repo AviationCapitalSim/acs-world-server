@@ -1662,7 +1662,7 @@ async function ACS_createRoutePlanOnce(req, res) {
 }
 
 router.post("/routes/plans", requireAuth, async (req, res) => {
-  const maxAttempts = 3;
+  const maxAttempts = 6;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
@@ -1691,7 +1691,7 @@ router.post("/routes/plans", requireAuth, async (req, res) => {
       }
 
       const waitMs =
-        150 * attempt + Math.floor(Math.random() * 120);
+      350 * attempt + Math.floor(Math.random() * 250);
 
       console.warn("ACS ROUTE PLAN CREATE RETRY:", {
         code: error.code,
