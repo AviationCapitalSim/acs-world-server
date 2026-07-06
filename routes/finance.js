@@ -394,6 +394,224 @@ router.post("/finance/flight-event", requireAuth, async (req,res)=>{
 });
 
 /* ============================================================
+   FINANCE — HR DEPARTMENT BONUS CANONICAL OCC
+   ============================================================ */
+
+router.post("/finance/hr-bonus", requireAuth, async (req, res) => {
+
+  const airline_id = req.airline_id;
+  const dept_id = cleanText(req.body?.dept_id);
+  const bonus_percent = toInt(req.body?.bonus_percent);
+
+  if (!dept_id) {
+    return res.status(400).json({ ok:false, error:"INVALID_DEPT_ID" });
+  }
+
+  if (![5,10,15,20,25].includes(bonus_percent)) {
+    return res.status(400).json({ ok:false, error:"INVALID_BONUS_PERCENT" });
+  }
+
+  const client = await pool.connect();
+
+  try {
+
+    await client.query("BEGIN");
+
+    const simResult = await client.query(`
+      SELECT
+        EXTRACT(YEAR FROM acs_get_current_sim_time())::int AS sim_year,
+        EXTRACT(MONTH FROM acs_get_current_sim_time())::int AS sim_month
+    `);
+
+    const simYear = Number(simResult.rows[0]?.sim_year);
+    const simMonth = Number(simResult.rows[0]?.sim_month);
+    const month_key = `${simYear}-${String(simMonth).padStart(2, "0")}`;
+
+    const reference_uid = `HR_BONUS:${airline_id}:${dept_id}:${month_key}`;
+
+    await client.query(
+      `
+      INSERT INTO company_finance (airline_id, capital)
+      VALUES ($1, 1500000)
+      ON CONFLICT (airline_id)
+      DO NOTHING
+      `,
+      [airline_id]
+    );
+
+    const hrResult = await client.query(
+      `
+      SELECT dept_id, dept_name, staff, morale, salary, payroll
+      FROM public.hr_departments
+      WHERE airline_id = $1
+        AND dept_id = $2
+      FOR UPDATE
+      `,
+      [airline_id, dept_id]
+    );
+
+    if (hrResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ ok:false, error:"DEPARTMENT_NOT_FOUND" });
+    }
+
+    const dep = hrResult.rows[0];
+
+    const staff = Number(dep.staff || 0);
+    const salary = Number(dep.salary || 0);
+    const oldMorale = Number(dep.morale || 100);
+
+    if (staff <= 0 || salary <= 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ ok:false, error:"INVALID_BONUS_INPUT" });
+    }
+
+    const amount = Math.round(staff * salary * (bonus_percent / 100));
+
+    const moraleGainMap = {
+      5: 2,
+      10: 4,
+      15: 6,
+      20: 8,
+      25: 10
+    };
+
+    const moraleGain = moraleGainMap[bonus_percent] || 0;
+    const newMorale = Math.min(100, oldMorale + moraleGain);
+
+    const financeResult = await client.query(
+      `
+      SELECT capital
+      FROM company_finance
+      WHERE airline_id = $1
+      FOR UPDATE
+      `,
+      [airline_id]
+    );
+
+    const capital = Number(financeResult.rows[0]?.capital || 0);
+
+    if (capital < amount) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        ok:false,
+        error:"INSUFFICIENT_FUNDS",
+        capital,
+        required: amount
+      });
+    }
+
+    const logResult = await client.query(
+      `
+      INSERT INTO finance_log
+      (
+        airline_id,
+        type,
+        source,
+        amount,
+        timestamp,
+        reference_uid,
+        description
+      )
+      VALUES
+      (
+        $1,
+        'EXPENSE',
+        'HR_DEPARTMENT_BONUS',
+        $2,
+        $3,
+        $4,
+        $5
+      )
+      ON CONFLICT (reference_uid)
+      DO NOTHING
+      RETURNING id
+      `,
+      [
+        airline_id,
+        amount,
+        Date.now(),
+        reference_uid,
+        `HR bonus ${bonus_percent}% for ${dep.dept_name} (${month_key})`
+      ]
+    );
+
+    if (logResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        ok:false,
+        error:"BONUS_ALREADY_APPLIED_THIS_MONTH",
+        month_key
+      });
+    }
+
+    await client.query(
+      `
+      UPDATE company_finance
+      SET
+        expenses = COALESCE(expenses,0) + $2,
+        profit = COALESCE(profit,0) - $2,
+        capital = COALESCE(capital,0) - $2,
+        cost_hr = COALESCE(cost_hr,0) + $2,
+        updated_at = NOW()
+      WHERE airline_id = $1
+      `,
+      [airline_id, amount]
+    );
+
+    await client.query(
+      `
+      UPDATE public.hr_departments
+      SET
+        morale = $3,
+        bonus = $4,
+        updated_at = NOW()
+      WHERE airline_id = $1
+        AND dept_id = $2
+      `,
+      [airline_id, dept_id, newMorale, bonus_percent]
+    );
+
+    const financeSnapshot = await client.query(
+      `SELECT * FROM company_finance WHERE airline_id = $1`,
+      [airline_id]
+    );
+
+    await client.query("COMMIT");
+
+    return res.json({
+      ok:true,
+      applied:true,
+      dept_id,
+      dept_name: dep.dept_name,
+      month_key,
+      bonus_percent,
+      amount,
+      old_morale: oldMorale,
+      new_morale: newMorale,
+      finance: financeSnapshot.rows[0]
+    });
+
+  } catch (err) {
+
+    await client.query("ROLLBACK");
+
+    console.error("HR BONUS ERROR", err);
+
+    return res.status(500).json({
+      ok:false,
+      error:err.message
+    });
+
+  } finally {
+
+    client.release();
+
+  }
+
+});
+
+/* ============================================================
    FINANCE — MONTHLY PAYROLL CANONICAL OCC
    ============================================================ */
 
