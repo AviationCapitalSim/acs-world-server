@@ -450,12 +450,12 @@ async function ACS_flightNumberExists(client, airlineId, outNumber, inNumber) {
 async function ACS_allocateFlightNumberPair(client, airlineId) {
   const airline = await ACS_getAirlineIata(client, airlineId);
 
-  await client.query(
-    `
-    SELECT pg_advisory_xact_lock(hashtext($1))
-    `,
-    [`ACS_FLIGHT_NUMBER_SEQUENCE|${airlineId}`]
-  );
+      await client.query(
+      `
+      SELECT pg_advisory_xact_lock(hashtext($1))
+      `,
+      [`ACS_ROUTE_PLAN_CREATE|${airlineId}`]
+    );
 
   await client.query(
     `
