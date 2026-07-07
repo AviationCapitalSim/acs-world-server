@@ -58,6 +58,7 @@ async function ACS_canCreateOccAlert(client, airlineId, alertKey, currentSimTime
 }
 
 async function ACS_createOccAlertIfAllowed(client, alert, currentSimTime) {
+  
   const allowed = await ACS_canCreateOccAlert(
     client,
     alert.airline_id,
@@ -99,6 +100,7 @@ async function ACS_createOccAlertIfAllowed(client, alert, currentSimTime) {
 }
 
 async function ACS_syncHrAlerts(client, airlineId, currentSimTime) {
+  
   const result = await client.query(
     `
     SELECT
@@ -145,6 +147,7 @@ async function ACS_syncHrAlerts(client, airlineId, currentSimTime) {
 }
 
 async function ACS_syncSlotAlerts(client, airlineId, currentSimTime) {
+  
   const result = await client.query(
     `
     WITH pending_slot_routes AS (
@@ -214,6 +217,97 @@ async function ACS_syncSlotAlerts(client, airlineId, currentSimTime) {
       },
       currentSimTime
     );
+  }
+}
+
+async function ACS_syncMaintenanceOverdueAlerts(client, airlineId, currentSimTime) {
+  const result = await client.query(
+    `
+    SELECT
+      af.id AS aircraft_id,
+      af.registration,
+      af.aircraft_name,
+
+      ams.c_check_status,
+      ams.c_check_due_date,
+      ams.d_check_status,
+      ams.d_check_due_date,
+
+      COALESCE(cs.auto_c_check, FALSE) AS auto_c_check,
+      COALESCE(cs.auto_d_check, FALSE) AS auto_d_check
+
+    FROM public.aircraft_maintenance_status ams
+
+    JOIN public.aircraft_fleet af
+      ON af.id = ams.aircraft_id
+     AND af.airline_id = ams.airline_id
+
+    LEFT JOIN public.company_settings cs
+      ON cs.airline_id = ams.airline_id
+
+    WHERE ams.airline_id = $1
+      AND (
+        (
+          UPPER(COALESCE(ams.c_check_status, '')) = 'OVERDUE'
+          AND COALESCE(cs.auto_c_check, FALSE) = FALSE
+        )
+        OR
+        (
+          UPPER(COALESCE(ams.d_check_status, '')) = 'OVERDUE'
+          AND COALESCE(cs.auto_d_check, FALSE) = FALSE
+        )
+      )
+
+    ORDER BY af.id ASC
+    `,
+    [airlineId]
+  );
+
+  for (const row of result.rows) {
+    const aircraftLabel =
+      String(row.registration || "").trim() ||
+      String(row.aircraft_name || "").trim() ||
+      `Aircraft ${row.aircraft_id}`;
+
+    if (
+      String(row.d_check_status || "").toUpperCase() === "OVERDUE" &&
+      row.auto_d_check !== true
+    ) {
+      await ACS_createOccAlertIfAllowed(
+        client,
+        {
+          airline_id: airlineId,
+          alert_key: `MAINTENANCE_D_CHECK_OVERDUE:${row.aircraft_id}`,
+          category: "maintenance",
+          level: "critical",
+          title: "D CHECK OVERDUE",
+          message: `Aircraft ${aircraftLabel} D Check overdue.`,
+          source: "aircraft_maintenance_status",
+          source_ref: String(row.aircraft_id)
+        },
+        currentSimTime
+      );
+    }
+
+    if (
+      String(row.c_check_status || "").toUpperCase() === "OVERDUE" &&
+      row.auto_c_check !== true
+    ) {
+      await ACS_createOccAlertIfAllowed(
+        client,
+        {
+          airline_id: airlineId,
+          alert_key: `MAINTENANCE_C_CHECK_OVERDUE:${row.aircraft_id}`,
+          category: "maintenance",
+          level: "warning",
+          title: "C CHECK OVERDUE",
+          message: `Aircraft ${aircraftLabel} C Check overdue.`,
+          source: "aircraft_maintenance_status",
+          source_ref: String(row.aircraft_id)
+        },
+        currentSimTime
+      );
+    }
   }
 }
 
