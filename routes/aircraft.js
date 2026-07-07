@@ -1963,7 +1963,9 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
         ams.a_check_status,
         ams.b_check_status,
         ams.c_check_status,
+        ams.c_check_due_date,
         ams.d_check_status,
+        ams.d_check_due_date,
 
         ams.maintenance_control_status,
         ams.maintenance_control_reason
