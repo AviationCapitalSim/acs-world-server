@@ -9,7 +9,64 @@ function ACS_airlineId(req) {
   return Number.isInteger(airlineId) && airlineId > 0 ? airlineId : null;
 }
 
-async function ACS_upsertOccAlert(client, alert) {
+async function ACS_getCurrentSimTime(client) {
+  const result = await client.query(`
+    SELECT acs_get_current_sim_time() AS current_sim_time
+  `);
+
+  return result.rows[0]?.current_sim_time || null;
+}
+
+async function ACS_canCreateOccAlert(client, airlineId, alertKey, currentSimTime) {
+  const result = await client.query(
+    `
+    SELECT
+      id,
+      deleted_at,
+      deleted_sim_time
+    FROM public.occ_alerts
+    WHERE airline_id = $1
+      AND alert_key = $2
+    ORDER BY id DESC
+    LIMIT 1
+    `,
+    [airlineId, alertKey]
+  );
+
+  if (!result.rows.length) {
+    return true;
+  }
+
+  const last = result.rows[0];
+
+  if (!last.deleted_at) {
+    return false;
+  }
+
+  if (!last.deleted_sim_time || !currentSimTime) {
+    return false;
+  }
+
+  const waitResult = await client.query(
+    `
+    SELECT ($1::TIMESTAMPTZ >= ($2::TIMESTAMPTZ + INTERVAL '7 days')) AS can_create
+    `,
+    [currentSimTime, last.deleted_sim_time]
+  );
+
+  return waitResult.rows[0]?.can_create === true;
+}
+
+async function ACS_createOccAlertIfAllowed(client, alert, currentSimTime) {
+  const allowed = await ACS_canCreateOccAlert(
+    client,
+    alert.airline_id,
+    alert.alert_key,
+    currentSimTime
+  );
+
+  if (!allowed) return;
+
   await client.query(
     `
     INSERT INTO public.occ_alerts (
@@ -21,20 +78,11 @@ async function ACS_upsertOccAlert(client, alert) {
       message,
       source,
       source_ref,
+      event_sim_time,
       created_at,
       updated_at
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW(),NOW())
-    ON CONFLICT (airline_id, alert_key)
-    DO UPDATE SET
-      category = EXCLUDED.category,
-      level = EXCLUDED.level,
-      title = EXCLUDED.title,
-      message = EXCLUDED.message,
-      source = EXCLUDED.source,
-      source_ref = EXCLUDED.source_ref,
-      updated_at = NOW()
-    WHERE public.occ_alerts.deleted_at IS NULL
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW(),NOW())
     `,
     [
       alert.airline_id,
@@ -44,12 +92,13 @@ async function ACS_upsertOccAlert(client, alert) {
       alert.title,
       alert.message,
       alert.source,
-      alert.source_ref || null
+      alert.source_ref || null,
+      currentSimTime
     ]
   );
 }
 
-async function ACS_syncHrAlerts(client, airlineId) {
+async function ACS_syncHrAlerts(client, airlineId, currentSimTime) {
   const result = await client.query(
     `
     SELECT
@@ -78,26 +127,27 @@ async function ACS_syncHrAlerts(client, airlineId) {
         ? "critical"
         : "warning";
 
-    await ACS_upsertOccAlert(client, {
-      airline_id: airlineId,
-      alert_key: `HR_SHORTAGE:${row.dept_id}`,
-      category: "hr",
-      level,
-      title: "HR SHORTAGE",
-      message: `HR shortage: ${row.dept_name} ${staff}/${required}.`,
-      source: "hr_departments",
-      source_ref: row.dept_id
-    });
+    await ACS_createOccAlertIfAllowed(
+      client,
+      {
+        airline_id: airlineId,
+        alert_key: `HR_SHORTAGE:${row.dept_id}`,
+        category: "hr",
+        level,
+        title: "HR SHORTAGE",
+        message: `HR shortage: ${row.dept_name} ${staff}/${required}.`,
+        source: "hr_departments",
+        source_ref: row.dept_id
+      },
+      currentSimTime
+    );
   }
 }
 
-async function ACS_syncSlotAlerts(client, airlineId) {
+async function ACS_syncSlotAlerts(client, airlineId, currentSimTime) {
   const result = await client.query(
     `
-    WITH world_time AS (
-      SELECT acs_get_current_sim_time() AS current_sim_time
-    ),
-    pending_slot_routes AS (
+    WITH pending_slot_routes AS (
       SELECT
         rp.id AS route_plan_id,
         rp.route_uid,
@@ -129,21 +179,20 @@ async function ACS_syncSlotAlerts(client, airlineId) {
       psr.*,
       (
         FLOOR(
-          EXTRACT(EPOCH FROM (wt.current_sim_time - psr.reserved_sim_time))
+          EXTRACT(EPOCH FROM ($2::TIMESTAMPTZ - psr.reserved_sim_time))
           / 604800
         ) + 1
       )::INTEGER AS slot_week
     FROM pending_slot_routes psr
-    CROSS JOIN world_time wt
     WHERE (
       FLOOR(
-        EXTRACT(EPOCH FROM (wt.current_sim_time - psr.reserved_sim_time))
+        EXTRACT(EPOCH FROM ($2::TIMESTAMPTZ - psr.reserved_sim_time))
         / 604800
       ) + 1
     ) BETWEEN 2 AND 6
     ORDER BY psr.reserved_sim_time ASC
     `,
-    [airlineId]
+    [airlineId, currentSimTime]
   );
 
   for (const row of result.rows) {
@@ -151,16 +200,20 @@ async function ACS_syncSlotAlerts(client, airlineId) {
       .filter(Boolean)
       .join("/") || `ROUTE-${row.route_plan_id}`;
 
-    await ACS_upsertOccAlert(client, {
-      airline_id: airlineId,
-      alert_key: `SLOTS_WARNING:${row.route_plan_id}`,
-      category: "slots",
-      level: Number(row.slot_week) >= 6 ? "critical" : "warning",
-      title: "SLOTS WARNING",
-      message: `Flight ${flightLabel} / ${row.origin}-${row.destination} has no assigned aircraft. Week ${row.slot_week} of 6.`,
-      source: "airport_slot_bookings",
-      source_ref: String(row.route_plan_id)
-    });
+    await ACS_createOccAlertIfAllowed(
+      client,
+      {
+        airline_id: airlineId,
+        alert_key: `SLOTS_WARNING:${row.route_plan_id}`,
+        category: "slots",
+        level: Number(row.slot_week) >= 6 ? "critical" : "warning",
+        title: "SLOTS WARNING",
+        message: `Flight ${flightLabel} / ${row.origin}-${row.destination} has no assigned aircraft. Week ${row.slot_week} of 6.`,
+        source: "airport_slot_bookings",
+        source_ref: String(row.route_plan_id)
+      },
+      currentSimTime
+    );
   }
 }
 
@@ -177,8 +230,10 @@ router.get("/occ/alerts", requireAuth, async (req, res) => {
   const client = await pool.connect();
 
   try {
-    await ACS_syncHrAlerts(client, airlineId);
-    await ACS_syncSlotAlerts(client, airlineId);
+    const currentSimTime = await ACS_getCurrentSimTime(client);
+
+    await ACS_syncHrAlerts(client, airlineId, currentSimTime);
+    await ACS_syncSlotAlerts(client, airlineId, currentSimTime);
 
     const result = await client.query(
       `
@@ -192,6 +247,7 @@ router.get("/occ/alerts", requireAuth, async (req, res) => {
         message,
         source,
         source_ref,
+        event_sim_time,
         created_at,
         updated_at
       FROM public.occ_alerts
@@ -213,7 +269,7 @@ router.get("/occ/alerts", requireAuth, async (req, res) => {
       message: row.message,
       source: row.source,
       source_ref: row.source_ref,
-      timestamp: row.created_at,
+      timestamp: row.event_sim_time || row.created_at,
       updated_at: row.updated_at
     }));
 
@@ -253,18 +309,25 @@ router.delete("/occ/alerts", requireAuth, async (req, res) => {
   }
 
   try {
+    const currentSimTimeResult = await pool.query(`
+      SELECT acs_get_current_sim_time() AS current_sim_time
+    `);
+
+    const currentSimTime = currentSimTimeResult.rows[0]?.current_sim_time || null;
+
     const result = await pool.query(
       `
       UPDATE public.occ_alerts
       SET
         deleted_at = NOW(),
+        deleted_sim_time = $3,
         updated_at = NOW()
       WHERE airline_id = $1
         AND id = ANY($2::BIGINT[])
         AND deleted_at IS NULL
       RETURNING id
       `,
-      [airlineId, alertIds]
+      [airlineId, alertIds, currentSimTime]
     );
 
     return res.status(200).json({
