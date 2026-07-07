@@ -2127,7 +2127,8 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
 
       completed_count: completedEvents.length,
       completed_events: completedEvents,
-      occ_completed_alerts: completedMaintenanceOccAlerts
+      occ_completed_alerts: completedMaintenanceOccAlerts,
+      occ_overdue_alerts: overdueMaintenanceOccAlerts
     });
 
   } catch (err) {
