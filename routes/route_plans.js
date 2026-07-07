@@ -1665,47 +1665,22 @@ async function ACS_createRoutePlanOnce(req, res) {
 }
 
 router.post("/routes/plans", requireAuth, async (req, res) => {
-  const maxAttempts = 6;
+  try {
+    return await ACS_createRoutePlanOnce(req, res);
+  } catch (error) {
+    if (res.headersSent) return;
 
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      return await ACS_createRoutePlanOnce(req, res);
-    } catch (error) {
-      const retryable =
-        ["40P01", "40001"].includes(String(error.code || ""));
+    console.error("ACS ROUTE PLAN CREATE FINAL FAILURE:", {
+      code: error.code || null,
+      message: error.message
+    });
 
-      if (res.headersSent) return;
-
-      if (!retryable || attempt >= maxAttempts) {
-        console.error("ACS ROUTE PLAN CREATE FINAL FAILURE:", {
-          code: error.code,
-          message: error.message,
-          attempt
-        });
-
-        return res.status(503).json({
-          ok: false,
-          error: "ROUTE_CONFIRMATION_TEMPORARILY_BUSY",
-          details:
-            "Route confirmation was busy. Please try again.",
-          retryable,
-          db_code: error.code || null
-        });
-      }
-
-      const waitMs =
-      350 * attempt + Math.floor(Math.random() * 250);
-
-      console.warn("ACS ROUTE PLAN CREATE RETRY:", {
-        code: error.code,
-        message: error.message,
-        attempt,
-        next_attempt: attempt + 1,
-        wait_ms: waitMs
-      });
-
-      await new Promise(resolve => setTimeout(resolve, waitMs));
-    }
+    return res.status(409).json({
+      ok: false,
+      error: error.code || "ROUTE_CONFIRMATION_FAILED",
+      details: error.message || "Route confirmation failed.",
+      db_code: error.code || null
+    });
   }
 });
 
