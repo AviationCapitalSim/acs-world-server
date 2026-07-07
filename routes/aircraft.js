@@ -91,6 +91,147 @@ async function ACS_createMaintenanceOccAlert(client, {
   );
 }
 
+async function ACS_getAircraftAutomationSettings(client, airlineId) {
+  const result = await client.query(
+    `
+    SELECT
+      COALESCE(auto_c_check, FALSE) AS auto_c_check,
+      COALESCE(auto_d_check, FALSE) AS auto_d_check
+    FROM public.company_settings
+    WHERE airline_id = $1
+    LIMIT 1
+    `,
+    [airlineId]
+  );
+
+  if (!result.rows.length) {
+    return {
+      autoCcheck: false,
+      autoDcheck: false
+    };
+  }
+
+  return {
+    autoCcheck: result.rows[0].auto_c_check === true,
+    autoDcheck: result.rows[0].auto_d_check === true
+  };
+}
+
+async function ACS_canCreateMaintenanceOccAlert(client, airlineId, alertKey, currentSimTime) {
+  const result = await client.query(
+    `
+    SELECT
+      id,
+      deleted_at,
+      deleted_sim_time,
+      event_sim_time
+    FROM public.occ_alerts
+    WHERE airline_id = $1
+      AND alert_key = $2
+    ORDER BY id DESC
+    LIMIT 1
+    `,
+    [airlineId, alertKey]
+  );
+
+  if (!result.rows.length) {
+    return true;
+  }
+
+  const last = result.rows[0];
+
+  if (!last.deleted_at) {
+    return false;
+  }
+
+  if (!last.deleted_sim_time || !currentSimTime) {
+    return false;
+  }
+
+  const reAlertResult = await client.query(
+    `
+    SELECT
+      CASE
+        WHEN $1::TIMESTAMPTZ >= ($2::TIMESTAMPTZ + INTERVAL '7 days')
+          THEN TRUE
+        ELSE FALSE
+      END AS can_realert
+    `,
+    [
+      currentSimTime,
+      last.deleted_sim_time
+    ]
+  );
+
+  return reAlertResult.rows[0]?.can_realert === true;
+}
+
+async function ACS_createMaintenanceOverdueOccAlert(client, {
+  airlineId,
+  aircraftId,
+  registration,
+  checkType,
+  eventSimTime
+}) {
+  const checkLabel = ACS_maintenanceCheckLabel(checkType);
+  const checkCode = ACS_maintenanceCheckCode(checkType);
+  const cleanRegistration = String(registration || "AIRCRAFT").trim();
+
+  const alertKey = `MAINTENANCE_${checkType}_OVERDUE:${aircraftId}`;
+  const canCreate = await ACS_canCreateMaintenanceOccAlert(
+    client,
+    airlineId,
+    alertKey,
+    eventSimTime
+  );
+
+  if (!canCreate) {
+    return false;
+  }
+
+  await client.query(
+    `
+    INSERT INTO public.occ_alerts (
+      airline_id,
+      alert_key,
+      category,
+      level,
+      title,
+      message,
+      source,
+      source_ref,
+      event_sim_time,
+      created_at,
+      updated_at
+    )
+    VALUES (
+      $1,
+      $2,
+      'maintenance',
+      $3,
+      $4,
+      $5,
+      'aircraft_maintenance_status',
+      $6,
+      $7,
+      NOW(),
+      NOW()
+    )
+    `,
+    [
+      airlineId,
+      alertKey,
+      checkType === "D_CHECK" ? "critical" : "warning",
+      `${checkCode} CHECK OVERDUE`,
+      `Aircraft ${cleanRegistration} ${checkLabel} overdue.`,
+      String(aircraftId),
+      eventSimTime || null
+    ]
+  );
+
+  return true;
+}
+
 /* ============================================================
    🟦 ACS-RA-BE1 — REGISTRATION AUTHORITY HELPERS
    ------------------------------------------------------------
@@ -171,6 +312,7 @@ async function ACS_RA_resolveRegistrationRule(client, baseIcao) {
 }
 
 async function ACS_RA_generateCandidateFromRule(client, rule) {
+   
   const prefix = String(rule.registration_prefix || "").trim().toUpperCase();
   const format = String(rule.registration_format || "NUMERIC").trim().toUpperCase();
   const length = Number(rule.registration_length || 4);
