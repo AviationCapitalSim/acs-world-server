@@ -1364,7 +1364,6 @@ async function ACS_createRoutePlanOnce(req, res) {
           movement.flight_number,
           routePlan.registration,
           routePlan.model_key,
-          officialTime.current_sim_time_iso
         ]
       );
 
