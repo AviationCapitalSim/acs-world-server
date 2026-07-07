@@ -425,9 +425,23 @@ function ACS_RA_registrationMatchesRule(registration, rule) {
   return reg.startsWith(prefix);
 }
 
-async function ACS_ensureAircraftMaintenanceStatus(client, aircraftId, airlineId) {
+async function ACS_ensureAircraftMaintenanceStatus(
+  client,
+  aircraftId,
+  airlineId,
+  options = {}
+) {
+  const baseSimTime = options.baseSimTime || null;
+
   await client.query(
     `
+    WITH acs_base AS (
+      SELECT COALESCE(
+        $3::TIMESTAMPTZ,
+        acs_get_current_sim_time()
+      ) AS base_sim_time
+    )
+
     INSERT INTO public.aircraft_maintenance_status (
       aircraft_id,
       airline_id,
@@ -448,14 +462,14 @@ async function ACS_ensureAircraftMaintenanceStatus(client, aircraftId, airlineId
       created_at,
       updated_at
     )
-    VALUES (
+    SELECT
       $1,
       $2,
 
-      acs_get_current_sim_time() + INTERVAL '7 days',
-      acs_get_current_sim_time() + INTERVAL '30 days',
-      acs_get_current_sim_time() + INTERVAL '12 months',
-      acs_get_current_sim_time() + INTERVAL '8 years',
+      base_sim_time + INTERVAL '7 days',
+      base_sim_time + INTERVAL '30 days',
+      base_sim_time + INTERVAL '12 months',
+      base_sim_time + INTERVAL '8 years',
 
       'OPEN',
       'OPEN',
@@ -467,7 +481,8 @@ async function ACS_ensureAircraftMaintenanceStatus(client, aircraftId, airlineId
 
       NOW(),
       NOW()
-    )
+    FROM acs_base
+
     ON CONFLICT (aircraft_id)
     DO UPDATE SET
       a_check_due_date = COALESCE(public.aircraft_maintenance_status.a_check_due_date, EXCLUDED.a_check_due_date),
@@ -485,7 +500,8 @@ async function ACS_ensureAircraftMaintenanceStatus(client, aircraftId, airlineId
     `,
     [
       Number(aircraftId),
-      Number(airlineId)
+      Number(airlineId),
+      baseSimTime
     ]
   );
 }
