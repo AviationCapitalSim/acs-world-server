@@ -321,32 +321,8 @@ router.get("/occ/alerts", requireAuth, async (req, res) => {
     });
   }
 
-  const client = await pool.connect();
-
   try {
-    
-    const currentSimTime = await ACS_getCurrentSimTime(client);
-
-    const occSyncJobs = [
-      ["HR", ACS_syncHrAlerts],
-      ["SLOTS", ACS_syncSlotAlerts]
-    ];
-
-    if (typeof ACS_syncMaintenanceOverdueAlerts === "function") {
-      occSyncJobs.push(["MAINTENANCE_OVERDUE", ACS_syncMaintenanceOverdueAlerts]);
-    }
-
-    for (const [syncName, syncFn] of occSyncJobs) {
-      try {
-        await syncFn(client, airlineId, currentSimTime);
-      } catch (syncError) {
-        console.error(`[ACS OCC] ${syncName} sync failed:`, syncError);
-      }
-    }
-    
-    await ACS_syncMaintenanceOverdueAlerts(client, airlineId, currentSimTime);
-
-    const result = await client.query(
+    const result = await pool.query(
       `
       SELECT
         id,
@@ -387,14 +363,12 @@ router.get("/occ/alerts", requireAuth, async (req, res) => {
     return res.status(200).json({ alerts });
 
   } catch (error) {
-    console.error("[ACS OCC] alerts failed:", error);
+    console.error("[ACS OCC] alerts read failed:", error);
 
     return res.status(500).json({
       alerts: [],
-      error: "OCC_ALERTS_FAILED"
+      error: "OCC_ALERTS_READ_FAILED"
     });
-  } finally {
-    client.release();
   }
 });
 
