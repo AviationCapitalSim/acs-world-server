@@ -72,16 +72,6 @@ router.get("/occ/alerts", requireAuth, async (req, res) => {
   try {
     const alerts = [];
 
-    /* ==========================================================
-       SLOTS WARNING
-       ----------------------------------------------------------
-       Rule:
-       Week 1: no alert.
-       Weeks 2-6: alert.
-       If week 6 ends with no aircraft assigned, slot loss must be
-       handled by a separate resolver, not by this GET endpoint.
-       ========================================================== */
-
     const slotsResult = await pool.query(
       `
       WITH world_time AS (
@@ -143,9 +133,7 @@ router.get("/occ/alerts", requireAuth, async (req, res) => {
       alerts.push(ACS_slotWarningAlert(row));
     }
 
-    return res.status(200).json({
-      alerts
-    });
+    return res.status(200).json({ alerts });
 
   } catch (error) {
     console.error("[ACS OCC] alerts failed:", error);
