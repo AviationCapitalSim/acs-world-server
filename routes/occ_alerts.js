@@ -137,7 +137,7 @@ async function ACS_syncHrAlerts(client, airlineId, currentSimTime) {
         category: "hr",
         level,
         title: "HR COMMAND",
-        message: `HR personnel: ${row.dept_name} ${staff}/${required}.`,
+        message: `HR staff: ${row.dept_name} ${staff}/${required}.`,
         source: "hr_departments",
         source_ref: row.dept_id
       },
