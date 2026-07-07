@@ -17,6 +17,80 @@ import { requireAuth } from "../middleware/auth.js";
 
 const router = express.Router();
 
+function ACS_maintenanceCheckLabel(checkType) {
+  return checkType === "D_CHECK" ? "D Check" : "C Check";
+}
+
+function ACS_maintenanceCheckCode(checkType) {
+  return checkType === "D_CHECK" ? "D" : "C";
+}
+
+async function ACS_createMaintenanceOccAlert(client, {
+  airlineId,
+  eventId,
+  registration,
+  checkType,
+  action,
+  eventSimTime
+}) {
+  const checkLabel = ACS_maintenanceCheckLabel(checkType);
+  const checkCode = ACS_maintenanceCheckCode(checkType);
+  const cleanRegistration = String(registration || "AIRCRAFT").trim();
+
+  const isStarted = action === "STARTED";
+
+  const alertKey = `MAINTENANCE_${checkType}_${action}:${eventId}`;
+  const title = isStarted
+    ? `${checkCode} CHECK STARTED`
+    : `${checkCode} CHECK COMPLETED`;
+
+  const message = isStarted
+    ? `Aircraft ${cleanRegistration} entered ${checkLabel}.`
+    : `Aircraft ${cleanRegistration} completed ${checkLabel}.`;
+
+  await client.query(
+    `
+    INSERT INTO public.occ_alerts (
+      airline_id,
+      alert_key,
+      category,
+      level,
+      title,
+      message,
+      source,
+      source_ref,
+      event_sim_time,
+      created_at,
+      updated_at
+    )
+    VALUES (
+      $1,
+      $2,
+      'maintenance',
+      $3,
+      $4,
+      $5,
+      'aircraft_maintenance_events',
+      $6,
+      $7,
+      NOW(),
+      NOW()
+    )
+    ON CONFLICT (airline_id, alert_key) WHERE deleted_at IS NULL
+    DO NOTHING
+    `,
+    [
+      airlineId,
+      alertKey,
+      isStarted ? "warning" : "info",
+      title,
+      message,
+      String(eventId),
+      eventSimTime || null
+    ]
+  );
+}
+
 /* ============================================================
    🟦 ACS-RA-BE1 — REGISTRATION AUTHORITY HELPERS
    ------------------------------------------------------------
@@ -682,6 +756,7 @@ router.get("/aircraft/fleet/:id/maintenance/quote", requireAuth, async (req, res
    ============================================================ */
 
 router.post("/aircraft/fleet/:id/maintenance/start", requireAuth, async (req, res) => {
+   
   const client = await pool.connect();
 
   try {
