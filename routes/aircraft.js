@@ -1972,44 +1972,50 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
     );
 
         const aircraftAutomationSettings =
-      await ACS_getAircraftAutomationSettings(client, airlineId);
+      await ACS_getAircraftAutomationSettings(pool, airlineId);
 
-    const currentSimTimeResult = await client.query(
-      `
-      SELECT acs_get_current_sim_time() AS current_sim_time
-      `
-    );
+    const currentSimTime = await ACS_getCurrentSimTimeForOcc(pool);
 
-    const currentSimTime = currentSimTimeResult.rows[0]?.current_sim_time || null;
+    const overdueMaintenanceOccAlerts = [];
 
     for (const row of cdStatusResult.rows) {
-      const aircraftId = Number(row.aircraft_id);
+      const rowAircraftId = Number(row.aircraft_id);
       const registration = row.registration || row.aircraft_name || "AIRCRAFT";
 
       if (
         String(row.d_check_status || "").toUpperCase() === "OVERDUE" &&
         aircraftAutomationSettings.autoDcheck !== true
       ) {
-        await ACS_createMaintenanceOverdueOccAlert(client, {
+        const alert = await ACS_createMaintenanceOverdueOccAlert(pool, {
           airlineId,
-          aircraftId,
+          aircraftId: rowAircraftId,
           registration,
           checkType: "D_CHECK",
-          eventSimTime: currentSimTime
+          dueSimTime: row.d_check_due_date,
+          currentSimTime
         });
+
+        if (alert) {
+          overdueMaintenanceOccAlerts.push(alert);
+        }
       }
 
       if (
         String(row.c_check_status || "").toUpperCase() === "OVERDUE" &&
         aircraftAutomationSettings.autoCcheck !== true
       ) {
-        await ACS_createMaintenanceOverdueOccAlert(client, {
+        const alert = await ACS_createMaintenanceOverdueOccAlert(pool, {
           airlineId,
-          aircraftId,
+          aircraftId: rowAircraftId,
           registration,
           checkType: "C_CHECK",
-          eventSimTime: currentSimTime
+          dueSimTime: row.c_check_due_date,
+          currentSimTime
         });
+
+        if (alert) {
+          overdueMaintenanceOccAlerts.push(alert);
+        }
       }
     }
      
