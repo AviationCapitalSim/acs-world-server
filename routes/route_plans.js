@@ -1326,6 +1326,7 @@ async function ACS_createRoutePlanOnce(req, res) {
           model_key,
           slot_status,
           source,
+          reserved_sim_time,
           created_at,
           updated_at
         )
@@ -1344,6 +1345,7 @@ async function ACS_createRoutePlanOnce(req, res) {
           $12,
           'RESERVED',
           'ACS_ROUTE_PLAN_SLOT_RESERVATION_V2_1',
+          $13,
           NOW(),
           NOW()
         )
@@ -1361,7 +1363,8 @@ async function ACS_createRoutePlanOnce(req, res) {
           movement.destination,
           movement.flight_number,
           routePlan.registration,
-          routePlan.model_key
+          routePlan.model_key,
+          officialTime.current_sim_time_iso
         ]
       );
 
