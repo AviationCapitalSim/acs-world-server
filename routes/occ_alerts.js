@@ -50,13 +50,54 @@ function ACS_slotWarningAlert(row) {
   };
 }
 
+function ACS_hrShortageAlert(row) {
+  const staff = Number(row.staff || 0);
+  const required = Number(row.required || 0);
+  const deficit = Math.max(0, required - staff);
+  const deficitRatio = required > 0 ? deficit / required : 0;
+
+  const criticalDepartments = new Set([
+    "pilots_small",
+    "pilots_medium",
+    "pilots_large",
+    "pilots_vlarge",
+    "cabin",
+    "flightops",
+    "maintenance",
+    "ground"
+  ]);
+
+  const isCritical =
+    staff <= 0 ||
+    deficitRatio >= 0.5 ||
+    criticalDepartments.has(ACS_text(row.dept_id));
+
+  return {
+    id: `HR_SHORTAGE:${row.dept_id}`,
+    alert_id: `HR_SHORTAGE:${row.dept_id}`,
+    alert_key: `HR_SHORTAGE:${row.airline_id}:${row.dept_id}`,
+    type: "hr",
+    category: "hr",
+    level: isCritical ? "critical" : "warning",
+    title: "HR SHORTAGE",
+    message: `HR shortage: ${ACS_text(row.dept_name)} ${staff}/${required}.`,
+    timestamp: row.current_sim_time || row.updated_at || new Date().toISOString(),
+    source: "hr_departments",
+    dept_id: row.dept_id,
+    dept_name: row.dept_name,
+    staff,
+    required,
+    deficit
+  };
+}
+
 /* ============================================================
    ACS OCC ALERTS
    ------------------------------------------------------------
    Runtime alerts only.
    No Railway alerts table.
    No localStorage authority.
-   GET only reads. It does not cancel or punish slots.
+   GET only reads. It does not punish, cancel, hire, or mutate.
    ============================================================ */
 
 router.get("/occ/alerts", requireAuth, async (req, res) => {
@@ -131,6 +172,32 @@ router.get("/occ/alerts", requireAuth, async (req, res) => {
 
     for (const row of slotsResult.rows) {
       alerts.push(ACS_slotWarningAlert(row));
+    }
+
+    const hrResult = await pool.query(
+      `
+      SELECT
+        hd.airline_id,
+        hd.dept_id,
+        hd.dept_name,
+        hd.staff,
+        hd.required,
+        hd.updated_at,
+        acs_get_current_sim_time() AS current_sim_time
+      FROM public.hr_departments hd
+      WHERE hd.airline_id = $1
+        AND COALESCE(hd.required, 0) > 0
+        AND COALESCE(hd.staff, 0) < COALESCE(hd.required, 0)
+      ORDER BY
+        (COALESCE(hd.required, 0) - COALESCE(hd.staff, 0)) DESC,
+        hd.dept_id ASC
+      LIMIT 100
+      `,
+      [airlineId]
+    );
+
+    for (const row of hrResult.rows) {
+      alerts.push(ACS_hrShortageAlert(row));
     }
 
     return res.status(200).json({ alerts });
