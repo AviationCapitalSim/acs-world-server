@@ -1345,7 +1345,7 @@ async function ACS_createRoutePlanOnce(req, res) {
           $12,
           'RESERVED',
           'ACS_ROUTE_PLAN_SLOT_RESERVATION_V2_1',
-          $13,
+          acs_get_current_sim_time(),
           NOW(),
           NOW()
         )
