@@ -25,20 +25,28 @@ function ACS_routeLabel(origin, destination) {
 }
 
 function ACS_slotWarningAlert(row) {
-  const flightNumber = ACS_text(row.flight_number) || `SCHEDULE-${row.id}`;
   const route = ACS_routeLabel(row.origin, row.destination);
+  const flightNumbers = [
+    ACS_text(row.flight_number_out),
+    ACS_text(row.flight_number_in)
+  ].filter(Boolean).join("/");
+
+  const flightLabel = flightNumbers || `ROUTE-${row.route_plan_id}`;
 
   return {
-    id: `SLOTS_WARNING:${row.id}`,
-    alert_id: `SLOTS_WARNING:${row.id}`,
-    alert_key: `SLOTS_WARNING:${row.airline_id}:${row.id}`,
+    id: `SLOTS_WARNING:${row.route_plan_id}`,
+    alert_id: `SLOTS_WARNING:${row.route_plan_id}`,
+    alert_key: `SLOTS_WARNING:${row.airline_id}:${row.route_plan_id}`,
     type: "slots",
     category: "slots",
-    level: "warning",
+    level: Number(row.slot_week) >= 6 ? "critical" : "warning",
     title: "SLOTS WARNING",
-    message: `Flight ${flightNumber} / ${route} has no assigned aircraft.`,
-    timestamp: row.updated_at || row.created_at || new Date().toISOString(),
-    source: "schedule_items"
+    message: `Flight ${flightLabel} / ${route} has no assigned aircraft. Week ${row.slot_week} of 6.`,
+    timestamp: row.current_sim_time || row.reserved_sim_time,
+    source: "airport_slot_bookings",
+    route_plan_id: row.route_plan_id,
+    route_uid: row.route_uid,
+    slot_week: Number(row.slot_week)
   };
 }
 
@@ -48,6 +56,7 @@ function ACS_slotWarningAlert(row) {
    Runtime alerts only.
    No Railway alerts table.
    No localStorage authority.
+   GET only reads. It does not cancel or punish slots.
    ============================================================ */
 
 router.get("/occ/alerts", requireAuth, async (req, res) => {
@@ -66,42 +75,65 @@ router.get("/occ/alerts", requireAuth, async (req, res) => {
     /* ==========================================================
        SLOTS WARNING
        ----------------------------------------------------------
-       A scheduled service flight exists, but has no aircraft.
-       Player receives only flight/route information.
-       No aircraft recommendation.
+       Rule:
+       Week 1: no alert.
+       Weeks 2-6: alert.
+       If week 6 ends with no aircraft assigned, slot loss must be
+       handled by a separate resolver, not by this GET endpoint.
        ========================================================== */
 
     const slotsResult = await pool.query(
       `
+      WITH world_time AS (
+        SELECT acs_get_current_sim_time() AS current_sim_time
+      ),
+      pending_slot_routes AS (
+        SELECT
+          rp.id AS route_plan_id,
+          rp.route_uid,
+          rp.airline_id,
+          rp.origin,
+          rp.destination,
+          rp.flight_number_out,
+          rp.flight_number_in,
+          MIN(asb.reserved_sim_time) AS reserved_sim_time,
+          COUNT(asb.id)::INTEGER AS reserved_slots_count
+        FROM public.route_plans rp
+        JOIN public.airport_slot_bookings asb
+          ON asb.route_plan_id = rp.id
+         AND asb.airline_id = rp.airline_id
+        WHERE rp.airline_id = $1
+          AND rp.aircraft_id IS NULL
+          AND UPPER(COALESCE(rp.route_state, 'ACTIVE')) <> 'CANCELLED'
+          AND asb.slot_status = 'RESERVED'
+          AND asb.reserved_sim_time IS NOT NULL
+        GROUP BY
+          rp.id,
+          rp.route_uid,
+          rp.airline_id,
+          rp.origin,
+          rp.destination,
+          rp.flight_number_out,
+          rp.flight_number_in
+      )
       SELECT
-        si.id,
-        si.airline_id,
-        si.origin,
-        si.destination,
-        si.selected_day,
-        si.departure,
-        si.flight_number,
-        si.status,
-        si.created_at,
-        si.updated_at
-      FROM public.schedule_items si
-      WHERE si.airline_id = $1
-        AND si.aircraft_id IS NULL
-        AND LOWER(COALESCE(si.status, 'planned')) <> 'cancelled'
-        AND LOWER(COALESCE(si.item_type, 'service')) = 'service'
-      ORDER BY
-        CASE LOWER(si.selected_day)
-          WHEN 'mon' THEN 1
-          WHEN 'tue' THEN 2
-          WHEN 'wed' THEN 3
-          WHEN 'thu' THEN 4
-          WHEN 'fri' THEN 5
-          WHEN 'sat' THEN 6
-          WHEN 'sun' THEN 7
-          ELSE 8
-        END,
-        si.departure NULLS LAST,
-        si.id
+        psr.*,
+        wt.current_sim_time,
+        (
+          FLOOR(
+            EXTRACT(EPOCH FROM (wt.current_sim_time - psr.reserved_sim_time))
+            / 604800
+          ) + 1
+        )::INTEGER AS slot_week
+      FROM pending_slot_routes psr
+      CROSS JOIN world_time wt
+      WHERE (
+        FLOOR(
+          EXTRACT(EPOCH FROM (wt.current_sim_time - psr.reserved_sim_time))
+          / 604800
+        ) + 1
+      ) BETWEEN 2 AND 6
+      ORDER BY psr.reserved_sim_time ASC, psr.route_plan_id ASC
       LIMIT 100
       `,
       [airlineId]
