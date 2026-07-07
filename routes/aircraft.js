@@ -4602,11 +4602,17 @@ if (!(simTime instanceof Date) || Number.isNaN(simTime.getTime())) {
 
     const aircraft = aircraftResult.rows[0];
 
-     await ACS_ensureAircraftMaintenanceStatus(
-    client,
-    aircraft.id,
-    aircraft.airline_id || airlineId
-   );
+         await ACS_ensureAircraftMaintenanceStatus(
+      client,
+      aircraft.id,
+      aircraft.airline_id || airlineId,
+      {
+        baseSimTime:
+          fleetEntryIntoServiceDate ||
+          fleetDeliveryDate ||
+          simTime
+      }
+    );
 
 /* ============================================================
    5) APPLY FINANCE IMPACT
