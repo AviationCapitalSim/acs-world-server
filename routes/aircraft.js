@@ -431,31 +431,62 @@ async function ACS_ensureAircraftMaintenanceStatus(client, aircraftId, airlineId
     INSERT INTO public.aircraft_maintenance_status (
       aircraft_id,
       airline_id,
+
+      a_check_due_date,
+      b_check_due_date,
+      c_check_due_date,
+      d_check_due_date,
+
       a_check_status,
       b_check_status,
       c_check_status,
       d_check_status,
+
       maintenance_control_status,
       maintenance_control_reason,
+
       created_at,
       updated_at
     )
     VALUES (
       $1,
       $2,
-      'SCHEDULED',
-      'SCHEDULED',
-      'SCHEDULED',
-      'SCHEDULED',
+
+      acs_get_current_sim_time() + INTERVAL '7 days',
+      acs_get_current_sim_time() + INTERVAL '30 days',
+      acs_get_current_sim_time() + INTERVAL '12 months',
+      acs_get_current_sim_time() + INTERVAL '8 years',
+
+      'OPEN',
+      'OPEN',
+      'OPEN',
+      'OPEN',
+
       'SERVICEABLE',
       NULL,
+
       NOW(),
       NOW()
     )
     ON CONFLICT (aircraft_id)
-    DO NOTHING
+    DO UPDATE SET
+      a_check_due_date = COALESCE(public.aircraft_maintenance_status.a_check_due_date, EXCLUDED.a_check_due_date),
+      b_check_due_date = COALESCE(public.aircraft_maintenance_status.b_check_due_date, EXCLUDED.b_check_due_date),
+      c_check_due_date = COALESCE(public.aircraft_maintenance_status.c_check_due_date, EXCLUDED.c_check_due_date),
+      d_check_due_date = COALESCE(public.aircraft_maintenance_status.d_check_due_date, EXCLUDED.d_check_due_date),
+
+      a_check_status = COALESCE(public.aircraft_maintenance_status.a_check_status, EXCLUDED.a_check_status),
+      b_check_status = COALESCE(public.aircraft_maintenance_status.b_check_status, EXCLUDED.b_check_status),
+      c_check_status = COALESCE(public.aircraft_maintenance_status.c_check_status, EXCLUDED.c_check_status),
+      d_check_status = COALESCE(public.aircraft_maintenance_status.d_check_status, EXCLUDED.d_check_status),
+
+      maintenance_control_status = COALESCE(public.aircraft_maintenance_status.maintenance_control_status, EXCLUDED.maintenance_control_status),
+      updated_at = NOW()
     `,
-    [Number(aircraftId), Number(airlineId)]
+    [
+      Number(aircraftId),
+      Number(airlineId)
+    ]
   );
 }
 
