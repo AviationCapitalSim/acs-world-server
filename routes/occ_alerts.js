@@ -324,10 +324,26 @@ router.get("/occ/alerts", requireAuth, async (req, res) => {
   const client = await pool.connect();
 
   try {
+    
     const currentSimTime = await ACS_getCurrentSimTime(client);
 
-    await ACS_syncHrAlerts(client, airlineId, currentSimTime);
-    await ACS_syncSlotAlerts(client, airlineId, currentSimTime);
+    const occSyncJobs = [
+      ["HR", ACS_syncHrAlerts],
+      ["SLOTS", ACS_syncSlotAlerts]
+    ];
+
+    if (typeof ACS_syncMaintenanceOverdueAlerts === "function") {
+      occSyncJobs.push(["MAINTENANCE_OVERDUE", ACS_syncMaintenanceOverdueAlerts]);
+    }
+
+    for (const [syncName, syncFn] of occSyncJobs) {
+      try {
+        await syncFn(client, airlineId, currentSimTime);
+      } catch (syncError) {
+        console.error(`[ACS OCC] ${syncName} sync failed:`, syncError);
+      }
+    }
+    
     await ACS_syncMaintenanceOverdueAlerts(client, airlineId, currentSimTime);
 
     const result = await client.query(
