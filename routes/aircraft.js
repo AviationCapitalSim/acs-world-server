@@ -1177,7 +1177,18 @@ const financeAfterResult = await client.query(
       ]
     );
 
-    await client.query(
+    const maintenanceEvent = eventResult.rows[0];
+
+    await ACS_createMaintenanceOccAlert(client, {
+      airlineId,
+      eventId: maintenanceEvent.id,
+      registration: aircraft.registration,
+      checkType,
+      action: "STARTED",
+      eventSimTime: maintenanceEvent.started_at
+    });
+     
+  await client.query(
   `
   UPDATE public.aircraft_maintenance_status
   SET
