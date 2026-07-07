@@ -18,14 +18,152 @@ import { requireAuth } from "../middleware/auth.js";
 const router = express.Router();
 
 function ACS_maintenanceCheckLabel(checkType) {
-  return checkType === "D_CHECK" ? "D Check" : "C Check";
+  const normalized = String(checkType || "").trim().toUpperCase();
+
+  if (normalized === "D_CHECK") return "D Check";
+  if (normalized === "C_CHECK") return "C Check";
+
+  return "Maintenance Check";
 }
 
 function ACS_maintenanceCheckCode(checkType) {
-  return checkType === "D_CHECK" ? "D" : "C";
+  const normalized = String(checkType || "").trim().toUpperCase();
+
+  if (normalized === "D_CHECK") return "D";
+  if (normalized === "C_CHECK") return "C";
+
+  return "UNKNOWN";
 }
 
-async function ACS_createMaintenanceOccAlert(client, {
+function ACS_isAutomaticMaintenanceEvent(event) {
+  try {
+    const rawNotes = event?.notes || null;
+    const notes =
+      typeof rawNotes === "string"
+        ? JSON.parse(rawNotes)
+        : rawNotes;
+
+    const source = String(notes?.source || "").trim().toUpperCase();
+    const startSource = String(notes?.start_source || "").trim().toUpperCase();
+
+    return (
+      startSource === "AUTOMATIC" ||
+      source.includes("AUTO_CD_MAINTENANCE") ||
+      source.includes("AUTOMATIC_CD_MAINTENANCE")
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
+async function ACS_getAircraftAutomationSettings(db, airlineId) {
+  try {
+    const result = await db.query(
+      `
+      SELECT
+        COALESCE(auto_c_check, FALSE) AS auto_c_check,
+        COALESCE(auto_d_check, FALSE) AS auto_d_check
+      FROM public.company_settings
+      WHERE airline_id = $1
+      LIMIT 1
+      `,
+      [airlineId]
+    );
+
+    if (!result.rows.length) {
+      return {
+        autoCcheck: false,
+        autoDcheck: false
+      };
+    }
+
+    return {
+      autoCcheck: result.rows[0].auto_c_check === true,
+      autoDcheck: result.rows[0].auto_d_check === true
+    };
+
+  } catch (error) {
+    console.error("ACS OCC AUTOMATION SETTINGS ERROR:", error);
+
+    return {
+      autoCcheck: true,
+      autoDcheck: true
+    };
+  }
+}
+
+async function ACS_getCurrentSimTimeForOcc(db) {
+  try {
+    const result = await db.query(
+      `
+      SELECT acs_get_current_sim_time() AS current_sim_time
+      `
+    );
+
+    return result.rows[0]?.current_sim_time || null;
+
+  } catch (error) {
+    console.error("ACS OCC CURRENT SIM TIME ERROR:", error);
+    return null;
+  }
+}
+
+async function ACS_canCreateMaintenanceOccAlert(db, airlineId, alertKey, currentSimTime) {
+  try {
+    const result = await db.query(
+      `
+      SELECT
+        id,
+        deleted_at,
+        deleted_sim_time,
+        event_sim_time
+      FROM public.occ_alerts
+      WHERE airline_id = $1
+        AND alert_key = $2
+      ORDER BY id DESC
+      LIMIT 1
+      `,
+      [airlineId, alertKey]
+    );
+
+    if (!result.rows.length) {
+      return true;
+    }
+
+    const last = result.rows[0];
+
+    if (!last.deleted_at) {
+      return false;
+    }
+
+    if (!last.deleted_sim_time || !currentSimTime) {
+      return false;
+    }
+
+    const reAlertResult = await db.query(
+      `
+      SELECT
+        CASE
+          WHEN $1::TIMESTAMPTZ >= ($2::TIMESTAMPTZ + INTERVAL '7 days')
+            THEN TRUE
+          ELSE FALSE
+        END AS can_realert
+      `,
+      [
+        currentSimTime,
+        last.deleted_sim_time
+      ]
+    );
+
+    return reAlertResult.rows[0]?.can_realert === true;
+
+  } catch (error) {
+    console.error("ACS OCC RE-ALERT CHECK ERROR:", error);
+    return false;
+  }
+}
+
+async function ACS_createMaintenanceOccAlert(db, {
   airlineId,
   eventId,
   registration,
@@ -33,203 +171,160 @@ async function ACS_createMaintenanceOccAlert(client, {
   action,
   eventSimTime
 }) {
-  const checkLabel = ACS_maintenanceCheckLabel(checkType);
-  const checkCode = ACS_maintenanceCheckCode(checkType);
-  const cleanRegistration = String(registration || "AIRCRAFT").trim();
+  try {
+    const normalizedAction = String(action || "").trim().toUpperCase();
 
-  const isStarted = action === "STARTED";
+    if (!["STARTED", "COMPLETED"].includes(normalizedAction)) {
+      return null;
+    }
 
-  const alertKey = `MAINTENANCE_${checkType}_${action}:${eventId}`;
-  const title = isStarted
-    ? `${checkCode} CHECK STARTED`
-    : `${checkCode} CHECK COMPLETED`;
+    const checkLabel = ACS_maintenanceCheckLabel(checkType);
+    const checkCode = ACS_maintenanceCheckCode(checkType);
 
-  const message = isStarted
-    ? `Aircraft ${cleanRegistration} entered ${checkLabel}.`
-    : `Aircraft ${cleanRegistration} completed ${checkLabel}.`;
+    if (!["C", "D"].includes(checkCode)) {
+      return null;
+    }
 
-  await client.query(
-    `
-    INSERT INTO public.occ_alerts (
-      airline_id,
-      alert_key,
-      category,
-      level,
-      title,
-      message,
-      source,
-      source_ref,
-      event_sim_time,
-      created_at,
-      updated_at
-    )
-    VALUES (
-      $1,
-      $2,
-      'maintenance',
-      $3,
-      $4,
-      $5,
-      'aircraft_maintenance_events',
-      $6,
-      $7,
-      NOW(),
-      NOW()
-    )
-    ON CONFLICT (airline_id, alert_key) WHERE deleted_at IS NULL
-    DO NOTHING
-    `,
-    [
-      airlineId,
-      alertKey,
-      isStarted ? "warning" : "info",
-      title,
-      message,
-      String(eventId),
-      eventSimTime || null
-    ]
-  );
+    const cleanRegistration = String(registration || "AIRCRAFT").trim();
+    const isStarted = normalizedAction === "STARTED";
+
+    const alertKey = `MAINTENANCE_${checkType}_${normalizedAction}:${eventId}`;
+    const title = isStarted
+      ? `${checkCode} CHECK STARTED`
+      : `${checkCode} CHECK COMPLETED`;
+
+    const message = isStarted
+      ? `Aircraft ${cleanRegistration} entered ${checkLabel}.`
+      : `Aircraft ${cleanRegistration} completed ${checkLabel}.`;
+
+    const result = await db.query(
+      `
+      INSERT INTO public.occ_alerts (
+        airline_id,
+        alert_key,
+        category,
+        level,
+        title,
+        message,
+        source,
+        source_ref,
+        event_sim_time,
+        created_at,
+        updated_at
+      )
+      VALUES (
+        $1,
+        $2,
+        'maintenance',
+        $3,
+        $4,
+        $5,
+        'aircraft_maintenance_events',
+        $6,
+        $7,
+        NOW(),
+        NOW()
+      )
+      ON CONFLICT (airline_id, alert_key) WHERE deleted_at IS NULL
+      DO NOTHING
+      RETURNING *
+      `,
+      [
+        airlineId,
+        alertKey,
+        isStarted ? "warning" : "info",
+        title,
+        message,
+        String(eventId),
+        eventSimTime || null
+      ]
+    );
+
+    return result.rows[0] || null;
+
+  } catch (error) {
+    console.error("ACS MAINTENANCE OCC ALERT ERROR:", error);
+    return null;
+  }
 }
 
-async function ACS_getAircraftAutomationSettings(client, airlineId) {
-  const result = await client.query(
-    `
-    SELECT
-      COALESCE(auto_c_check, FALSE) AS auto_c_check,
-      COALESCE(auto_d_check, FALSE) AS auto_d_check
-    FROM public.company_settings
-    WHERE airline_id = $1
-    LIMIT 1
-    `,
-    [airlineId]
-  );
-
-  if (!result.rows.length) {
-    return {
-      autoCcheck: false,
-      autoDcheck: false
-    };
-  }
-
-  return {
-    autoCcheck: result.rows[0].auto_c_check === true,
-    autoDcheck: result.rows[0].auto_d_check === true
-  };
-}
-
-async function ACS_canCreateMaintenanceOccAlert(client, airlineId, alertKey, currentSimTime) {
-  const result = await client.query(
-    `
-    SELECT
-      id,
-      deleted_at,
-      deleted_sim_time,
-      event_sim_time
-    FROM public.occ_alerts
-    WHERE airline_id = $1
-      AND alert_key = $2
-    ORDER BY id DESC
-    LIMIT 1
-    `,
-    [airlineId, alertKey]
-  );
-
-  if (!result.rows.length) {
-    return true;
-  }
-
-  const last = result.rows[0];
-
-  if (!last.deleted_at) {
-    return false;
-  }
-
-  if (!last.deleted_sim_time || !currentSimTime) {
-    return false;
-  }
-
-  const reAlertResult = await client.query(
-    `
-    SELECT
-      CASE
-        WHEN $1::TIMESTAMPTZ >= ($2::TIMESTAMPTZ + INTERVAL '7 days')
-          THEN TRUE
-        ELSE FALSE
-      END AS can_realert
-    `,
-    [
-      currentSimTime,
-      last.deleted_sim_time
-    ]
-  );
-
-  return reAlertResult.rows[0]?.can_realert === true;
-}
-
-async function ACS_createMaintenanceOverdueOccAlert(client, {
+async function ACS_createMaintenanceOverdueOccAlert(db, {
   airlineId,
   aircraftId,
   registration,
   checkType,
-  eventSimTime
+  dueSimTime,
+  currentSimTime
 }) {
-  const checkLabel = ACS_maintenanceCheckLabel(checkType);
-  const checkCode = ACS_maintenanceCheckCode(checkType);
-  const cleanRegistration = String(registration || "AIRCRAFT").trim();
+  try {
+    const checkLabel = ACS_maintenanceCheckLabel(checkType);
+    const checkCode = ACS_maintenanceCheckCode(checkType);
 
-  const alertKey = `MAINTENANCE_${checkType}_OVERDUE:${aircraftId}`;
-  const canCreate = await ACS_canCreateMaintenanceOccAlert(
-    client,
-    airlineId,
-    alertKey,
-    eventSimTime
-  );
+    if (!["C", "D"].includes(checkCode)) {
+      return null;
+    }
 
-  if (!canCreate) {
-    return false;
-  }
+    const cleanRegistration = String(registration || "AIRCRAFT").trim();
+    const alertKey = `MAINTENANCE_${checkType}_OVERDUE:${aircraftId}`;
 
-  await client.query(
-    `
-    INSERT INTO public.occ_alerts (
-      airline_id,
-      alert_key,
-      category,
-      level,
-      title,
-      message,
-      source,
-      source_ref,
-      event_sim_time,
-      created_at,
-      updated_at
-    )
-    VALUES (
-      $1,
-      $2,
-      'maintenance',
-      $3,
-      $4,
-      $5,
-      'aircraft_maintenance_status',
-      $6,
-      $7,
-      NOW(),
-      NOW()
-    )
-    `,
-    [
+    const canCreate = await ACS_canCreateMaintenanceOccAlert(
+      db,
       airlineId,
       alertKey,
-      checkType === "D_CHECK" ? "critical" : "warning",
-      `${checkCode} CHECK OVERDUE`,
-      `Aircraft ${cleanRegistration} ${checkLabel} overdue.`,
-      String(aircraftId),
-      eventSimTime || null
-    ]
-  );
+      currentSimTime
+    );
 
-  return true;
+    if (!canCreate) {
+      return null;
+    }
+
+    const result = await db.query(
+      `
+      INSERT INTO public.occ_alerts (
+        airline_id,
+        alert_key,
+        category,
+        level,
+        title,
+        message,
+        source,
+        source_ref,
+        event_sim_time,
+        created_at,
+        updated_at
+      )
+      VALUES (
+        $1,
+        $2,
+        'maintenance',
+        $3,
+        $4,
+        $5,
+        'aircraft_maintenance_status',
+        $6,
+        $7,
+        NOW(),
+        NOW()
+      )
+      RETURNING *
+      `,
+      [
+        airlineId,
+        alertKey,
+        checkType === "D_CHECK" ? "critical" : "warning",
+        `${checkCode} CHECK OVERDUE`,
+        `Aircraft ${cleanRegistration} ${checkLabel} overdue.`,
+        String(aircraftId),
+        dueSimTime || currentSimTime || null
+      ]
+    );
+
+    return result.rows[0] || null;
+
+  } catch (error) {
+    console.error("ACS MAINTENANCE OVERDUE OCC ALERT ERROR:", error);
+    return null;
+  }
 }
 
 /* ============================================================
