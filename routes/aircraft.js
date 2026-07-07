@@ -2077,8 +2077,25 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
       [airlineId]
     );
 
-    await client.query("COMMIT");
-    transactionStarted = false;
+        await client.query("COMMIT");
+        transactionStarted = false;
+
+        const completedMaintenanceOccAlerts = [];
+
+       for (const completedEvent of completedEvents) {
+       const alert = await ACS_createMaintenanceOccAlert(pool, {
+        airlineId,
+        eventId: completedEvent.event_id,
+        registration: completedEvent.registration,
+        checkType: completedEvent.check_type,
+        action: "COMPLETED",
+        eventSimTime: completedEvent.completed_at
+      });
+
+      if (alert) {
+        completedMaintenanceOccAlerts.push(alert);
+      }
+    }
 
     return res.json({
       ok: true,
@@ -2103,7 +2120,8 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
       fleet_sync: fleetSyncResult.rows,
 
       completed_count: completedEvents.length,
-      completed_events: completedEvents
+      completed_events: completedEvents,
+      occ_completed_alerts: completedMaintenanceOccAlerts
     });
 
   } catch (err) {
