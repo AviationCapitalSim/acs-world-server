@@ -1972,54 +1972,6 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
       `,
       [airlineId]
     );
-
-        const aircraftAutomationSettings =
-      await ACS_getAircraftAutomationSettings(pool, airlineId);
-
-    const currentSimTime = await ACS_getCurrentSimTimeForOcc(pool);
-
-    const overdueMaintenanceOccAlerts = [];
-
-    for (const row of cdStatusResult.rows) {
-      const rowAircraftId = Number(row.aircraft_id);
-      const registration = row.registration || row.aircraft_name || "AIRCRAFT";
-
-      if (
-        String(row.d_check_status || "").toUpperCase() === "OVERDUE" &&
-        aircraftAutomationSettings.autoDcheck !== true
-      ) {
-        const alert = await ACS_createMaintenanceOverdueOccAlert(pool, {
-          airlineId,
-          aircraftId: rowAircraftId,
-          registration,
-          checkType: "D_CHECK",
-          dueSimTime: row.d_check_due_date,
-          currentSimTime
-        });
-
-        if (alert) {
-          overdueMaintenanceOccAlerts.push(alert);
-        }
-      }
-
-      if (
-        String(row.c_check_status || "").toUpperCase() === "OVERDUE" &&
-        aircraftAutomationSettings.autoCcheck !== true
-      ) {
-        const alert = await ACS_createMaintenanceOverdueOccAlert(pool, {
-          airlineId,
-          aircraftId: rowAircraftId,
-          registration,
-          checkType: "C_CHECK",
-          dueSimTime: row.c_check_due_date,
-          currentSimTime
-        });
-
-        if (alert) {
-          overdueMaintenanceOccAlerts.push(alert);
-        }
-      }
-    }
      
     /* ============================================================
        3. SYNCHRONIZE FLEET FROM FINAL AUTHORITY
@@ -2105,6 +2057,54 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
       }
     }
 
+        const aircraftAutomationSettings =
+      await ACS_getAircraftAutomationSettings(pool, airlineId);
+
+    const currentSimTime = await ACS_getCurrentSimTimeForOcc(pool);
+
+    const overdueMaintenanceOccAlerts = [];
+
+    for (const row of cdStatusResult.rows) {
+      const rowAircraftId = Number(row.aircraft_id);
+      const registration = row.registration || row.aircraft_name || "AIRCRAFT";
+
+      if (
+        String(row.d_check_status || "").toUpperCase() === "OVERDUE" &&
+        aircraftAutomationSettings.autoDcheck !== true
+      ) {
+        const alert = await ACS_createMaintenanceOverdueOccAlert(pool, {
+          airlineId,
+          aircraftId: rowAircraftId,
+          registration,
+          checkType: "D_CHECK",
+          dueSimTime: row.d_check_due_date,
+          currentSimTime
+        });
+
+        if (alert) {
+          overdueMaintenanceOccAlerts.push(alert);
+        }
+      }
+
+      if (
+        String(row.c_check_status || "").toUpperCase() === "OVERDUE" &&
+        aircraftAutomationSettings.autoCcheck !== true
+      ) {
+        const alert = await ACS_createMaintenanceOverdueOccAlert(pool, {
+          airlineId,
+          aircraftId: rowAircraftId,
+          registration,
+          checkType: "C_CHECK",
+          dueSimTime: row.c_check_due_date,
+          currentSimTime
+        });
+
+        if (alert) {
+          overdueMaintenanceOccAlerts.push(alert);
+        }
+      }
+    }
+   
     return res.json({
       ok: true,
       endpoint: "ACS_CD_MAINTENANCE_RESOLVER",
