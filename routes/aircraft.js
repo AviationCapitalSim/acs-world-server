@@ -1840,6 +1840,48 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
       [airlineId]
     );
 
+        const aircraftAutomationSettings =
+      await ACS_getAircraftAutomationSettings(client, airlineId);
+
+    const currentSimTimeResult = await client.query(
+      `
+      SELECT acs_get_current_sim_time() AS current_sim_time
+      `
+    );
+
+    const currentSimTime = currentSimTimeResult.rows[0]?.current_sim_time || null;
+
+    for (const row of cdStatusResult.rows) {
+      const aircraftId = Number(row.aircraft_id);
+      const registration = row.registration || row.aircraft_name || "AIRCRAFT";
+
+      if (
+        String(row.d_check_status || "").toUpperCase() === "OVERDUE" &&
+        aircraftAutomationSettings.autoDcheck !== true
+      ) {
+        await ACS_createMaintenanceOverdueOccAlert(client, {
+          airlineId,
+          aircraftId,
+          registration,
+          checkType: "D_CHECK",
+          eventSimTime: currentSimTime
+        });
+      }
+
+      if (
+        String(row.c_check_status || "").toUpperCase() === "OVERDUE" &&
+        aircraftAutomationSettings.autoCcheck !== true
+      ) {
+        await ACS_createMaintenanceOverdueOccAlert(client, {
+          airlineId,
+          aircraftId,
+          registration,
+          checkType: "C_CHECK",
+          eventSimTime: currentSimTime
+        });
+      }
+    }
+     
     /* ============================================================
        3. SYNCHRONIZE FLEET FROM FINAL AUTHORITY
        ------------------------------------------------------------
