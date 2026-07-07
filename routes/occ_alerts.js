@@ -328,6 +328,7 @@ router.get("/occ/alerts", requireAuth, async (req, res) => {
 
     await ACS_syncHrAlerts(client, airlineId, currentSimTime);
     await ACS_syncSlotAlerts(client, airlineId, currentSimTime);
+    await ACS_syncMaintenanceOverdueAlerts(client, airlineId, currentSimTime);
 
     const result = await client.query(
       `
