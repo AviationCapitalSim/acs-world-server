@@ -133,10 +133,10 @@ async function ACS_syncHrAlerts(client, airlineId, currentSimTime) {
       client,
       {
         airline_id: airlineId,
-        alert_key: `HR_SHORTAGE:${row.dept_id}`,
+        alert_key: `HR_COMMAND:${row.dept_id}`,
         category: "hr",
         level,
-        title: "HR SHORTAGE",
+        title: "HR COMMAND",
         message: `HR shortage: ${row.dept_name} ${staff}/${required}.`,
         source: "hr_departments",
         source_ref: row.dept_id
@@ -165,7 +165,6 @@ async function ACS_syncSlotAlerts(client, airlineId, currentSimTime) {
         ON asb.route_plan_id = rp.id
        AND asb.airline_id = rp.airline_id
       WHERE rp.airline_id = $1
-        AND rp.aircraft_id IS NULL
         AND UPPER(COALESCE(rp.route_state, 'ACTIVE')) <> 'CANCELLED'
         AND asb.slot_status = 'RESERVED'
         AND asb.reserved_sim_time IS NOT NULL
@@ -208,10 +207,10 @@ async function ACS_syncSlotAlerts(client, airlineId, currentSimTime) {
       {
         airline_id: airlineId,
         alert_key: `SLOTS_WARNING:${row.route_plan_id}`,
-        category: "slots",
+        category: "schedule",
         level: Number(row.slot_week) >= 6 ? "critical" : "warning",
         title: "SLOTS WARNING",
-        message: `Flight ${flightLabel} / ${row.origin}-${row.destination} has no assigned aircraft. Week ${row.slot_week} of 6.`,
+        message: `Flight ${flightLabel} / ${row.origin}-${row.destination} slot has no assigned aircraft. Week ${row.slot_week} of 6.`,
         source: "airport_slot_bookings",
         source_ref: String(row.route_plan_id)
       },
