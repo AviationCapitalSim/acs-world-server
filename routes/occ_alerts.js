@@ -228,6 +228,49 @@ async function ACS_syncSlotAlerts(client, airlineId, currentSimTime) {
   }
 }
 
+async function ACS_syncFinanceAlerts(client, airlineId, currentSimTime) {
+  const result = await client.query(
+    `
+    SELECT
+      airline_id,
+      capital,
+      TO_CHAR($2::TIMESTAMPTZ, 'IYYY-"W"IW') AS finance_week_key
+    FROM public.company_finance
+    WHERE airline_id = $1
+      AND COALESCE(capital, 0) < 0
+    LIMIT 1
+    `,
+    [airlineId, currentSimTime]
+  );
+
+  if (!result.rows.length) return;
+
+  const row = result.rows[0];
+
+  const capital = Math.round(Number(row.capital || 0));
+  const financeWeekKey = String(row.finance_week_key || "UNKNOWN_WEEK");
+
+  const formattedCapital =
+    capital < 0
+      ? `-$${Math.abs(capital).toLocaleString("en-US")}`
+      : `$${capital.toLocaleString("en-US")}`;
+
+  await ACS_createOccAlertIfAllowed(
+    client,
+    {
+      airline_id: airlineId,
+      alert_key: `FINANCE_COMMAND:NEGATIVE_CAPITAL:${financeWeekKey}`,
+      category: "finance",
+      level: "critical",
+      title: "FINANCE COMMAND",
+      message: `Cash balance negative: ${formattedCapital}.`,
+      source: "company_finance",
+      source_ref: String(airlineId)
+    },
+    currentSimTime
+  );
+}
+
 async function ACS_syncMaintenanceOverdueAlerts(client, airlineId, currentSimTime) {
   const result = await client.query(
     `
@@ -354,12 +397,20 @@ async function ACS_getOccGlobalAirlineIds(client, currentSimTime) {
       FROM public.hr_departments
       WHERE COALESCE(required, 0) > 0
         AND COALESCE(staff, 0) < COALESCE(required, 0)
+    ),
+    finance_airlines AS (
+      SELECT DISTINCT
+        airline_id
+      FROM public.company_finance
+      WHERE COALESCE(capital, 0) < 0
     )
     SELECT DISTINCT airline_id
     FROM (
       SELECT airline_id FROM slot_airlines
       UNION
       SELECT airline_id FROM hr_airlines
+      UNION
+      SELECT airline_id FROM finance_airlines
     ) all_airlines
     WHERE airline_id IS NOT NULL
     ORDER BY airline_id ASC
@@ -369,7 +420,7 @@ async function ACS_getOccGlobalAirlineIds(client, currentSimTime) {
 
   return result.rows
     .map(row => Number(row.airline_id))
-    .filter(Number.isFinite);
+    .filter(id => Number.isInteger(id) && id > 0);
 }
 
 async function ACS_syncOccAlertsForAirline(client, airlineId, currentSimTime) {
@@ -377,7 +428,8 @@ async function ACS_syncOccAlertsForAirline(client, airlineId, currentSimTime) {
 
   const syncJobs = [
     ["HR", ACS_syncHrAlerts],
-    ["SLOT", ACS_syncSlotAlerts]
+    ["SLOT", ACS_syncSlotAlerts],
+    ["FINANCE", ACS_syncFinanceAlerts]
   ];
 
   for (const [syncName, syncFn] of syncJobs) {
@@ -540,10 +592,10 @@ router.post("/occ/alerts/sync", requireAuth, async (req, res) => {
 
     const syncResults = [];
 
-    const syncJobs = [
+        const syncJobs = [
       ["HR", ACS_syncHrAlerts],
       ["SLOT", ACS_syncSlotAlerts],
-      ["MAINTENANCE_OVERDUE", ACS_syncMaintenanceOverdueAlerts]
+      ["FINANCE", ACS_syncFinanceAlerts]
     ];
 
     for (const [syncName, syncFn] of syncJobs) {
