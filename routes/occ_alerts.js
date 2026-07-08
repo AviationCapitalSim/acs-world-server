@@ -210,7 +210,7 @@ async function ACS_syncSlotAlerts(client, airlineId, currentSimTime) {
         category: "schedule",
         level: Number(row.slot_week) >= 6 ? "critical" : "warning",
         title: "SLOTS WARNING",
-        message: `Flight ${flightLabel} / ${row.origin}-${row.destination} slot has no assigned aircraft. Week ${row.slot_week} of 6.`,
+        message: `Flight ${flightLabel} / ${row.origin}-${row.destination} slot has no assigned aircraft`,
         source: "airport_slot_bookings",
         source_ref: String(row.route_plan_id)
       },
