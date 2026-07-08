@@ -173,7 +173,7 @@ async function ACS_syncSlotAlerts(client, airlineId, currentSimTime) {
           WHERE si.airline_id = rp.airline_id
             AND si.route_plan_id = rp.id
             AND si.item_type = 'flight'
-            AND LOWER(COALESCE(si.status, 'planned')) <> 'cancelled'
+            AND LOWER(COALESCE(si.status, 'planned')) = 'assigned'
             AND si.aircraft_id IS NOT NULL
         )
       GROUP BY
@@ -387,7 +387,7 @@ async function ACS_getOccGlobalAirlineIds(client, currentSimTime) {
           WHERE si.airline_id = rp.airline_id
             AND si.route_plan_id = rp.id
             AND si.item_type = 'flight'
-            AND LOWER(COALESCE(si.status, 'planned')) <> 'cancelled'
+            AND LOWER(COALESCE(si.status, 'planned')) = 'assigned'
             AND si.aircraft_id IS NOT NULL
         )
     ),
