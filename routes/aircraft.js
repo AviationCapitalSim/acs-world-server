@@ -4615,6 +4615,9 @@ if (!(simTime instanceof Date) || Number.isNaN(simTime.getTime())) {
        - Dedicated backend re-registration system can replace this later.
        ============================================================ */
 
+       const registrationRule = await ACS_RA_resolveRegistrationRule(client, baseIcao);
+       const newRegistration = await ACS_RA_generateUniqueRegistration(client, registrationRule);
+     
        const aircraftResult = await client.query(
       `
       INSERT INTO aircraft_fleet (
@@ -4685,7 +4688,7 @@ if (!(simTime instanceof Date) || Number.isNaN(simTime.getTime())) {
         listing.manufacturer,
         listing.model_key,
         aircraftName,
-        listing.previous_registration || null,
+        newRegistration,
         listing.serial_number || null,
         listing.id,
 
