@@ -13,6 +13,17 @@ const toInt = (v) => {
 
 const cleanText = (v) => String(v || "").trim();
 
+async function ACS_getCurrentSimTimestampMs(client) {
+  const result = await client.query(`
+    SELECT
+      FLOOR(
+        EXTRACT(EPOCH FROM acs_get_current_sim_time()) * 1000
+      )::bigint AS sim_timestamp_ms
+  `);
+
+  return Number(result.rows[0]?.sim_timestamp_ms || 0);
+}
+
 /* ============================================================
    GET COMPANY FINANCE
    ============================================================ */
@@ -216,6 +227,9 @@ router.post("/finance/flight-event", requireAuth, async (req,res)=>{
       [airline_id]
     );
 
+    const currentSimTimestampMs =
+    await ACS_getCurrentSimTimestampMs(client);
+    
     const incomeLog = await client.query(
       `
       INSERT INTO finance_log
@@ -249,7 +263,7 @@ router.post("/finance/flight-event", requireAuth, async (req,res)=>{
       [
         airline_id,
         revenue,
-        Date.now(),
+        currentSimTimestampMs,
         route_plan_id,
         schedule_item_id,
         incomeRef,
@@ -290,7 +304,7 @@ router.post("/finance/flight-event", requireAuth, async (req,res)=>{
       [
         airline_id,
         totalCost,
-        Date.now(),
+        currentSimTimestampMs,
         route_plan_id,
         schedule_item_id,
         expenseRef,
@@ -427,6 +441,9 @@ router.post("/finance/hr-bonus", requireAuth, async (req, res) => {
     const simMonth = Number(simResult.rows[0]?.sim_month);
     const month_key = `${simYear}-${String(simMonth).padStart(2, "0")}`;
 
+    const currentSimTimestampMs =
+    await ACS_getCurrentSimTimestampMs(client);
+    
     const reference_uid = `HR_BONUS:${airline_id}:${dept_id}:${month_key}`;
 
     await client.query(
@@ -530,7 +547,7 @@ router.post("/finance/hr-bonus", requireAuth, async (req, res) => {
       [
         airline_id,
         amount,
-        Date.now(),
+        currentSimTimestampMs,
         reference_uid,
         `HR bonus ${bonus_percent}% for ${dep.dept_name} (${month_key})`
       ]
@@ -655,6 +672,9 @@ router.post("/finance/payroll", requireAuth, async (req,res)=>{
       [airline_id]
     );
 
+    const currentSimTimestampMs =
+    await ACS_getCurrentSimTimestampMs(client); 
+    
     const logResult = await client.query(
       `
       INSERT INTO finance_log
@@ -685,7 +705,7 @@ router.post("/finance/payroll", requireAuth, async (req,res)=>{
         airline_id,
         sourceKey,
         amount,
-        Date.now(),
+        currentSimTimestampMs,
         reference_uid,
         "Monthly payroll settled by ACS OCC"
       ]
