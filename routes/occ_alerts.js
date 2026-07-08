@@ -228,6 +228,189 @@ async function ACS_syncSlotAlerts(client, airlineId, currentSimTime) {
   }
 }
 
+async function ACS_syncExpiredSlotRoutes(client, airlineId, currentSimTime) {
+  let transactionStarted = false;
+
+  try {
+    await client.query("BEGIN");
+    transactionStarted = true;
+
+    await client.query(
+      `SELECT pg_advisory_xact_lock(hashtext($1))`,
+      [`ACS_OCC_EXPIRED_SLOT_ROUTES|${airlineId}`]
+    );
+
+    const result = await client.query(
+      `
+      WITH pending_slot_routes AS (
+        SELECT
+          rp.id AS route_plan_id,
+          rp.route_uid,
+          rp.airline_id,
+          rp.origin,
+          rp.destination,
+          rp.flight_number_out,
+          rp.flight_number_in,
+          MIN(asb.reserved_sim_time) AS reserved_sim_time
+        FROM public.route_plans rp
+        JOIN public.airport_slot_bookings asb
+          ON asb.route_plan_id = rp.id
+         AND asb.airline_id = rp.airline_id
+        WHERE rp.airline_id = $1
+          AND UPPER(COALESCE(rp.route_state, 'ACTIVE')) <> 'CANCELLED'
+          AND asb.slot_status = 'RESERVED'
+          AND asb.reserved_sim_time IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM public.schedule_items si
+            WHERE si.airline_id = rp.airline_id
+              AND si.route_plan_id = rp.id
+              AND si.item_type = 'flight'
+              AND LOWER(COALESCE(si.status, 'planned')) = 'assigned'
+              AND si.aircraft_id IS NOT NULL
+          )
+        GROUP BY
+          rp.id,
+          rp.route_uid,
+          rp.airline_id,
+          rp.origin,
+          rp.destination,
+          rp.flight_number_out,
+          rp.flight_number_in
+      ),
+      slot_age AS (
+        SELECT
+          psr.*,
+          (
+            FLOOR(
+              EXTRACT(EPOCH FROM ($2::TIMESTAMPTZ - psr.reserved_sim_time))
+              / 604800
+            ) + 1
+          )::INTEGER AS slot_week
+        FROM pending_slot_routes psr
+      )
+      SELECT *
+      FROM slot_age
+      WHERE slot_week > 6
+      ORDER BY reserved_sim_time ASC
+      `,
+      [airlineId, currentSimTime]
+    );
+
+    for (const row of result.rows) {
+      const routePlanId = Number(row.route_plan_id);
+
+      await client.query(
+        `
+        SELECT id
+        FROM public.route_plans
+        WHERE id = $1
+          AND airline_id = $2
+        FOR UPDATE
+        `,
+        [routePlanId, airlineId]
+      );
+
+      const assignedCheck = await client.query(
+        `
+        SELECT 1
+        FROM public.schedule_items si
+        WHERE si.airline_id = $1
+          AND si.route_plan_id = $2
+          AND si.item_type = 'flight'
+          AND LOWER(COALESCE(si.status, 'planned')) = 'assigned'
+          AND si.aircraft_id IS NOT NULL
+        LIMIT 1
+        `,
+        [airlineId, routePlanId]
+      );
+
+      if (assignedCheck.rows.length) {
+        continue;
+      }
+
+      await client.query(
+        `
+        UPDATE public.schedule_items
+        SET
+          status = 'cancelled',
+          aircraft_id = NULL,
+          aircraft_registration = NULL,
+          updated_at = NOW()
+        WHERE airline_id = $1
+          AND route_plan_id = $2
+          AND item_type = 'flight'
+          AND LOWER(COALESCE(status, 'planned'))
+              NOT IN ('cancelled', 'in_progress', 'completed')
+        `,
+        [airlineId, routePlanId]
+      );
+
+      await client.query(
+        `
+        UPDATE public.airport_slot_bookings
+        SET
+          slot_status = 'CANCELLED',
+          released_at = $3,
+          updated_at = NOW()
+        WHERE airline_id = $1
+          AND route_plan_id = $2
+          AND slot_status = 'RESERVED'
+        `,
+        [airlineId, routePlanId, currentSimTime]
+      );
+
+      await client.query(
+        `
+        UPDATE public.route_plans
+        SET
+          route_state = 'CANCELLED',
+          aircraft_id = NULL,
+          registration = NULL,
+          updated_at = NOW()
+        WHERE airline_id = $1
+          AND id = $2
+          AND UPPER(COALESCE(route_state, 'ACTIVE')) <> 'CANCELLED'
+        `,
+        [airlineId, routePlanId]
+      );
+
+      const flightLabel = [row.flight_number_out, row.flight_number_in]
+        .filter(Boolean)
+        .join("/") || `ROUTE-${row.route_plan_id}`;
+
+      await ACS_createOccAlertIfAllowed(
+        client,
+        {
+          airline_id: airlineId,
+          alert_key: `SLOT_NON_USE:${row.route_plan_id}`,
+          category: "schedule",
+          level: "critical",
+          title: "SLOT COMMAND",
+          message: `Flight ${flightLabel} / ${row.origin}-${row.destination} slot released for non-use.`,
+          source: "airport_slot_bookings",
+          source_ref: String(row.route_plan_id)
+        },
+        currentSimTime
+      );
+    }
+
+    await client.query("COMMIT");
+    transactionStarted = false;
+
+  } catch (error) {
+    if (transactionStarted) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        console.error("[ACS OCC] expired slot rollback failed:", rollbackError);
+      }
+    }
+
+    throw error;
+  }
+}
+
 async function ACS_syncFinanceAlerts(client, airlineId, currentSimTime) {
   const result = await client.query(
     `
@@ -380,7 +563,7 @@ async function ACS_getOccGlobalAirlineIds(client, currentSimTime) {
             EXTRACT(EPOCH FROM ($1::TIMESTAMPTZ - asb.reserved_sim_time))
             / 604800
           ) + 1
-        ) BETWEEN 2 AND 6
+        ) >= 2
         AND NOT EXISTS (
           SELECT 1
           FROM public.schedule_items si
@@ -426,9 +609,10 @@ async function ACS_getOccGlobalAirlineIds(client, currentSimTime) {
 async function ACS_syncOccAlertsForAirline(client, airlineId, currentSimTime) {
   const results = [];
 
-  const syncJobs = [
+    const syncJobs = [
     ["HR", ACS_syncHrAlerts],
     ["SLOT", ACS_syncSlotAlerts],
+    ["SLOT_EXPIRED", ACS_syncExpiredSlotRoutes],
     ["FINANCE", ACS_syncFinanceAlerts]
   ];
 
