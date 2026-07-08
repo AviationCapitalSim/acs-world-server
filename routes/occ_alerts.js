@@ -147,7 +147,6 @@ async function ACS_syncHrAlerts(client, airlineId, currentSimTime) {
 }
 
 async function ACS_syncSlotAlerts(client, airlineId, currentSimTime) {
-  
   const result = await client.query(
     `
     WITH pending_slot_routes AS (
@@ -168,6 +167,15 @@ async function ACS_syncSlotAlerts(client, airlineId, currentSimTime) {
         AND UPPER(COALESCE(rp.route_state, 'ACTIVE')) <> 'CANCELLED'
         AND asb.slot_status = 'RESERVED'
         AND asb.reserved_sim_time IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1
+          FROM public.schedule_items si
+          WHERE si.airline_id = rp.airline_id
+            AND si.route_plan_id = rp.id
+            AND si.item_type = 'flight'
+            AND LOWER(COALESCE(si.status, 'planned')) <> 'cancelled'
+            AND si.aircraft_id IS NOT NULL
+        )
       GROUP BY
         rp.id,
         rp.route_uid,
@@ -176,23 +184,22 @@ async function ACS_syncSlotAlerts(client, airlineId, currentSimTime) {
         rp.destination,
         rp.flight_number_out,
         rp.flight_number_in
+    ),
+    slot_age AS (
+      SELECT
+        psr.*,
+        (
+          FLOOR(
+            EXTRACT(EPOCH FROM ($2::TIMESTAMPTZ - psr.reserved_sim_time))
+            / 604800
+          ) + 1
+        )::INTEGER AS slot_week
+      FROM pending_slot_routes psr
     )
-    SELECT
-      psr.*,
-      (
-        FLOOR(
-          EXTRACT(EPOCH FROM ($2::TIMESTAMPTZ - psr.reserved_sim_time))
-          / 604800
-        ) + 1
-      )::INTEGER AS slot_week
-    FROM pending_slot_routes psr
-    WHERE (
-      FLOOR(
-        EXTRACT(EPOCH FROM ($2::TIMESTAMPTZ - psr.reserved_sim_time))
-        / 604800
-      ) + 1
-    ) BETWEEN 2 AND 6
-    ORDER BY psr.reserved_sim_time ASC
+    SELECT *
+    FROM slot_age
+    WHERE slot_week BETWEEN 2 AND 6
+    ORDER BY reserved_sim_time ASC
     `,
     [airlineId, currentSimTime]
   );
@@ -206,10 +213,10 @@ async function ACS_syncSlotAlerts(client, airlineId, currentSimTime) {
       client,
       {
         airline_id: airlineId,
-        alert_key: `SLOTS_WARNING:${row.route_plan_id}`,
+        alert_key: `SLOT_WARNING:${row.route_plan_id}`,
         category: "schedule",
         level: Number(row.slot_week) >= 6 ? "critical" : "warning",
-        title: "SLOTS WARNING",
+        title: "SLOT WARNING",
         message: `Flight ${flightLabel} / ${row.origin}-${row.destination} slot has no assigned aircraft`,
         source: "airport_slot_bookings",
         source_ref: String(row.route_plan_id)
@@ -308,6 +315,149 @@ async function ACS_syncMaintenanceOverdueAlerts(client, airlineId, currentSimTim
       );
     }
   }
+}
+
+async function ACS_getOccGlobalAirlineIds(client, currentSimTime) {
+  const result = await client.query(
+    `
+    WITH slot_airlines AS (
+      SELECT DISTINCT
+        rp.airline_id
+      FROM public.route_plans rp
+      JOIN public.airport_slot_bookings asb
+        ON asb.route_plan_id = rp.id
+       AND asb.airline_id = rp.airline_id
+      WHERE UPPER(COALESCE(rp.route_state, 'ACTIVE')) <> 'CANCELLED'
+        AND asb.slot_status = 'RESERVED'
+        AND asb.reserved_sim_time IS NOT NULL
+        AND (
+          FLOOR(
+            EXTRACT(EPOCH FROM ($1::TIMESTAMPTZ - asb.reserved_sim_time))
+            / 604800
+          ) + 1
+        ) BETWEEN 2 AND 6
+        AND NOT EXISTS (
+          SELECT 1
+          FROM public.schedule_items si
+          WHERE si.airline_id = rp.airline_id
+            AND si.route_plan_id = rp.id
+            AND si.item_type = 'flight'
+            AND LOWER(COALESCE(si.status, 'planned')) <> 'cancelled'
+            AND si.aircraft_id IS NOT NULL
+        )
+    ),
+    hr_airlines AS (
+      SELECT DISTINCT
+        airline_id
+      FROM public.hr_departments
+      WHERE COALESCE(required, 0) > 0
+        AND COALESCE(staff, 0) < COALESCE(required, 0)
+    )
+    SELECT DISTINCT airline_id
+    FROM (
+      SELECT airline_id FROM slot_airlines
+      UNION
+      SELECT airline_id FROM hr_airlines
+    ) all_airlines
+    WHERE airline_id IS NOT NULL
+    ORDER BY airline_id ASC
+    `,
+    [currentSimTime]
+  );
+
+  return result.rows
+    .map(row => Number(row.airline_id))
+    .filter(id => Number.isInteger(id) && id > 0);
+}
+
+async function ACS_syncOccAlertsForAirline(client, airlineId, currentSimTime) {
+  const results = [];
+
+  const syncJobs = [
+    ["HR", ACS_syncHrAlerts],
+    ["SLOT", ACS_syncSlotAlerts]
+  ];
+
+  for (const [syncName, syncFn] of syncJobs) {
+    try {
+      await syncFn(client, airlineId, currentSimTime);
+      results.push({ sync: syncName, ok: true });
+    } catch (error) {
+      console.error(`[ACS OCC] ${syncName} global sync failed:`, {
+        airline_id: airlineId,
+        error: error.message
+      });
+
+      results.push({
+        sync: syncName,
+        ok: false,
+        error: error.message
+      });
+    }
+  }
+
+  return results;
+}
+
+let ACS_occGlobalSyncTimer = null;
+let ACS_occGlobalSyncRunning = false;
+
+async function ACS_runGlobalOccAlertSync(source = "timer") {
+  if (ACS_occGlobalSyncRunning) return;
+
+  ACS_occGlobalSyncRunning = true;
+
+  const client = await pool.connect();
+
+  try {
+    const lockResult = await client.query(`
+      SELECT pg_try_advisory_lock(hashtext('ACS_OCC_GLOBAL_ALERT_SYNC')) AS locked
+    `);
+
+    if (lockResult.rows[0]?.locked !== true) {
+      return;
+    }
+
+    const currentSimTime = await ACS_getCurrentSimTime(client);
+    const airlineIds = await ACS_getOccGlobalAirlineIds(client, currentSimTime);
+
+    for (const airlineId of airlineIds) {
+      await ACS_syncOccAlertsForAirline(client, airlineId, currentSimTime);
+    }
+
+    console.log("[ACS OCC] global alert sync completed:", {
+      source,
+      airlines: airlineIds.length,
+      current_sim_time: currentSimTime
+    });
+
+  } catch (error) {
+    console.error("[ACS OCC] global alert sync failed:", error);
+
+  } finally {
+    try {
+      await client.query(`
+        SELECT pg_advisory_unlock(hashtext('ACS_OCC_GLOBAL_ALERT_SYNC'))
+      `);
+    } catch (_) {}
+
+    client.release();
+    ACS_occGlobalSyncRunning = false;
+  }
+}
+
+function ACS_startGlobalOccAlertSync() {
+  if (ACS_occGlobalSyncTimer) return;
+
+  setTimeout(() => {
+    ACS_runGlobalOccAlertSync("startup");
+  }, 15000);
+
+  ACS_occGlobalSyncTimer = setInterval(() => {
+    ACS_runGlobalOccAlertSync("interval");
+  }, 300000);
+
+  console.log("[ACS OCC] global alert sync started");
 }
 
 router.get("/occ/alerts", requireAuth, async (req, res) => {
@@ -489,5 +639,7 @@ router.delete("/occ/alerts", requireAuth, async (req, res) => {
     });
   }
 });
+
+ACS_startGlobalOccAlertSync();
 
 export default router;
