@@ -167,6 +167,15 @@ async function ACS_syncSlotAlerts(client, airlineId, currentSimTime) {
         AND UPPER(COALESCE(rp.route_state, 'ACTIVE')) <> 'CANCELLED'
         AND asb.slot_status = 'RESERVED'
         AND asb.reserved_sim_time IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1
+          FROM public.schedule_items si
+          WHERE si.airline_id = rp.airline_id
+            AND si.route_plan_id = rp.id
+            AND si.item_type = 'flight'
+            AND LOWER(COALESCE(si.status, 'planned')) <> 'cancelled'
+            AND si.aircraft_id IS NOT NULL
+        )
       GROUP BY
         rp.id,
         rp.route_uid,
@@ -196,6 +205,8 @@ async function ACS_syncSlotAlerts(client, airlineId, currentSimTime) {
   );
 
   for (const row of result.rows) {
+    const slotWeek = Number(row.slot_week);
+
     const flightLabel = [row.flight_number_out, row.flight_number_in]
       .filter(Boolean)
       .join("/") || `ROUTE-${row.route_plan_id}`;
@@ -204,9 +215,9 @@ async function ACS_syncSlotAlerts(client, airlineId, currentSimTime) {
       client,
       {
         airline_id: airlineId,
-        alert_key: `SLOT_WARNING:${row.route_plan_id}`,
+        alert_key: `SLOT_WARNING:${row.route_plan_id}:W${slotWeek}`,
         category: "schedule",
-        level: Number(row.slot_week) >= 6 ? "critical" : "warning",
+        level: slotWeek >= 6 ? "critical" : "warning",
         title: "SLOT WARNING",
         message: `Flight ${flightLabel} / ${row.origin}-${row.destination} slot has no assigned aircraft`,
         source: "airport_slot_bookings",
@@ -327,6 +338,15 @@ async function ACS_getOccGlobalAirlineIds(client, currentSimTime) {
             / 604800
           ) + 1
         ) BETWEEN 2 AND 6
+        AND NOT EXISTS (
+          SELECT 1
+          FROM public.schedule_items si
+          WHERE si.airline_id = rp.airline_id
+            AND si.route_plan_id = rp.id
+            AND si.item_type = 'flight'
+            AND LOWER(COALESCE(si.status, 'planned')) <> 'cancelled'
+            AND si.aircraft_id IS NOT NULL
+        )
     ),
     hr_airlines AS (
       SELECT DISTINCT
@@ -349,7 +369,7 @@ async function ACS_getOccGlobalAirlineIds(client, currentSimTime) {
 
   return result.rows
     .map(row => Number(row.airline_id))
-    .filter(id => Number.isInteger(id) && id > 0);
+    .filter(Number.isFinite);
 }
 
 async function ACS_syncOccAlertsForAirline(client, airlineId, currentSimTime) {
