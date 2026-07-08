@@ -5834,7 +5834,10 @@ if (
 
   const insertedAircraft = [];
 
-  for (let i = 0; i < quantity; i += 1) {
+    for (let i = 0; i < quantity; i += 1) {
+    const registrationRule = await ACS_RA_resolveRegistrationRule(client, baseIcao);
+    const newRegistration = await ACS_RA_generateUniqueRegistration(client, registrationRule);
+
     const fleetResult = await client.query(
       `
       INSERT INTO aircraft_fleet (
@@ -5877,7 +5880,7 @@ if (
         $3,
         $4,
         $5,
-        NULL,
+        $11,
         NULL,
         NULL,
         $6,
@@ -5911,7 +5914,8 @@ if (
         baseIcao,
         simYear,
         resolverDate,
-        Math.round(Number(order.unit_price || 0))
+        Math.round(Number(order.unit_price || 0)),
+        newRegistration
       ]
     );
 
@@ -6161,6 +6165,9 @@ if (
       const insertedAircraft = [];
 
       for (let i = 0; i < quantity; i += 1) {
+        const registrationRule = await ACS_RA_resolveRegistrationRule(client, baseIcao);
+        const newRegistration = await ACS_RA_generateUniqueRegistration(client, registrationRule);
+
         const fleetResult = await client.query(
           `
           INSERT INTO aircraft_fleet (
@@ -6203,7 +6210,7 @@ if (
             $4,
             $5,
             $6,
-            NULL,
+            $12,
             NULL,
             NULL,
             $7,
@@ -6238,7 +6245,8 @@ if (
             baseIcao,
             simYear,
             resolverDate,
-            Math.round(Number(order.unit_price || 0))
+            Math.round(Number(order.unit_price || 0)),
+            newRegistration
           ]
         );
 
