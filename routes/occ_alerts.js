@@ -505,11 +505,11 @@ function ACS_startGlobalOccAlertSync() {
 
   setTimeout(() => {
     ACS_runGlobalOccAlertSync("startup");
-  }, 15000);
+  }, 10000);
 
   ACS_occGlobalSyncTimer = setInterval(() => {
     ACS_runGlobalOccAlertSync("interval");
-  }, 300000);
+  }, 60000);
 
   console.log("[ACS OCC] global alert sync started");
 }
@@ -572,67 +572,6 @@ router.get("/occ/alerts", requireAuth, async (req, res) => {
       alerts: [],
       error: "OCC_ALERTS_READ_FAILED"
     });
-  }
-});
-
-router.post("/occ/alerts/sync", requireAuth, async (req, res) => {
-  const airlineId = ACS_airlineId(req);
-
-  if (!airlineId) {
-    return res.status(401).json({
-      ok: false,
-      error: "NO_ACTIVE_AIRLINE"
-    });
-  }
-
-  const client = await pool.connect();
-
-  try {
-    const currentSimTime = await ACS_getCurrentSimTime(client);
-
-    const syncResults = [];
-
-        const syncJobs = [
-      ["HR", ACS_syncHrAlerts],
-      ["SLOT", ACS_syncSlotAlerts],
-      ["FINANCE", ACS_syncFinanceAlerts]
-    ];
-
-    for (const [syncName, syncFn] of syncJobs) {
-      try {
-        await syncFn(client, airlineId, currentSimTime);
-        syncResults.push({
-          sync: syncName,
-          ok: true
-        });
-      } catch (syncError) {
-        console.error(`[ACS OCC] ${syncName} sync failed:`, syncError);
-
-        syncResults.push({
-          sync: syncName,
-          ok: false,
-          error: syncError.message
-        });
-      }
-    }
-
-    return res.status(200).json({
-      ok: true,
-      airline_id: airlineId,
-      current_sim_time: currentSimTime,
-      sync_results: syncResults
-    });
-
-  } catch (error) {
-    console.error("[ACS OCC] alerts sync failed:", error);
-
-    return res.status(500).json({
-      ok: false,
-      error: "OCC_ALERTS_SYNC_FAILED"
-    });
-
-  } finally {
-    client.release();
   }
 });
 
