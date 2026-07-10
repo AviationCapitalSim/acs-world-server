@@ -9,7 +9,6 @@ const router = express.Router();
 const PASSWORD_RESET_RESPONSE =
   "If the account exists, a recovery email has been sent.";
 
-const PASSWORD_RESET_EXPIRY_MS = 30 * 60 * 1000;
 const PASSWORD_MIN_LENGTH = 12;
 const PASSWORD_MAX_LENGTH = 128;
 
@@ -70,14 +69,14 @@ function createMailTransporter() {
 router.post("/auth/register", async (req, res) => {
 
   const {
-  fullName,
-  email,
-  country,
-  dob,
-  age,
-  password,
-  termsAccepted
-} = req.body;
+    fullName,
+    email,
+    country,
+    dob,
+    age,
+    password,
+    termsAccepted
+  } = req.body;
 
   try {
 
@@ -96,41 +95,44 @@ router.post("/auth/register", async (req, res) => {
     const userId = crypto.randomUUID();
 
     // crear usuario
-     
-   await pool.query(`
-  INSERT INTO users
-  (user_id, full_name, email, country, dob, age, created_at, terms_accepted)
-  VALUES ($1,$2,$3,$4,$5,$6,NOW(),$7)
-`,
-[userId, fullName, email, country, dob, age, termsAccepted]
-);
+    await pool.query(`
+      INSERT INTO users
+      (user_id, full_name, email, country, dob, age, created_at, terms_accepted)
+      VALUES ($1,$2,$3,$4,$5,$6,NOW(),$7)
+    `, [
+      userId,
+      fullName,
+      email,
+      country,
+      dob,
+      age,
+      termsAccepted
+    ]);
 
-// registrar aceptación de términos
-     
-await pool.query(`
-  INSERT INTO terms_cond
-  (timestamp, email, version, user_agent, source, user_id, accepted_at)
-  VALUES (NOW(), $1, '1.0', $2, 'register', $3, NOW())
-`,
-[
-  email,
-  req.headers["user-agent"] || "",
-  userId
-]);
-     
+    // registrar aceptación de términos
+    await pool.query(`
+      INSERT INTO terms_cond
+      (timestamp, email, version, user_agent, source, user_id, accepted_at)
+      VALUES (NOW(), $1, '1.0', $2, 'register', $3, NOW())
+    `, [
+      email,
+      req.headers["user-agent"] || "",
+      userId
+    ]);
+
     // 🔐 HASH PASSWORD (BCRYPT)
-     
     const hashedPassword = await bcrypt.hash(password, 10);
 
     // guardar auth
-     
     await pool.query(`
       INSERT INTO users_auth
       (user_id, email, password_hash)
       VALUES ($1,$2,$3)
-    `,
-    [userId, email, hashedPassword]
-    );
+    `, [
+      userId,
+      email,
+      hashedPassword
+    ]);
 
     res.json({
       status: "success",
@@ -160,21 +162,21 @@ router.post("/auth/login", async (req, res) => {
   try {
 
     const result = await pool.query(`
-  SELECT
-    u.user_id,
-    u.email,
-    u.airline_id AS user_airline_id,
-    al.airline_id AS linked_airline_id,
-    COALESCE(u.airline_id, al.airline_id) AS airline_id,
-    ua.password_hash
-  FROM users u
-  JOIN users_auth ua
-    ON ua.user_id = u.user_id
-  LEFT JOIN airlines al
-    ON al.user_id = u.user_id
-  WHERE LOWER(u.email) = LOWER($1)
-  LIMIT 1
-`, [email]);
+      SELECT
+        u.user_id,
+        u.email,
+        u.airline_id AS user_airline_id,
+        al.airline_id AS linked_airline_id,
+        COALESCE(u.airline_id, al.airline_id) AS airline_id,
+        ua.password_hash
+      FROM users u
+      JOIN users_auth ua
+        ON ua.user_id = u.user_id
+      LEFT JOIN airlines al
+        ON al.user_id = u.user_id
+      WHERE LOWER(u.email) = LOWER($1)
+      LIMIT 1
+    `, [email]);
 
     if (!result.rows.length) {
       return res.json({ status: "NO_USER" });
@@ -183,40 +185,42 @@ router.post("/auth/login", async (req, res) => {
     const user = result.rows[0];
 
     // 🔐 BCRYPT COMPARE
-     
-   if (!user.password_hash) {
-  return res.status(500).json({
-    status: "AUTH_DATA_INVALID"
-  });
-}
+    if (!user.password_hash) {
+      return res.status(500).json({
+        status: "AUTH_DATA_INVALID"
+      });
+    }
 
-const isMatch = await bcrypt.compare(password, user.password_hash);
+    const isMatch = await bcrypt.compare(
+      password,
+      user.password_hash
+    );
 
-if (!isMatch) {
-  return res.json({ status: "WRONG_PASSWORD" });
-}
+    if (!isMatch) {
+      return res.json({ status: "WRONG_PASSWORD" });
+    }
 
-/* ============================================================
-   AUTO-REPAIR USER AIRLINE LINK
-   ------------------------------------------------------------
-   If the airline exists in airlines but users.airline_id is NULL,
-   repair the canonical user link before creating the session.
-   ============================================================ */
+    /* ============================================================
+       AUTO-REPAIR USER AIRLINE LINK
+       ------------------------------------------------------------
+       If the airline exists in airlines but users.airline_id is NULL,
+       repair the canonical user link before creating the session.
+       ============================================================ */
 
-if (!user.user_airline_id && user.linked_airline_id) {
-  await pool.query(`
-    UPDATE users
-    SET airline_id = $1
-    WHERE user_id = $2
-      AND airline_id IS NULL
-  `, [
-    user.linked_airline_id,
-    user.user_id
-  ]);
+    if (!user.user_airline_id && user.linked_airline_id) {
+      await pool.query(`
+        UPDATE users
+        SET airline_id = $1
+        WHERE user_id = $2
+          AND airline_id IS NULL
+      `, [
+        user.linked_airline_id,
+        user.user_id
+      ]);
 
-  user.airline_id = user.linked_airline_id;
-}
-     
+      user.airline_id = user.linked_airline_id;
+    }
+
     // ============================================================
     // 🔐 CREATE SESSION (NEW CORE)
     // ============================================================
@@ -228,7 +232,9 @@ if (!user.user_airline_id && user.linked_airline_id) {
       .update(rawToken)
       .digest("hex");
 
-    const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 7); // 7 días
+    const expiresAt = new Date(
+      Date.now() + 1000 * 60 * 60 * 24 * 7
+    ); // 7 días
 
     const ip =
       req.headers["x-forwarded-for"]?.split(",")[0] ||
@@ -237,108 +243,117 @@ if (!user.user_airline_id && user.linked_airline_id) {
 
     const userAgent = req.headers["user-agent"] || "";
 
-/* ============================================================
-   INVALIDATE PREVIOUS ACTIVE SESSIONS
-   ============================================================ */
+    /* ============================================================
+       INVALIDATE PREVIOUS ACTIVE SESSIONS
+       ============================================================ */
 
-await pool.query(`
-  UPDATE sessions
-  SET active = false
-  WHERE user_id = $1
-    AND active = true
-`, [user.user_id]);
-     
-     
-  await pool.query(`
-  INSERT INTO sessions
-  (token_hash, user_id, airline_id, created_at, expires_at, ip_address, user_agent, active, last_seen_at)
-  VALUES ($1,$2,$3,NOW(),$4,$5,$6,true,NOW())
-`, [
-  tokenHash,
-  user.user_id,
-  user.airline_id,
-  expiresAt,
-  ip,
-  userAgent
-]);
-     
-/* ============================================================
-   CANONICAL SESSION COOKIE — SINGLE SOURCE OF TRUTH
-   • Limpia variantes viejas
-   • Emite una sola cookie canónica para todo ACS
-   ============================================================ */
+    await pool.query(`
+      UPDATE sessions
+      SET active = false
+      WHERE user_id = $1
+        AND active = true
+    `, [user.user_id]);
 
-// 1) limpiar variantes heredadas / legacy
-res.clearCookie("acs_session", {
-  httpOnly: true,
-  secure: true,
-  sameSite: "none",
-  path: "/"
-});
+    await pool.query(`
+      INSERT INTO sessions
+      (
+        token_hash,
+        user_id,
+        airline_id,
+        created_at,
+        expires_at,
+        ip_address,
+        user_agent,
+        active,
+        last_seen_at
+      )
+      VALUES ($1,$2,$3,NOW(),$4,$5,$6,true,NOW())
+    `, [
+      tokenHash,
+      user.user_id,
+      user.airline_id,
+      expiresAt,
+      ip,
+      userAgent
+    ]);
 
-res.clearCookie("acs_session", {
-  httpOnly: true,
-  secure: true,
-  sameSite: "none",
-  path: "/",
-  domain: "api.aviationcapitalsim.com"
-});
+    /* ============================================================
+       CANONICAL SESSION COOKIE — SINGLE SOURCE OF TRUTH
+       • Limpia variantes viejas
+       • Emite una sola cookie canónica para todo ACS
+       ============================================================ */
 
-res.clearCookie("acs_session", {
-  httpOnly: true,
-  secure: true,
-  sameSite: "none",
-  path: "/",
-  domain: ".aviationcapitalsim.com"
-});
+    // 1) limpiar variantes heredadas / legacy
+    res.clearCookie("acs_session", {
+      httpOnly: true,
+      secure: true,
+      sameSite: "none",
+      path: "/"
+    });
 
-// 2) emitir cookie canónica única
-res.cookie("acs_session", rawToken, {
-  httpOnly: true,
-  secure: true,
-  sameSite: "none",
-  path: "/",
-  domain: ".aviationcapitalsim.com",
-  maxAge: 7 * 24 * 60 * 60 * 1000
-});
+    res.clearCookie("acs_session", {
+      httpOnly: true,
+      secure: true,
+      sameSite: "none",
+      path: "/",
+      domain: "api.aviationcapitalsim.com"
+    });
 
-/* ============================================================
-   RESPONSE
-   ============================================================ */
+    res.clearCookie("acs_session", {
+      httpOnly: true,
+      secure: true,
+      sameSite: "none",
+      path: "/",
+      domain: ".aviationcapitalsim.com"
+    });
 
-if (!user.airline_id) {
-  return res.json({
-    ok: true,
-    status: "NO_AIRLINE",
-    user: {
-      user_id: user.user_id,
-      email: user.email,
-      airline_id: null
+    // 2) emitir cookie canónica única
+    res.cookie("acs_session", rawToken, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "none",
+      path: "/",
+      domain: ".aviationcapitalsim.com",
+      maxAge: 7 * 24 * 60 * 60 * 1000
+    });
+
+    /* ============================================================
+       RESPONSE
+       ============================================================ */
+
+    if (!user.airline_id) {
+      return res.json({
+        ok: true,
+        status: "NO_AIRLINE",
+        user: {
+          user_id: user.user_id,
+          email: user.email,
+          airline_id: null
+        }
+      });
     }
-  });
-}
 
-return res.json({
-  ok: true,
-  status: "HAS_AIRLINE",
-  user: {
-    user_id: user.user_id,
-    email: user.email,
-    airline_id: user.airline_id
-  }
-});
-     
+    return res.json({
+      ok: true,
+      status: "HAS_AIRLINE",
+      user: {
+        user_id: user.user_id,
+        email: user.email,
+        airline_id: user.airline_id
+      }
+    });
+
   } catch (err) {
 
-  console.error("LOGIN ERROR:", err);
+    console.error("LOGIN ERROR:", err);
 
-  res.status(500).json({
-    status: "ERROR",
-    message: err.message,
-    detail: err.detail || null
-  });
+    res.status(500).json({
+      status: "ERROR",
+      message: err.message,
+      detail: err.detail || null
+    });
 
-}
+  }
 
 });
 
@@ -377,17 +392,17 @@ router.post("/auth/forgot-password", async (req, res) => {
     }
 
     const user = userResult.rows[0];
-    const rawToken = crypto.randomBytes(32).toString("base64url");
+
+    const rawToken = crypto
+      .randomBytes(32)
+      .toString("base64url");
+
     const tokenHash = crypto
       .createHash("sha256")
       .update(rawToken)
       .digest("hex");
 
     resetId = crypto.randomUUID();
-
-    const expiresAt = new Date(
-      Date.now() + PASSWORD_RESET_EXPIRY_MS
-    );
 
     const requestedIP = getRequestIP(req);
     const userAgent = req.headers["user-agent"] || "";
@@ -412,18 +427,30 @@ router.post("/auth/forgot-password", async (req, res) => {
         user_agent,
         created_at
       )
-      VALUES ($1, $2, $3, $4, NULL, $5, $6, NOW())
+      VALUES (
+        $1,
+        $2,
+        $3,
+        NOW() + INTERVAL '30 minutes',
+        NULL,
+        $4,
+        $5,
+        NOW()
+      )
     `, [
       resetId,
       user.user_id,
       tokenHash,
-      expiresAt,
       requestedIP,
       userAgent
     ]);
 
-    const resetURL = new URL(process.env.PASSWORD_RESET_URL);
-    resetURL.hash = `reset_token=${encodeURIComponent(rawToken)}`;
+    const resetURL = new URL(
+      process.env.PASSWORD_RESET_URL
+    );
+
+    resetURL.hash =
+      `reset_token=${encodeURIComponent(rawToken)}`;
 
     const transporter = createMailTransporter();
 
@@ -450,8 +477,15 @@ router.post("/auth/forgot-password", async (req, res) => {
       ].join("\n"),
       html: `
         <div style="font-family:Arial,sans-serif;color:#071427;line-height:1.6">
-          <h2 style="color:#c98300">ACS PASSWORD RECOVERY</h2>
-          <p>We received a request to reset your Aviation Capital Simulator password.</p>
+          <h2 style="color:#c98300">
+            ACS PASSWORD RECOVERY
+          </h2>
+
+          <p>
+            We received a request to reset your Aviation
+            Capital Simulator password.
+          </p>
+
           <p>
             <a
               href="${resetURL.toString()}"
@@ -460,15 +494,23 @@ router.post("/auth/forgot-password", async (req, res) => {
               Reset Password
             </a>
           </p>
+
           <p>This link expires in 30 minutes.</p>
-          <p>If you did not request this change, you can safely ignore this email.</p>
+
+          <p>
+            If you did not request this change, you can safely
+            ignore this email.
+          </p>
+
           <p>Please do not reply to this email.</p>
         </div>
       `
     });
 
     return res.status(200).json(genericResponse);
+
   } catch (err) {
+
     console.error("FORGOT PASSWORD ERROR:", err);
 
     // Do not leave a usable token when email delivery failed.
@@ -532,9 +574,11 @@ router.post("/auth/reset-password", async (req, res) => {
     await client.query("BEGIN");
 
     const tokenResult = await client.query(`
-      SELECT reset_id, user_id, expires_at, used_at
+      SELECT reset_id, user_id
       FROM password_reset_tokens
       WHERE token_hash = $1
+        AND used_at IS NULL
+        AND expires_at > NOW()
       LIMIT 1
       FOR UPDATE
     `, [tokenHash]);
@@ -550,31 +594,25 @@ router.post("/auth/reset-password", async (req, res) => {
 
     const resetToken = tokenResult.rows[0];
 
-    if (
-      resetToken.used_at ||
-      new Date(resetToken.expires_at).getTime() <= Date.now()
-    ) {
-      await client.query("ROLLBACK");
-
-      return res.status(400).json({
-        ok: false,
-        error: "INVALID_OR_EXPIRED_TOKEN"
-      });
-    }
-
-    const passwordHash = await bcrypt.hash(newPassword, 12);
+    const passwordHash = await bcrypt.hash(
+      newPassword,
+      12
+    );
 
     const updateResult = await client.query(`
       UPDATE users_auth
       SET password_hash = $1
       WHERE user_id = $2
-    `, [passwordHash, resetToken.user_id]);
+    `, [
+      passwordHash,
+      resetToken.user_id
+    ]);
 
     if (updateResult.rowCount !== 1) {
       throw new Error("AUTH_RECORD_NOT_FOUND");
     }
 
-    // Consume this token and every other outstanding token for the user.
+    // Consume this token and every outstanding token for the user.
     await client.query(`
       UPDATE password_reset_tokens
       SET used_at = NOW()
@@ -598,7 +636,9 @@ router.post("/auth/reset-password", async (req, res) => {
       ok: true,
       status: "PASSWORD_RESET_COMPLETE"
     });
+
   } catch (err) {
+
     await client.query("ROLLBACK");
 
     console.error("RESET PASSWORD ERROR:", err);
@@ -607,8 +647,11 @@ router.post("/auth/reset-password", async (req, res) => {
       ok: false,
       error: "PASSWORD_RESET_ERROR"
     });
+
   } finally {
+
     client.release();
+
   }
 });
 
@@ -642,6 +685,7 @@ router.get("/session", requireAuth, async (req, res) => {
     console.error("SESSION ERROR:", err);
 
     res.status(500).json({ ok: false });
+
   }
 });
 
