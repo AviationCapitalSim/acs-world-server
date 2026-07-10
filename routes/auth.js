@@ -6,6 +6,63 @@ import nodemailer from "nodemailer";
 
 const router = express.Router();
 
+const PASSWORD_RESET_RESPONSE =
+  "If the account exists, a recovery email has been sent.";
+
+const PASSWORD_RESET_EXPIRY_MS = 30 * 60 * 1000;
+const PASSWORD_MIN_LENGTH = 12;
+const PASSWORD_MAX_LENGTH = 128;
+
+function getRequestIP(req) {
+  return (
+    req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
+    req.socket.remoteAddress ||
+    ""
+  );
+}
+
+function isValidNewPassword(password) {
+  return (
+    typeof password === "string" &&
+    password.length >= PASSWORD_MIN_LENGTH &&
+    password.length <= PASSWORD_MAX_LENGTH &&
+    /[a-z]/.test(password) &&
+    /[A-Z]/.test(password) &&
+    /\d/.test(password)
+  );
+}
+
+function createMailTransporter() {
+  const requiredEnvironmentVariables = [
+    "SMTP_HOST",
+    "SMTP_PORT",
+    "SMTP_SECURE",
+    "SMTP_USER",
+    "SMTP_APP_PASSWORD",
+    "PASSWORD_RESET_URL"
+  ];
+
+  const missingVariables = requiredEnvironmentVariables.filter(
+    name => !process.env[name]
+  );
+
+  if (missingVariables.length) {
+    throw new Error(
+      `Missing password recovery environment variables: ${missingVariables.join(", ")}`
+    );
+  }
+
+  return nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: Number(process.env.SMTP_PORT),
+    secure: process.env.SMTP_SECURE === "true",
+    auth: {
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_APP_PASSWORD
+    }
+  });
+}
+
 /* ============================================================
    REGISTER USER
    ============================================================ */
@@ -283,6 +340,276 @@ return res.json({
 
 }
 
+});
+
+/* ============================================================
+   FORGOT PASSWORD
+   ============================================================ */
+
+router.post("/auth/forgot-password", async (req, res) => {
+  const genericResponse = {
+    ok: true,
+    message: PASSWORD_RESET_RESPONSE
+  };
+
+  const email =
+    typeof req.body?.email === "string"
+      ? req.body.email.trim().toLowerCase()
+      : "";
+
+  // Always return the same public response.
+  if (!email || email.length > 320) {
+    return res.status(200).json(genericResponse);
+  }
+
+  let resetId = null;
+
+  try {
+    const userResult = await pool.query(`
+      SELECT user_id, email
+      FROM users
+      WHERE LOWER(email) = LOWER($1)
+      LIMIT 1
+    `, [email]);
+
+    if (!userResult.rows.length) {
+      return res.status(200).json(genericResponse);
+    }
+
+    const user = userResult.rows[0];
+    const rawToken = crypto.randomBytes(32).toString("base64url");
+    const tokenHash = crypto
+      .createHash("sha256")
+      .update(rawToken)
+      .digest("hex");
+
+    resetId = crypto.randomUUID();
+
+    const expiresAt = new Date(
+      Date.now() + PASSWORD_RESET_EXPIRY_MS
+    );
+
+    const requestedIP = getRequestIP(req);
+    const userAgent = req.headers["user-agent"] || "";
+
+    // Invalidate earlier unused tokens before issuing a new one.
+    await pool.query(`
+      UPDATE password_reset_tokens
+      SET used_at = NOW()
+      WHERE user_id = $1
+        AND used_at IS NULL
+    `, [user.user_id]);
+
+    await pool.query(`
+      INSERT INTO password_reset_tokens
+      (
+        reset_id,
+        user_id,
+        token_hash,
+        expires_at,
+        used_at,
+        requested_ip,
+        user_agent,
+        created_at
+      )
+      VALUES ($1, $2, $3, $4, NULL, $5, $6, NOW())
+    `, [
+      resetId,
+      user.user_id,
+      tokenHash,
+      expiresAt,
+      requestedIP,
+      userAgent
+    ]);
+
+    const resetURL = new URL(process.env.PASSWORD_RESET_URL);
+    resetURL.hash = `reset_token=${encodeURIComponent(rawToken)}`;
+
+    const transporter = createMailTransporter();
+
+    await transporter.sendMail({
+      from: {
+        name: "Aviation Capital Simulator",
+        address: process.env.SMTP_USER
+      },
+      to: user.email,
+      subject: "ACS PASSWORD RECOVERY",
+      text: [
+        "ACS PASSWORD RECOVERY",
+        "",
+        "We received a request to reset your Aviation Capital Simulator password.",
+        "",
+        "Reset Password:",
+        resetURL.toString(),
+        "",
+        "This link expires in 30 minutes.",
+        "",
+        "If you did not request this change, you can safely ignore this email.",
+        "",
+        "Please do not reply to this email."
+      ].join("\n"),
+      html: `
+        <div style="font-family:Arial,sans-serif;color:#071427;line-height:1.6">
+          <h2 style="color:#c98300">ACS PASSWORD RECOVERY</h2>
+          <p>We received a request to reset your Aviation Capital Simulator password.</p>
+          <p>
+            <a
+              href="${resetURL.toString()}"
+              style="display:inline-block;padding:12px 20px;background:#ffb300;color:#071427;text-decoration:none;font-weight:700;border-radius:6px"
+            >
+              Reset Password
+            </a>
+          </p>
+          <p>This link expires in 30 minutes.</p>
+          <p>If you did not request this change, you can safely ignore this email.</p>
+          <p>Please do not reply to this email.</p>
+        </div>
+      `
+    });
+
+    return res.status(200).json(genericResponse);
+  } catch (err) {
+    console.error("FORGOT PASSWORD ERROR:", err);
+
+    // Do not leave a usable token when email delivery failed.
+    if (resetId) {
+      try {
+        await pool.query(`
+          UPDATE password_reset_tokens
+          SET used_at = NOW()
+          WHERE reset_id = $1
+            AND used_at IS NULL
+        `, [resetId]);
+      } catch (cleanupError) {
+        console.error(
+          "PASSWORD RESET TOKEN CLEANUP ERROR:",
+          cleanupError
+        );
+      }
+    }
+
+    // Never expose account existence or SMTP details.
+    return res.status(200).json(genericResponse);
+  }
+});
+
+/* ============================================================
+   RESET PASSWORD
+   ============================================================ */
+
+router.post("/auth/reset-password", async (req, res) => {
+  const token =
+    typeof req.body?.token === "string"
+      ? req.body.token.trim()
+      : "";
+
+  const newPassword = req.body?.newPassword;
+
+  if (!token || token.length > 200) {
+    return res.status(400).json({
+      ok: false,
+      error: "INVALID_OR_EXPIRED_TOKEN"
+    });
+  }
+
+  if (!isValidNewPassword(newPassword)) {
+    return res.status(400).json({
+      ok: false,
+      error: "PASSWORD_POLICY",
+      message:
+        "Password must contain 12–128 characters, including uppercase, lowercase and a number."
+    });
+  }
+
+  const tokenHash = crypto
+    .createHash("sha256")
+    .update(token)
+    .digest("hex");
+
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const tokenResult = await client.query(`
+      SELECT reset_id, user_id, expires_at, used_at
+      FROM password_reset_tokens
+      WHERE token_hash = $1
+      LIMIT 1
+      FOR UPDATE
+    `, [tokenHash]);
+
+    if (!tokenResult.rows.length) {
+      await client.query("ROLLBACK");
+
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_OR_EXPIRED_TOKEN"
+      });
+    }
+
+    const resetToken = tokenResult.rows[0];
+
+    if (
+      resetToken.used_at ||
+      new Date(resetToken.expires_at).getTime() <= Date.now()
+    ) {
+      await client.query("ROLLBACK");
+
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_OR_EXPIRED_TOKEN"
+      });
+    }
+
+    const passwordHash = await bcrypt.hash(newPassword, 12);
+
+    const updateResult = await client.query(`
+      UPDATE users_auth
+      SET password_hash = $1
+      WHERE user_id = $2
+    `, [passwordHash, resetToken.user_id]);
+
+    if (updateResult.rowCount !== 1) {
+      throw new Error("AUTH_RECORD_NOT_FOUND");
+    }
+
+    // Consume this token and every other outstanding token for the user.
+    await client.query(`
+      UPDATE password_reset_tokens
+      SET used_at = NOW()
+      WHERE user_id = $1
+        AND used_at IS NULL
+    `, [resetToken.user_id]);
+
+    await client.query(`
+      INSERT INTO security_log
+      (user_id, action, ip_address, date)
+      VALUES ($1, $2, $3, NOW())
+    `, [
+      resetToken.user_id,
+      "PASSWORD_RESET_COMPLETED",
+      getRequestIP(req)
+    ]);
+
+    await client.query("COMMIT");
+
+    return res.status(200).json({
+      ok: true,
+      status: "PASSWORD_RESET_COMPLETE"
+    });
+  } catch (err) {
+    await client.query("ROLLBACK");
+
+    console.error("RESET PASSWORD ERROR:", err);
+
+    return res.status(500).json({
+      ok: false,
+      error: "PASSWORD_RESET_ERROR"
+    });
+  } finally {
+    client.release();
+  }
 });
 
 /* ============================================================
