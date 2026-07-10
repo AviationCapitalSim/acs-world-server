@@ -2,7 +2,7 @@ import express from "express";
 import { pool } from "../db/pool.js";
 import crypto from "crypto";
 import bcrypt from "bcrypt";
-
+import nodemailer from "nodemailer";
 
 const router = express.Router();
 
@@ -62,6 +62,7 @@ await pool.query(`
 ]);
      
     // 🔐 HASH PASSWORD (BCRYPT)
+     
     const hashedPassword = await bcrypt.hash(password, 10);
 
     // guardar auth
