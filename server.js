@@ -43,6 +43,7 @@ app.use(helmet({
 }));
 
 // 🚦 GLOBAL RATE LIMIT (protección general)
+
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutos
   max: 300, // máximo 300 requests por IP
@@ -51,12 +52,38 @@ const globalLimiter = rateLimit({
 });
 
 // 🔐 LOGIN RATE LIMIT (anti brute force)
+
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutos
   max: 10, // máximo 10 intentos
   message: {
     status: "RATE_LIMIT",
     message: "Too many login attempts. Try again in 15 minutes."
+
+// Password recovery request limiter.
+// The response remains generic and never confirms account existence.
+
+    const forgotPasswordLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    ok: true,
+    message: "If the account exists, a recovery email has been sent."
+  }
+});
+
+// Reset submission limiter.
+const resetPasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    error: "RATE_LIMIT",
+    message: "Too many reset attempts. Try again later."
   }
 });
 
@@ -130,6 +157,8 @@ app.use("/v1", flightRoutes);
 app.use("/v1", worldRoutes);
 app.use("/v1", systemRoutes);
 app.use("/v1/auth/login", loginLimiter);
+app.use("/v1/auth/forgot-password", forgotPasswordLimiter);
+app.use("/v1/auth/reset-password", resetPasswordLimiter);
 app.use("/v1", authRoutes);
 app.use("/v1", airlineRoutes);
 app.use("/v1", hrRoutes);
