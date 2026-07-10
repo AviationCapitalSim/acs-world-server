@@ -54,16 +54,19 @@ const globalLimiter = rateLimit({
 // 🔐 LOGIN RATE LIMIT (anti brute force)
 
 const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutos
-  max: 10, // máximo 10 intentos
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
   message: {
     status: "RATE_LIMIT",
     message: "Too many login attempts. Try again in 15 minutes."
+  }
+});
 
-// Password recovery request limiter.
-// The response remains generic and never confirms account existence.
+// 🔐 FORGOT PASSWORD RATE LIMIT
 
-    const forgotPasswordLimiter = rateLimit({
+const forgotPasswordLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 5,
   standardHeaders: true,
@@ -74,7 +77,8 @@ const loginLimiter = rateLimit({
   }
 });
 
-// Reset submission limiter.
+// 🔐 RESET PASSWORD RATE LIMIT
+
 const resetPasswordLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
