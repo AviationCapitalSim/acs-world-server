@@ -221,6 +221,7 @@ router.post("/auth/login", async (req, res) => {
       user.airline_id = user.linked_airline_id;
     }
 
+    
     // ============================================================
     // 🔐 CREATE SESSION (NEW CORE)
     // ============================================================
