@@ -1664,23 +1664,54 @@ async function ACS_createRoutePlanOnce(req, res) {
 }
 
 router.post("/routes/plans", requireAuth, async (req, res) => {
-  try {
-    return await ACS_createRoutePlanOnce(req, res);
-  } catch (error) {
-    if (res.headersSent) return;
+  const maxAttempts = 3;
 
-    console.error("ACS ROUTE PLAN CREATE FINAL FAILURE:", {
-      code: error.code || null,
-      message: error.message
-    });
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await ACS_createRoutePlanOnce(req, res);
 
-    return res.status(409).json({
-      ok: false,
-      error: error.code || "ROUTE_CONFIRMATION_FAILED",
-      details: error.message || "Route confirmation failed.",
-      db_code: error.code || null
-    });
+    } catch (error) {
+      if (res.headersSent) {
+        return;
+      }
+
+      const dbCode = String(error.code || "");
+      const retryable = dbCode === "40P01" || dbCode === "40001";
+
+      console.error("ACS ROUTE PLAN CREATE ATTEMPT FAILED:", {
+        attempt,
+        max_attempts: maxAttempts,
+        retryable,
+        code: dbCode || null,
+        message: error.message
+      });
+
+      if (retryable && attempt < maxAttempts) {
+        continue;
+      }
+
+      return res.status(retryable ? 409 : 500).json({
+        ok: false,
+        error:
+          dbCode ||
+          "ROUTE_CONFIRMATION_FAILED",
+        details:
+          error.message ||
+          "Route confirmation failed.",
+        db_code:
+          dbCode || null,
+        attempts:
+          attempt
+      });
+    }
   }
+
+  return res.status(409).json({
+    ok: false,
+    error: "ROUTE_CONFIRMATION_RETRY_EXHAUSTED",
+    details: "Route confirmation retry limit exhausted.",
+    attempts: maxAttempts
+  });
 });
 
 /* ============================================================
