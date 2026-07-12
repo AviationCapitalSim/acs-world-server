@@ -29,6 +29,30 @@ const OPERATION_FILTERS = Object.freeze({
   positioning: "aa.aircraft_positioning_allowed = TRUE"
 });
 
+const ACS_REGION_SQL = `
+  CASE
+    WHEN UPPER(aa.country) IN (
+      'AE',
+      'BH',
+      'IQ',
+      'IR',
+      'IL',
+      'JO',
+      'KW',
+      'LB',
+      'OM',
+      'PS',
+      'QA',
+      'SA',
+      'SY',
+      'TR',
+      'YE'
+    )
+    THEN 'Middle East'
+    ELSE aa.continent
+  END
+`;
+
 /* ============================================================
    HEALTH
    ============================================================ */
@@ -152,12 +176,12 @@ router.get("/airports/catalog", requireAuth, async (req, res) => {
     const values = [];
 
     if (continent) {
-      values.push(continent);
+  values.push(continent);
 
-      where.push(
-        `aa.continent = $${values.length}`
-      );
-    }
+  where.push(
+    `${ACS_REGION_SQL} = $${values.length}`
+  );
+}
 
     if (country) {
       values.push(country);
@@ -228,7 +252,8 @@ router.get("/airports/catalog", requireAuth, async (req, res) => {
         aa.iata,
         aa.city,
         aa.country,
-        aa.continent,
+        aa.continent AS geographic_continent,
+        ${ACS_REGION_SQL} AS continent,
         aa.region,
         aa.latitude,
         aa.longitude,
@@ -421,10 +446,10 @@ router.get("/airports/catalog", requireAuth, async (req, res) => {
       ${whereSql}
 
       ORDER BY
-        aa.continent,
-        aa.country,
-        aa.city,
-        aa.icao
+       ${ACS_REGION_SQL},
+       aa.country,
+       aa.city,
+       aa.icao
 
       LIMIT $${values.length}
       `,
@@ -541,7 +566,8 @@ router.get(
           aa.iata,
           aa.city,
           aa.country,
-          aa.continent,
+          aa.continent AS geographic_continent,
+          ${ACS_REGION_SQL} AS continent,
           aa.region,
           aa.latitude,
           aa.longitude,
