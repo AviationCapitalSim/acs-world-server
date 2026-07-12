@@ -256,51 +256,110 @@ router.post("/airlines/create", requireAuth, async (req, res) => {
 });
 
 /* ============================================================
-   SET BASE (USER)
-============================================================ */
+   SET BASE — POSTGRESQL AIRPORT AUTHORITY
+   ============================================================ */
 
 router.post("/users/set-base", requireAuth, async (req, res) => {
+  const baseIcao = String(
+    req.body?.base_icao || ""
+  )
+    .trim()
+    .toUpperCase();
 
-  const { base_icao } = req.body;
-
-  if (!base_icao) {
+  if (!/^[A-Z0-9]{4}$/.test(baseIcao)) {
     return res.status(400).json({
       ok: false,
-      error: "MISSING_BASE_ICAO"
+      error: "INVALID_BASE_ICAO"
     });
   }
 
-  try {
+  const client = await pool.connect();
 
-    const result = await pool.query(`
-      UPDATE users
+  try {
+    await client.query("BEGIN");
+
+    const airportResult = await client.query(
+      `
+      SELECT
+        icao,
+        iata,
+        city,
+        country,
+        continent,
+        category,
+        availability_basis,
+        commercial_open_year,
+        base_operation_allowed
+      FROM public.v_acs_airport_authority_current
+      WHERE icao = $1
+        AND base_operation_allowed = TRUE
+      LIMIT 1
+      `,
+      [baseIcao]
+    );
+
+    if (!airportResult.rows.length) {
+      await client.query("ROLLBACK");
+
+      return res.status(409).json({
+        ok: false,
+        error: "BASE_AIRPORT_NOT_ALLOWED",
+        base_icao: baseIcao
+      });
+    }
+
+    const userResult = await client.query(
+      `
+      UPDATE public.users
       SET base_icao = $1
       WHERE user_id = $2
-      RETURNING user_id, base_icao
-    `, [base_icao, req.user_id]);
+      RETURNING
+        user_id,
+        base_icao
+      `,
+      [
+        baseIcao,
+        req.user_id
+      ]
+    );
 
-    if (!result.rows.length) {
+    if (!userResult.rows.length) {
+      await client.query("ROLLBACK");
+
       return res.status(404).json({
         ok: false,
         error: "USER_NOT_FOUND"
       });
     }
 
-    res.json({
+    await client.query("COMMIT");
+
+    return res.json({
       ok: true,
-      base_icao: result.rows[0].base_icao
+      authority:
+        "POSTGRESQL_ACS_AIRPORT_AUTHORITY",
+      user_id:
+        userResult.rows[0].user_id,
+      base_icao:
+        userResult.rows[0].base_icao,
+      airport:
+        airportResult.rows[0]
     });
-
   } catch (err) {
+    await client.query("ROLLBACK");
 
-    console.error("SET BASE ERROR:", err);
+    console.error(
+      "SET BASE ERROR:",
+      err
+    );
 
-    res.status(500).json({
+    return res.status(500).json({
       ok: false,
       error: "SET_BASE_FAILED"
     });
+  } finally {
+    client.release();
   }
-
 });
 
 export default router;
