@@ -918,6 +918,33 @@ async function ACS_createRoutePlanOnce(req, res) {
       `,
       [`ACS_ROUTE_PLAN_CREATE|${airlineId}`]
     );
+
+    const financeResult = await client.query(
+  `
+  SELECT
+    airline_id,
+    capital,
+    expenses,
+    cost_slots
+  FROM public.company_finance
+  WHERE airline_id = $1
+  FOR UPDATE
+  `,
+  [airlineId]
+);
+
+if (!financeResult.rows.length) {
+  await client.query("ROLLBACK");
+  transactionStarted = false;
+
+  return res.status(404).json({
+    ok: false,
+    error: "COMPANY_FINANCE_NOT_FOUND"
+  });
+}
+
+const currentCapital =
+  Number(financeResult.rows[0].capital || 0);
      
     const officialTime = await ACS_getOfficialSimTime(client);
 
