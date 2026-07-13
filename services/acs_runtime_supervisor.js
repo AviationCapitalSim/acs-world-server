@@ -33,6 +33,176 @@ export function registerACSRuntimeJobHandler(jobKey, handler) {
   );
 }
 
+async function ACS_runActiveRuntimeJob(jobKey) {
+  const client = await pool.connect();
+
+  let lockAcquired = false;
+  let simTime = null;
+
+  try {
+    const lockResult = await client.query(
+      "SELECT pg_try_advisory_lock($1, hashtext($2)) AS locked",
+      [ACS_RUNTIME_LOCK_NAMESPACE, jobKey]
+    );
+
+    lockAcquired =
+      lockResult.rows[0]?.locked === true;
+
+    if (!lockAcquired) return;
+
+    const claimResult = await client.query(
+      `
+      UPDATE public.acs_runtime_jobs
+      SET
+        last_started_sim_time =
+          acs_get_current_sim_time(),
+        last_started_real_at =
+          CURRENT_TIMESTAMP,
+        last_status = 'RUNNING',
+        last_processed_count = 0,
+        last_error_code = NULL,
+        last_error_detail = NULL,
+        run_count = run_count + 1,
+        row_version = row_version + 1,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE job_key = $1
+        AND enabled = TRUE
+        AND execution_mode = 'ACTIVE'
+        AND (
+          last_started_real_at IS NULL
+          OR last_started_real_at
+             + interval_seconds * INTERVAL '1 second'
+             <= CURRENT_TIMESTAMP
+        )
+      RETURNING
+        *,
+        acs_get_current_sim_time()
+          AS current_sim_time
+      `,
+      [jobKey]
+    );
+
+    if (!claimResult.rows.length) return;
+
+    const job = claimResult.rows[0];
+    simTime = job.current_sim_time;
+
+    const handler =
+      ACS_RUNTIME_HANDLERS.get(jobKey);
+
+    if (!handler) {
+      const error = new Error(
+        "RUNTIME_HANDLER_NOT_REGISTERED"
+      );
+
+      error.code =
+        "RUNTIME_HANDLER_NOT_REGISTERED";
+
+      throw error;
+    }
+
+    const result = await handler({
+      job,
+      simTime,
+      pool
+    });
+
+    const rawProcessedCount = Number(
+      result?.processedCount || 0
+    );
+
+    const processedCount =
+      Number.isSafeInteger(rawProcessedCount) &&
+      rawProcessedCount >= 0
+        ? rawProcessedCount
+        : 0;
+
+    await client.query(
+      `
+      UPDATE public.acs_runtime_jobs
+      SET
+        last_cursor_sim_time = $2,
+        last_completed_sim_time = $2,
+        last_completed_real_at =
+          CURRENT_TIMESTAMP,
+        last_success_real_at =
+          CURRENT_TIMESTAMP,
+        last_status = 'SUCCESS',
+        last_processed_count = $3,
+        success_count = success_count + 1,
+        row_version = row_version + 1,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE job_key = $1
+      `,
+      [
+        jobKey,
+        simTime,
+        processedCount
+      ]
+    );
+  } catch (error) {
+    const errorCode = String(
+      error?.code ||
+      error?.message ||
+      "RUNTIME_JOB_FAILED"
+    ).slice(0, 120);
+
+    try {
+      await client.query(
+        `
+        UPDATE public.acs_runtime_jobs
+        SET
+          last_completed_sim_time =
+            COALESCE(
+              $2::timestamp,
+              acs_get_current_sim_time()
+            ),
+          last_completed_real_at =
+            CURRENT_TIMESTAMP,
+          last_status = 'FAILED',
+          last_processed_count = 0,
+          last_error_code = $3,
+          last_error_detail = $4,
+          failure_count = failure_count + 1,
+          row_version = row_version + 1,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE job_key = $1
+        `,
+        [
+          jobKey,
+          simTime,
+          errorCode,
+          ACS_runtimeErrorText(error)
+        ]
+      );
+    } catch (statusError) {
+      console.error(
+        "[ACS RUNTIME] Failed to publish job error:",
+        statusError
+      );
+    }
+
+    console.error(
+      `[ACS RUNTIME] ${jobKey} failed:`,
+      error
+    );
+  } finally {
+    if (lockAcquired) {
+      try {
+        await client.query(
+          "SELECT pg_advisory_unlock($1, hashtext($2))",
+          [
+            ACS_RUNTIME_LOCK_NAMESPACE,
+            jobKey
+          ]
+        );
+      } catch (_) {}
+    }
+
+    client.release();
+  }
+}
+
 async function ACS_executeRuntimePoll() {
   if (ACS_runtimePollRunning) return;
 
