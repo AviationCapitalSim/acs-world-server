@@ -1871,25 +1871,160 @@ export async function ACS_runCDMaintenanceResolverForAirline(
           COALESCE(ae.b_in_progress, FALSE) AS b_in_progress,
           COALESCE(ae.a_in_progress, FALSE) AS a_in_progress,
 
-          CASE
-            WHEN COALESCE(ae.d_in_progress, FALSE)
-              THEN FALSE
-            WHEN ams.d_check_due_date IS NOT NULL
-             AND ams.d_check_due_date <= acs_get_current_sim_time()
-              THEN TRUE
-            ELSE FALSE
-          END AS d_overdue,
+     CASE
+  WHEN COALESCE(ae.d_in_progress, FALSE)
+    THEN FALSE
 
-          CASE
-            WHEN COALESCE(ae.d_in_progress, FALSE)
-              THEN FALSE
-            WHEN COALESCE(ae.c_in_progress, FALSE)
-              THEN FALSE
-            WHEN ams.c_check_due_date IS NOT NULL
-             AND ams.c_check_due_date <= acs_get_current_sim_time()
-              THEN TRUE
-            ELSE FALSE
-          END AS c_overdue
+  WHEN ams.d_check_due_date IS NOT NULL
+   AND ams.d_check_due_date <= acs_get_current_sim_time()
+
+   AND acs_get_current_sim_time() >= GREATEST(
+     ams.d_check_due_date,
+
+     COALESCE(
+       (
+         SELECT MAX(day_rotation.rotation_end_at)
+
+         FROM (
+           SELECT
+             COALESCE(
+               return_leg.scheduled_arrival_at,
+               outbound.scheduled_arrival_at
+             ) AS rotation_end_at
+
+           FROM public.flight_occurrences outbound
+
+           LEFT JOIN LATERAL (
+             SELECT
+               return_occurrence.scheduled_arrival_at
+
+             FROM public.flight_occurrences
+               AS return_occurrence
+
+             WHERE return_occurrence.airline_id =
+                     outbound.airline_id
+               AND return_occurrence.aircraft_id =
+                     outbound.aircraft_id
+               AND return_occurrence.schedule_item_id =
+                     outbound.schedule_item_id
+               AND return_occurrence.flight_direction =
+                     'RETURN'
+               AND return_occurrence.scheduled_departure_at >=
+                     outbound.scheduled_arrival_at
+               AND return_occurrence.scheduled_departure_at <
+                     outbound.scheduled_departure_at
+                     + INTERVAL '2 days'
+               AND return_occurrence.operational_status <>
+                     'CANCELLED'
+
+             ORDER BY
+               return_occurrence.scheduled_departure_at
+
+             LIMIT 1
+           ) return_leg ON TRUE
+
+           WHERE outbound.airline_id = ams.airline_id
+             AND outbound.aircraft_id = ams.aircraft_id
+             AND outbound.flight_direction = 'OUTBOUND'
+             AND outbound.operational_status <> 'CANCELLED'
+             AND outbound.scheduled_departure_at >=
+                   date_trunc(
+                     'day',
+                     ams.d_check_due_date
+                   )
+             AND outbound.scheduled_departure_at <
+                   date_trunc(
+                     'day',
+                     ams.d_check_due_date
+                   ) + INTERVAL '1 day'
+         ) day_rotation
+       ),
+       ams.d_check_due_date
+     )
+   )
+    THEN TRUE
+
+  ELSE FALSE
+END AS d_overdue,
+
+CASE
+  WHEN COALESCE(ae.d_in_progress, FALSE)
+    THEN FALSE
+
+  WHEN COALESCE(ae.c_in_progress, FALSE)
+    THEN FALSE
+
+  WHEN ams.c_check_due_date IS NOT NULL
+   AND ams.c_check_due_date <= acs_get_current_sim_time()
+
+   AND acs_get_current_sim_time() >= GREATEST(
+     ams.c_check_due_date,
+
+     COALESCE(
+       (
+         SELECT MAX(day_rotation.rotation_end_at)
+
+         FROM (
+           SELECT
+             COALESCE(
+               return_leg.scheduled_arrival_at,
+               outbound.scheduled_arrival_at
+             ) AS rotation_end_at
+
+           FROM public.flight_occurrences outbound
+
+           LEFT JOIN LATERAL (
+             SELECT
+               return_occurrence.scheduled_arrival_at
+
+             FROM public.flight_occurrences
+               AS return_occurrence
+
+             WHERE return_occurrence.airline_id =
+                     outbound.airline_id
+               AND return_occurrence.aircraft_id =
+                     outbound.aircraft_id
+               AND return_occurrence.schedule_item_id =
+                     outbound.schedule_item_id
+               AND return_occurrence.flight_direction =
+                     'RETURN'
+               AND return_occurrence.scheduled_departure_at >=
+                     outbound.scheduled_arrival_at
+               AND return_occurrence.scheduled_departure_at <
+                     outbound.scheduled_departure_at
+                     + INTERVAL '2 days'
+               AND return_occurrence.operational_status <>
+                     'CANCELLED'
+
+             ORDER BY
+               return_occurrence.scheduled_departure_at
+
+             LIMIT 1
+           ) return_leg ON TRUE
+
+           WHERE outbound.airline_id = ams.airline_id
+             AND outbound.aircraft_id = ams.aircraft_id
+             AND outbound.flight_direction = 'OUTBOUND'
+             AND outbound.operational_status <> 'CANCELLED'
+             AND outbound.scheduled_departure_at >=
+                   date_trunc(
+                     'day',
+                     ams.c_check_due_date
+                   )
+             AND outbound.scheduled_departure_at <
+                   date_trunc(
+                     'day',
+                     ams.c_check_due_date
+                   ) + INTERVAL '1 day'
+         ) day_rotation
+       ),
+       ams.c_check_due_date
+     )
+   )
+    THEN TRUE
+
+  ELSE FALSE
+END AS c_overdue
 
         FROM public.aircraft_maintenance_status ams
 
