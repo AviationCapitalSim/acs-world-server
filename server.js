@@ -21,7 +21,9 @@ import scheduleRoutes, {
   ACS_runMaintenanceResolver,
   stopMaintenanceScheduler
 } from "./routes/schedule.js";
-import aircraftRoutes from "./routes/aircraft.js";
+import aircraftRoutes, {
+  ACS_runCDMaintenanceResolver
+} from "./routes/aircraft.js";
 import factoryRoutes from "./routes/factory.js";
 import routePlanRoutes from "./routes/route_plans.js";
 import airportsRoutes from "./routes/airports.js";
@@ -70,6 +72,42 @@ registerACSRuntimeJobHandler(
         ) +
         Number(
           result?.phase0_normalized_count || 0
+        )
+    };
+  }
+);
+
+registerACSRuntimeJobHandler(
+  "MAINTENANCE_CD",
+  async () => {
+    const result =
+      await ACS_runCDMaintenanceResolver({
+        allAirlines: true
+      });
+
+    if (
+      Number(result?.error_count || 0) > 0
+    ) {
+      const error = new Error(
+        "MAINTENANCE_CD_PARTIAL_FAILURE"
+      );
+
+      error.code =
+        "MAINTENANCE_CD_PARTIAL_FAILURE";
+
+      throw error;
+    }
+
+    return {
+      processedCount:
+        Number(
+          result?.completed_count || 0
+        ) +
+        Number(
+          result?.cd_sync_count || 0
+        ) +
+        Number(
+          result?.fleet_sync_count || 0
         )
     };
   }
