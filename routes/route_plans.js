@@ -1153,10 +1153,7 @@ const currentCapital =
       maintenanceStatus === "SERVICEABLE"
       || maintenanceControlStatus === "SERVICEABLE";
 
-     if (
-       aircraftStatus !== "ACTIVE"
-       || !serviceable
-      ) {
+     if (aircraftStatus !== "ACTIVE") {
        
       await client.query("ROLLBACK");
       transactionStarted = false;
