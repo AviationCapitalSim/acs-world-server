@@ -395,21 +395,3 @@ export async function ACS_generateFlightOccurrences({
     client.release();
   }
 }
-
-registerACSRuntimeJobHandler(
-  "FLIGHT_OCCURRENCES",
-  async ({ job }) => {
-    const result =
-      await ACS_generateFlightOccurrences({
-        horizonSimDays:
-          job?.config?.horizon_sim_days || 8
-      });
-
-    return {
-      processedCount:
-        Number(
-          result?.processedCount || 0
-        )
-    };
-  }
-);
