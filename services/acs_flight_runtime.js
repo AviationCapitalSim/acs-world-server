@@ -344,6 +344,384 @@ async function ACS_materializeFlightOccurrences(
   return result.rowCount;
 }
 
+export async function ACS_dispatchFlightOccurrences({
+  batchSize = 500
+} = {}) {
+  const client = await pool.connect();
+
+  const normalizedBatchSize = Math.min(
+    2000,
+    Math.max(
+      1,
+      Number.parseInt(batchSize, 10) || 500
+    )
+  );
+
+  let transactionStarted = false;
+
+  try {
+    await client.query("BEGIN");
+    transactionStarted = true;
+
+    const result = await client.query(
+      `
+      WITH clock AS MATERIALIZED (
+        SELECT acs_get_current_sim_time() AS sim_time
+      ),
+
+      due_occurrences AS MATERIALIZED (
+        SELECT
+          occurrence.id,
+          occurrence.aircraft_id,
+          occurrence.airline_id,
+          occurrence.scheduled_departure_at,
+          occurrence.scheduled_arrival_at,
+          clock.sim_time,
+
+          maintenance_status.a_check_status,
+          maintenance_status.b_check_status,
+          maintenance_status.c_check_status,
+          maintenance_status.d_check_status,
+          maintenance_status.maintenance_control_status,
+          maintenance_status.maintenance_control_reason,
+
+          blocking_event.id AS maintenance_event_id,
+          blocking_event.event_uid AS maintenance_event_uid,
+          blocking_event.check_type AS maintenance_check_type,
+          blocking_event.maintenance_start_at,
+          blocking_event.maintenance_end_at
+
+        FROM public.flight_occurrences occurrence
+
+        CROSS JOIN clock
+
+        LEFT JOIN public.aircraft_maintenance_status
+          AS maintenance_status
+          ON maintenance_status.aircraft_id =
+             occurrence.aircraft_id
+         AND maintenance_status.airline_id =
+             occurrence.airline_id
+
+        LEFT JOIN LATERAL (
+          SELECT
+            event.id,
+            event.event_uid,
+            event.check_type,
+
+            CASE
+              WHEN event.event_status = 'IN_PROGRESS'
+                THEN COALESCE(
+                  event.started_at,
+                  event.scheduled_start_at
+                )
+              ELSE COALESCE(
+                event.scheduled_start_at,
+                event.started_at
+              )
+            END AS maintenance_start_at,
+
+            CASE
+              WHEN event.event_status = 'IN_PROGRESS'
+                THEN COALESCE(
+                  event.expected_completion_at,
+                  event.scheduled_end_at
+                )
+              ELSE COALESCE(
+                event.scheduled_end_at,
+                event.expected_completion_at
+              )
+            END AS maintenance_end_at
+
+          FROM public.aircraft_maintenance_events event
+
+          WHERE event.aircraft_id =
+                occurrence.aircraft_id
+            AND event.airline_id =
+                occurrence.airline_id
+            AND event.event_status IN (
+              'SCHEDULED',
+              'IN_PROGRESS'
+            )
+
+            AND occurrence.scheduled_departure_at <
+              CASE
+                WHEN event.event_status = 'IN_PROGRESS'
+                  THEN COALESCE(
+                    event.expected_completion_at,
+                    event.scheduled_end_at
+                  )
+                ELSE COALESCE(
+                  event.scheduled_end_at,
+                  event.expected_completion_at
+                )
+              END
+
+            AND occurrence.scheduled_arrival_at >
+              CASE
+                WHEN event.event_status = 'IN_PROGRESS'
+                  THEN COALESCE(
+                    event.started_at,
+                    event.scheduled_start_at
+                  )
+                ELSE COALESCE(
+                  event.scheduled_start_at,
+                  event.started_at
+                )
+              END
+
+          ORDER BY
+            maintenance_start_at,
+            CASE event.check_type
+              WHEN 'D_CHECK' THEN 1
+              WHEN 'C_CHECK' THEN 2
+              WHEN 'B_CHECK' THEN 3
+              WHEN 'A_CHECK' THEN 4
+              ELSE 5
+            END,
+            event.id
+
+          LIMIT 1
+        ) AS blocking_event ON TRUE
+
+        WHERE occurrence.operational_status = 'PLANNED'
+          AND occurrence.dispatch_status = 'PENDING'
+          AND occurrence.scheduled_departure_at <=
+              clock.sim_time
+
+        ORDER BY
+          occurrence.scheduled_departure_at,
+          occurrence.id
+
+        LIMIT $1
+
+        FOR UPDATE OF occurrence SKIP LOCKED
+      ),
+
+      classified AS MATERIALIZED (
+        SELECT
+          due.*,
+
+          (
+            due.maintenance_event_id IS NOT NULL
+
+            OR UPPER(
+              COALESCE(due.a_check_status, '')
+            ) = 'OVERDUE'
+
+            OR UPPER(
+              COALESCE(due.b_check_status, '')
+            ) = 'OVERDUE'
+
+            OR UPPER(
+              COALESCE(due.c_check_status, '')
+            ) = 'OVERDUE'
+
+            OR UPPER(
+              COALESCE(due.d_check_status, '')
+            ) = 'OVERDUE'
+
+            OR UPPER(
+              COALESCE(
+                due.maintenance_control_status,
+                ''
+              )
+            ) IN (
+              'MAINTENANCE_REQUIRED',
+              'UNSERVICEABLE'
+            )
+          ) AS is_blocked,
+
+          CASE
+            WHEN due.maintenance_event_id IS NOT NULL
+              THEN 'MAINTENANCE_WINDOW_OVERLAP'
+
+            WHEN UPPER(
+              COALESCE(due.d_check_status, '')
+            ) = 'OVERDUE'
+              THEN 'D_CHECK_OVERDUE'
+
+            WHEN UPPER(
+              COALESCE(due.c_check_status, '')
+            ) = 'OVERDUE'
+              THEN 'C_CHECK_OVERDUE'
+
+            WHEN UPPER(
+              COALESCE(due.b_check_status, '')
+            ) = 'OVERDUE'
+              THEN 'B_CHECK_OVERDUE'
+
+            WHEN UPPER(
+              COALESCE(due.a_check_status, '')
+            ) = 'OVERDUE'
+              THEN 'A_CHECK_OVERDUE'
+
+            WHEN UPPER(
+              COALESCE(
+                due.maintenance_control_status,
+                ''
+              )
+            ) = 'UNSERVICEABLE'
+              THEN COALESCE(
+                NULLIF(
+                  due.maintenance_control_reason,
+                  ''
+                ),
+                'AIRCRAFT_UNSERVICEABLE'
+              )
+
+            WHEN UPPER(
+              COALESCE(
+                due.maintenance_control_status,
+                ''
+              )
+            ) = 'MAINTENANCE_REQUIRED'
+              THEN COALESCE(
+                NULLIF(
+                  due.maintenance_control_reason,
+                  ''
+                ),
+                'MAINTENANCE_REQUIRED'
+              )
+
+            ELSE NULL
+          END AS final_dispatch_reason
+
+        FROM due_occurrences due
+      )
+
+      UPDATE public.flight_occurrences occurrence
+
+      SET
+        operational_status = CASE
+          WHEN classified.is_blocked
+            THEN 'HELD'
+          ELSE 'DISPATCHED'
+        END,
+
+        dispatch_status = CASE
+          WHEN classified.is_blocked
+            THEN 'NOT_DISPATCHED'
+          ELSE 'RELEASED'
+        END,
+
+        dispatch_reason =
+          classified.final_dispatch_reason,
+
+        blocking_maintenance_event_id = CASE
+          WHEN classified.is_blocked
+            THEN classified.maintenance_event_id
+          ELSE NULL
+        END,
+
+        blocking_maintenance_event_uid = CASE
+          WHEN classified.is_blocked
+            THEN classified.maintenance_event_uid
+          ELSE NULL
+        END,
+
+        blocking_maintenance_check_type = CASE
+          WHEN classified.is_blocked
+            THEN COALESCE(
+              classified.maintenance_check_type,
+              CASE
+                WHEN UPPER(
+                  COALESCE(
+                    classified.d_check_status,
+                    ''
+                  )
+                ) = 'OVERDUE'
+                  THEN 'D_CHECK'
+                WHEN UPPER(
+                  COALESCE(
+                    classified.c_check_status,
+                    ''
+                  )
+                ) = 'OVERDUE'
+                  THEN 'C_CHECK'
+                WHEN UPPER(
+                  COALESCE(
+                    classified.b_check_status,
+                    ''
+                  )
+                ) = 'OVERDUE'
+                  THEN 'B_CHECK'
+                WHEN UPPER(
+                  COALESCE(
+                    classified.a_check_status,
+                    ''
+                  )
+                ) = 'OVERDUE'
+                  THEN 'A_CHECK'
+                ELSE NULL
+              END
+            )
+          ELSE NULL
+        END,
+
+        blocking_maintenance_start_at = CASE
+          WHEN classified.is_blocked
+            THEN classified.maintenance_start_at
+          ELSE NULL
+        END,
+
+        blocking_maintenance_end_at = CASE
+          WHEN classified.is_blocked
+            THEN classified.maintenance_end_at
+          ELSE NULL
+        END,
+
+        held_at = CASE
+          WHEN classified.is_blocked
+            THEN classified.sim_time
+          ELSE NULL
+        END,
+
+        dispatched_at = CASE
+          WHEN classified.is_blocked
+            THEN NULL
+          ELSE classified.sim_time
+        END,
+
+        updated_at = CURRENT_TIMESTAMP
+
+      FROM classified
+
+      WHERE occurrence.id = classified.id
+
+      RETURNING occurrence.dispatch_status
+      `,
+      [normalizedBatchSize]
+    );
+
+    await client.query("COMMIT");
+    transactionStarted = false;
+
+    const heldCount = result.rows.filter(
+      row => row.dispatch_status === "NOT_DISPATCHED"
+    ).length;
+
+    const releasedCount = result.rows.filter(
+      row => row.dispatch_status === "RELEASED"
+    ).length;
+
+    return {
+      processedCount: result.rowCount,
+      heldCount,
+      releasedCount
+    };
+  } catch (error) {
+    if (transactionStarted) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (_) {}
+    }
+
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function ACS_generateFlightOccurrences({
   horizonSimDays = 8
 } = {}) {
