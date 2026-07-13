@@ -533,7 +533,7 @@ export async function ACS_dispatchFlightOccurrences({
 
           CASE
             WHEN due.maintenance_event_id IS NOT NULL
-              THEN 'MAINTENANCE_WINDOW_OVERLAP'
+            THEN due.maintenance_check_type
 
             WHEN UPPER(
               COALESCE(due.d_check_status, '')
