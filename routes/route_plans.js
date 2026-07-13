@@ -1153,11 +1153,11 @@ const currentCapital =
       maintenanceStatus === "SERVICEABLE"
       || maintenanceControlStatus === "SERVICEABLE";
 
-    if (
-      aircraftStatus !== "ACTIVE"
-      || operationalStatus !== "AVAILABLE"
-      || !serviceable
-    ) {
+     if (
+       aircraftStatus !== "ACTIVE"
+       || !serviceable
+      ) {
+       
       await client.query("ROLLBACK");
       transactionStarted = false;
 
@@ -1175,7 +1175,6 @@ const currentCapital =
         }
       });
     }
-
 
     const aircraftRangeNm = Math.round(
     Number(
@@ -1221,6 +1220,143 @@ const currentCapital =
         }
       });
     }
+
+    /* ============================================================
+   AIRCRAFT SCHEDULE CONFLICT AUTHORITY
+   ============================================================ */
+
+const proposedIntervals =
+  ACS_buildWeeklyRotationIntervals({
+    selectedDays,
+    departure,
+    blockTimeMin,
+    turnaroundMin
+  });
+
+if (!proposedIntervals.length) {
+  await client.query("ROLLBACK");
+  transactionStarted = false;
+
+  return res.status(400).json({
+    ok: false,
+    error: "INVALID_PROPOSED_ROTATION"
+  });
+}
+
+/*
+  Also prevent the new route from overlapping itself.
+  This matters when a long rotation crosses into the next
+  selected operating day.
+*/
+
+const internalConflict =
+  ACS_findInternalRotationConflict(proposedIntervals);
+
+if (internalConflict) {
+  await client.query("ROLLBACK");
+  transactionStarted = false;
+
+  return res.status(409).json({
+    ok: false,
+    error: "AIRCRAFT_SCHEDULE_CONFLICT",
+    conflict_type: "PROPOSED_ROUTE_INTERNAL_OVERLAP",
+    aircraft: {
+      id: aircraft.id,
+      registration: aircraft.registration
+    },
+    proposed_rotation: internalConflict
+  });
+}
+
+const existingRoutesResult = await client.query(
+  `
+  SELECT
+    id,
+    route_uid,
+    origin,
+    destination,
+    selected_days,
+    departure,
+    block_time_min,
+    turnaround_min,
+    flight_number_out,
+    flight_number_in,
+    route_state
+  FROM public.route_plans
+  WHERE airline_id = $1
+    AND aircraft_id = $2
+    AND UPPER(COALESCE(route_state, 'ACTIVE')) = 'ACTIVE'
+  ORDER BY id
+  FOR UPDATE
+  `,
+  [
+    airlineId,
+    aircraftId
+  ]
+);
+
+let scheduleConflict = null;
+
+for (const existingRoute of existingRoutesResult.rows) {
+  const existingIntervals =
+    ACS_buildWeeklyRotationIntervals({
+      selectedDays: existingRoute.selected_days,
+      departure: existingRoute.departure,
+      blockTimeMin: existingRoute.block_time_min,
+      turnaroundMin: existingRoute.turnaround_min
+    });
+
+  for (const proposedInterval of proposedIntervals) {
+    for (const existingInterval of existingIntervals) {
+      if (
+        ACS_weeklyIntervalsOverlap(
+          proposedInterval,
+          existingInterval
+        )
+      ) {
+        scheduleConflict = {
+          route_plan_id: Number(existingRoute.id),
+          route_uid: existingRoute.route_uid,
+          origin: existingRoute.origin,
+          destination: existingRoute.destination,
+          flight_number_out:
+            existingRoute.flight_number_out,
+          flight_number_in:
+            existingRoute.flight_number_in,
+          existing_rotation: existingInterval,
+          proposed_rotation: proposedInterval
+        };
+
+        break;
+      }
+    }
+
+    if (scheduleConflict) {
+      break;
+    }
+  }
+
+  if (scheduleConflict) {
+    break;
+  }
+}
+
+if (scheduleConflict) {
+  await client.query("ROLLBACK");
+  transactionStarted = false;
+
+  return res.status(409).json({
+    ok: false,
+    error: "AIRCRAFT_SCHEDULE_CONFLICT",
+    aircraft: {
+      id: aircraft.id,
+      registration: aircraft.registration,
+      operational_status:
+        aircraft.operational_status
+    },
+    conflict: scheduleConflict
+  });
+}
 
     const slotMovements = ACS_sortSlotMovementsForLocking(
   ACS_buildSlotMovements({
