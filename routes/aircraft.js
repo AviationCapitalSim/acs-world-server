@@ -2305,6 +2305,147 @@ router.post(
   }
 );
 
+export async function ACS_runCDMaintenanceResolver({
+  allAirlines = false,
+  airlineId = null
+} = {}) {
+  if (!allAirlines) {
+    const scopedAirlineId =
+      Number(airlineId);
+
+    if (
+      !Number.isInteger(scopedAirlineId) ||
+      scopedAirlineId <= 0
+    ) {
+      const error = new Error(
+        "CD_MAINTENANCE_RESOLVER_SCOPE_REQUIRED"
+      );
+
+      error.code =
+        "CD_MAINTENANCE_RESOLVER_SCOPE_REQUIRED";
+
+      throw error;
+    }
+
+    return ACS_runCDMaintenanceResolverForAirline(
+      scopedAirlineId
+    );
+  }
+
+  const airlinesResult = await pool.query(
+    `
+    WITH candidate_airlines AS (
+      SELECT ams.airline_id
+      FROM public.aircraft_maintenance_status ams
+      WHERE ams.airline_id IS NOT NULL
+        AND (
+          (
+            ams.d_check_due_date IS NOT NULL
+            AND ams.d_check_due_date
+                <= acs_get_current_sim_time()
+          )
+          OR (
+            ams.c_check_due_date IS NOT NULL
+            AND ams.c_check_due_date
+                <= acs_get_current_sim_time()
+          )
+          OR UPPER(
+            COALESCE(
+              ams.d_check_status,
+              ''
+            )
+          ) IN (
+            'OVERDUE',
+            'IN_PROGRESS'
+          )
+          OR UPPER(
+            COALESCE(
+              ams.c_check_status,
+              ''
+            )
+          ) IN (
+            'OVERDUE',
+            'IN_PROGRESS'
+          )
+        )
+
+      UNION
+
+      SELECT ame.airline_id
+      FROM public.aircraft_maintenance_events ame
+      WHERE ame.airline_id IS NOT NULL
+        AND ame.event_status = 'IN_PROGRESS'
+        AND ame.check_type IN (
+          'C_CHECK',
+          'D_CHECK'
+        )
+    )
+    SELECT DISTINCT airline_id
+    FROM candidate_airlines
+    ORDER BY airline_id
+    `
+  );
+
+  const errors = [];
+
+  let completedCount = 0;
+  let cdSyncCount = 0;
+  let fleetSyncCount = 0;
+
+  for (const row of airlinesResult.rows) {
+    const currentAirlineId =
+      Number(row.airline_id);
+
+    if (
+      !Number.isInteger(currentAirlineId) ||
+      currentAirlineId <= 0
+    ) {
+      continue;
+    }
+
+    try {
+      const result =
+        await ACS_runCDMaintenanceResolverForAirline(
+          currentAirlineId
+        );
+
+      completedCount += Number(
+        result?.completed_count || 0
+      );
+
+      cdSyncCount += Number(
+        result?.cd_sync_count || 0
+      );
+
+      fleetSyncCount += Number(
+        result?.fleet_sync_count || 0
+      );
+    } catch (error) {
+      errors.push({
+        airline_id: currentAirlineId,
+        error:
+          error?.code ||
+          error?.message ||
+          "CD_RESOLVER_FAILED"
+      });
+    }
+  }
+
+  return {
+    ok: errors.length === 0,
+    endpoint:
+      "ACS_GLOBAL_CD_MAINTENANCE_RESOLVER",
+    all_airlines: true,
+    airline_count:
+      airlinesResult.rows.length,
+    completed_count: completedCount,
+    cd_sync_count: cdSyncCount,
+    fleet_sync_count: fleetSyncCount,
+    error_count: errors.length,
+    errors
+  };
+}
+
 /* ============================================================
    🟦 ACS-RA-BE2 — AUTO ASSIGN AIRCRAFT REGISTRATION
    ------------------------------------------------------------
