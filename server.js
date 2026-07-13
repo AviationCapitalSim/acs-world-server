@@ -39,6 +39,9 @@ import {
   startACSRuntimeSupervisor,
   stopACSRuntimeSupervisor
 } from "./services/acs_runtime_supervisor.js";
+import {
+  ACS_generateFlightOccurrences
+} from "./services/acs_flight_runtime.js";
 
 
 dotenv.config();
@@ -109,6 +112,19 @@ registerACSRuntimeJobHandler(
         Number(
           result?.fleet_sync_count || 0
         )
+    };
+  }
+);
+
+registerACSRuntimeJobHandler(
+  "FLIGHT_OCCURRENCES",
+  async ({ job }) => {
+    const result = await ACS_generateFlightOccurrences({
+      horizonSimDays: job?.config?.horizon_sim_days || 8
+    });
+
+    return {
+      processedCount: Number(result?.processedCount || 0)
     };
   }
 );
