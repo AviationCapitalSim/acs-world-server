@@ -210,6 +210,127 @@ function ACS_sortSlotMovementsForLocking(movements) {
 }
 
 /* ============================================================
+   ACS AIRCRAFT WEEKLY ROTATION AUTHORITY
+   ------------------------------------------------------------
+   An aircraft may operate multiple routes when their complete
+   rotations do not overlap.
+
+   Occupied time:
+   OUT flight + turnaround + IN flight + final turnaround.
+   ============================================================ */
+
+const ACS_WEEK_MINUTES = 7 * 1440;
+
+function ACS_parseSelectedDays(value) {
+  if (Array.isArray(value)) {
+    return [...new Set(
+      value
+        .map(ACS_normalizeWeekday)
+        .filter(day => ACS_WEEKDAYS.includes(day))
+    )];
+  }
+
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+
+      if (Array.isArray(parsed)) {
+        return ACS_parseSelectedDays(parsed);
+      }
+    } catch {
+      return [...new Set(
+        value
+          .split(",")
+          .map(ACS_normalizeWeekday)
+          .filter(day => ACS_WEEKDAYS.includes(day))
+      )];
+    }
+  }
+
+  return [];
+}
+
+function ACS_buildWeeklyRotationIntervals({
+  selectedDays,
+  departure,
+  blockTimeMin,
+  turnaroundMin
+}) {
+  const durationMin =
+    (Number(blockTimeMin || 0) * 2)
+    + (Number(turnaroundMin || 0) * 2);
+
+  if (
+    !ACS_isValidHHMM(departure)
+    || !Number.isFinite(durationMin)
+    || durationMin <= 0
+  ) {
+    return [];
+  }
+
+  return ACS_parseSelectedDays(selectedDays).map(day => ({
+    day,
+    departure,
+    start_abs_min:
+      (ACS_dayIndex(day) * 1440)
+      + ACS_minutesFromHHMM(departure),
+    duration_min: durationMin
+  }));
+}
+
+function ACS_weeklyIntervalsOverlap(left, right) {
+  for (const weekShift of [
+    -ACS_WEEK_MINUTES,
+    0,
+    ACS_WEEK_MINUTES
+  ]) {
+    const rightStart =
+      Number(right.start_abs_min) + weekShift;
+
+    const leftEnd =
+      Number(left.start_abs_min)
+      + Number(left.duration_min);
+
+    const rightEnd =
+      rightStart
+      + Number(right.duration_min);
+
+    if (
+      Number(left.start_abs_min) < rightEnd
+      && rightStart < leftEnd
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function ACS_findInternalRotationConflict(intervals) {
+  for (let leftIndex = 0; leftIndex < intervals.length; leftIndex += 1) {
+    for (
+      let rightIndex = leftIndex + 1;
+      rightIndex < intervals.length;
+      rightIndex += 1
+    ) {
+      if (
+        ACS_weeklyIntervalsOverlap(
+          intervals[leftIndex],
+          intervals[rightIndex]
+        )
+      ) {
+        return {
+          left: intervals[leftIndex],
+          right: intervals[rightIndex]
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
+/* ============================================================
    POSTGRESQL WORLD TIME AUTHORITY
    ============================================================ */
 
