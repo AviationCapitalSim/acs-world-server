@@ -462,7 +462,7 @@ router.get("/snapshot", requireAuth, async (req, res) => {
     return res.json({
       ok: true,
       authority:
-        "POSTGRESQL_FLIGHT_OCCURRENCES",
+      "POSTGRESQL_SKYTRACK_SNAPSHOT_CANONICAL",
       airline_id: airlineId,
       current_sim_time:
         simRow.current_sim_time,
