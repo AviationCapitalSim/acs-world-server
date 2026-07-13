@@ -40,7 +40,8 @@ import {
   stopACSRuntimeSupervisor
 } from "./services/acs_runtime_supervisor.js";
 import {
-  ACS_generateFlightOccurrences
+  ACS_generateFlightOccurrences,
+  ACS_dispatchFlightOccurrences
 } from "./services/acs_flight_runtime.js";
 
 
@@ -121,6 +122,19 @@ registerACSRuntimeJobHandler(
   async ({ job }) => {
     const result = await ACS_generateFlightOccurrences({
       horizonSimDays: job?.config?.horizon_sim_days || 8
+    });
+
+    return {
+      processedCount: Number(result?.processedCount || 0)
+    };
+  }
+);
+
+registerACSRuntimeJobHandler(
+  "FLIGHT_DISPATCH",
+  async ({ job }) => {
+    const result = await ACS_dispatchFlightOccurrences({
+      batchSize: job?.config?.batch_size || 500
     });
 
     return {
