@@ -1153,7 +1153,15 @@ const currentCapital =
       maintenanceStatus === "SERVICEABLE"
       || maintenanceControlStatus === "SERVICEABLE";
 
-     if (aircraftStatus !== "ACTIVE") {
+     const routePlanningBlockedStatuses = new Set([
+     "SOLD", 
+     "SCRAPPED",
+     "RETIRED",
+     "PENDING_DELIVERY",
+     "CANCELLED"
+    ]);
+
+if (routePlanningBlockedStatuses.has(aircraftStatus)) {
        
       await client.query("ROLLBACK");
       transactionStarted = false;
