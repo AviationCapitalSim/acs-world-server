@@ -1896,7 +1896,45 @@ export async function ACS_runCDMaintenanceResolverForAirline(
         LEFT JOIN active_events ae
           ON ae.aircraft_id = ams.aircraft_id
 
-        WHERE ams.airline_id = $1
+             WHERE ams.airline_id = $1
+          AND (
+            COALESCE(
+              ae.d_in_progress,
+              FALSE
+            )
+            OR COALESCE(
+              ae.c_in_progress,
+              FALSE
+            )
+            OR (
+              ams.d_check_due_date IS NOT NULL
+              AND ams.d_check_due_date
+                  <= acs_get_current_sim_time()
+            )
+            OR (
+              ams.c_check_due_date IS NOT NULL
+              AND ams.c_check_due_date
+                  <= acs_get_current_sim_time()
+            )
+            OR UPPER(
+              COALESCE(
+                ams.d_check_status,
+                ''
+              )
+            ) IN (
+              'OVERDUE',
+              'IN_PROGRESS'
+            )
+            OR UPPER(
+              COALESCE(
+                ams.c_check_status,
+                ''
+              )
+            ) IN (
+              'OVERDUE',
+              'IN_PROGRESS'
+            )
+          )
       )
 
       UPDATE public.aircraft_maintenance_status ams
