@@ -203,6 +203,33 @@ async function ACS_runActiveRuntimeJob(jobKey) {
   }
 }
 
+async function ACS_executeActiveRuntimeJobs() {
+  const dueResult = await pool.query(
+    `
+    SELECT job_key
+    FROM public.acs_runtime_jobs
+    WHERE enabled = TRUE
+      AND execution_mode = 'ACTIVE'
+      AND (
+        last_started_real_at IS NULL
+        OR last_started_real_at
+           + interval_seconds * INTERVAL '1 second'
+           <= CURRENT_TIMESTAMP
+      )
+    ORDER BY job_key
+    `
+  );
+
+  await Promise.allSettled(
+    dueResult.rows.map((row) =>
+      ACS_runActiveRuntimeJob(
+        String(row.job_key || "")
+          .toUpperCase()
+      )
+    )
+  );
+}
+
 async function ACS_executeRuntimePoll() {
   if (ACS_runtimePollRunning) return;
 
@@ -251,11 +278,15 @@ async function ACS_executeRuntimePoll() {
       `
     );
 
-    if (result.rowCount > 0) {
+      if (result.rowCount > 0) {
       console.log(
         `[ACS RUNTIME] OBSERVE heartbeat: ${result.rowCount} jobs`
       );
     }
+
+    await ACS_executeActiveRuntimeJobs();
+
+    
   } catch (error) {
     console.error(
       "[ACS RUNTIME] Supervisor poll failed:",
