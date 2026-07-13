@@ -18,7 +18,7 @@ import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import usersRoutes from "./routes/users.js";
 import scheduleRoutes, {
-  startMaintenanceScheduler,
+  ACS_runMaintenanceResolver,
   stopMaintenanceScheduler
 } from "./routes/schedule.js";
 import aircraftRoutes from "./routes/aircraft.js";
@@ -33,12 +33,47 @@ import skytrackSnapshotRoutes
 import flightSettlementRoutes from "./routes/flight_settlement.js";
 import occAlertsRoutes from "./routes/occ_alerts.js";
 import {
+  registerACSRuntimeJobHandler,
   startACSRuntimeSupervisor,
   stopACSRuntimeSupervisor
 } from "./services/acs_runtime_supervisor.js";
 
 
 dotenv.config();
+
+registerACSRuntimeJobHandler(
+  "MAINTENANCE_AB",
+  async () => {
+    const result =
+      await ACS_runMaintenanceResolver({
+        allAirlines: true
+      });
+
+    if (Number(result?.error_count || 0) > 0) {
+      const error = new Error(
+        "MAINTENANCE_AB_PARTIAL_FAILURE"
+      );
+
+      error.code =
+        "MAINTENANCE_AB_PARTIAL_FAILURE";
+
+      throw error;
+    }
+
+    return {
+      processedCount:
+        Number(result?.started_count || 0) +
+        Number(result?.completed_count || 0) +
+        Number(result?.blocked_count || 0) +
+        Number(
+          result?.orphan_recovered_count || 0
+        ) +
+        Number(
+          result?.phase0_normalized_count || 0
+        )
+    };
+  }
+);
 
 const app = express();
 
@@ -199,7 +234,6 @@ console.log("[ACS] Boot env:", {
 const server = app.listen(PORT, "0.0.0.0", () => {
   console.log("ACS World Server running on port", PORT);
 
-  startMaintenanceScheduler();
   startHRMoraleScheduler();
   startACSRuntimeSupervisor();
 });
