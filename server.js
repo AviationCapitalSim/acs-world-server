@@ -32,6 +32,11 @@ import skytrackSnapshotRoutes
   from "./routes/skytrack_snapshot.js";
 import flightSettlementRoutes from "./routes/flight_settlement.js";
 import occAlertsRoutes from "./routes/occ_alerts.js";
+import {
+  startACSRuntimeSupervisor,
+  stopACSRuntimeSupervisor
+} from "./services/acs_runtime_supervisor.js";
+
 
 dotenv.config();
 
@@ -196,6 +201,7 @@ const server = app.listen(PORT, "0.0.0.0", () => {
 
   startMaintenanceScheduler();
   startHRMoraleScheduler();
+  startACSRuntimeSupervisor();
 });
 
 /* ============================================================
@@ -219,6 +225,7 @@ function ACS_shutdown(signal) {
 
   stopMaintenanceScheduler();
   stopHRMoraleScheduler();
+  stopACSRuntimeSupervisor();
   
   server.close(() => {
     console.log("[ACS] HTTP server closed");
