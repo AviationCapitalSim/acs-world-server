@@ -1995,8 +1995,80 @@ export async function ACS_runCDMaintenanceResolverForAirline(
 
       FROM cd_state state
 
-      WHERE ams.aircraft_id = state.aircraft_id
+            WHERE ams.aircraft_id = state.aircraft_id
         AND ams.airline_id = state.airline_id
+        AND ROW(
+          ams.d_check_status,
+          ams.c_check_status,
+          ams.maintenance_control_status,
+          ams.maintenance_control_reason
+        ) IS DISTINCT FROM ROW(
+          CASE
+            WHEN state.d_in_progress
+              THEN 'IN_PROGRESS'
+            WHEN state.d_overdue
+              THEN 'OVERDUE'
+            WHEN UPPER(
+              COALESCE(
+                ams.d_check_status,
+                ''
+              )
+            ) IN (
+              'OVERDUE',
+              'IN_PROGRESS'
+            )
+              THEN 'OPEN'
+            ELSE ams.d_check_status
+          END,
+          CASE
+            WHEN state.d_in_progress
+              THEN ams.c_check_status
+            WHEN state.c_in_progress
+              THEN 'IN_PROGRESS'
+            WHEN state.c_overdue
+              THEN 'OVERDUE'
+            WHEN UPPER(
+              COALESCE(
+                ams.c_check_status,
+                ''
+              )
+            ) IN (
+              'OVERDUE',
+              'IN_PROGRESS'
+            )
+              THEN 'OPEN'
+            ELSE ams.c_check_status
+          END,
+          CASE
+            WHEN state.d_in_progress
+              OR state.c_in_progress
+              THEN 'IN_MAINTENANCE'
+            WHEN state.d_overdue
+              OR state.c_overdue
+              THEN 'MAINTENANCE_REQUIRED'
+            WHEN state.b_in_progress
+              OR state.a_in_progress
+              THEN 'IN_MAINTENANCE'
+            ELSE
+              ams.maintenance_control_status
+          END,
+          CASE
+            WHEN state.d_in_progress
+              THEN 'D_CHECK'
+            WHEN state.c_in_progress
+              THEN 'C_CHECK'
+            WHEN state.d_overdue
+              THEN 'D_CHECK_OVERDUE'
+            WHEN state.c_overdue
+              THEN 'C_CHECK_OVERDUE'
+            WHEN state.b_in_progress
+              THEN 'B_CHECK'
+            WHEN state.a_in_progress
+              THEN 'A_CHECK'
+            ELSE
+              ams.maintenance_control_reason
+          END
+        )
 
       RETURNING
         ams.aircraft_id,
