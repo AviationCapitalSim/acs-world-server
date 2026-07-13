@@ -1580,20 +1580,26 @@ const financeAfterResult = await client.query(
    - This resolver never calculates A/B overdue states.
    ============================================================ */
 
-router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
+export async function ACS_runCDMaintenanceResolverForAirline(
+  airlineId
+) {
   const client = await pool.connect();
   let transactionStarted = false;
 
   try {
-    const airlineId = Number(req.airline_id);
+    if (
+      !airlineId ||
+      !Number.isInteger(airlineId)
+    ) {
+      const error = new Error(
+        "INVALID_AIRLINE_ID"
+      );
 
-    if (!airlineId || !Number.isInteger(airlineId)) {
-      return res.status(401).json({
-        ok: false,
-        error: "NO_AIRLINE_SESSION"
-      });
+      error.code = "INVALID_AIRLINE_ID";
+
+      throw error;
     }
-
+     
     await client.query("BEGIN");
     transactionStarted = true;
 
@@ -2105,7 +2111,7 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
       }
     }
    
-    return res.json({
+      return {
       ok: true,
       endpoint: "ACS_CD_MAINTENANCE_RESOLVER",
       version: "v1.2",
@@ -2131,11 +2137,12 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
       completed_events: completedEvents,
       occ_completed_alerts: completedMaintenanceOccAlerts,
       occ_overdue_alerts: overdueMaintenanceOccAlerts
-    });
+    };
 
   } catch (err) {
     if (transactionStarted) {
       try {
+         
         await client.query("ROLLBACK");
       } catch (rollbackError) {
         console.error(
@@ -2147,16 +2154,46 @@ router.post("/aircraft/maintenance/resolver", requireAuth, async (req, res) => {
 
     console.error("ACS C/D MAINTENANCE RESOLVER ERROR:", err);
 
-    return res.status(500).json({
-      ok: false,
-      error: "CD_MAINTENANCE_RESOLVER_FAILED",
-      details: err.message
-    });
+    throw err;
 
-  } finally {
+    } finally {
     client.release();
   }
-});
+}
+
+router.post(
+  "/aircraft/maintenance/resolver",
+  requireAuth,
+  async (req, res) => {
+    const airlineId = Number(req.airline_id);
+
+    if (
+      !airlineId ||
+      !Number.isInteger(airlineId)
+    ) {
+      return res.status(401).json({
+        ok: false,
+        error: "NO_AIRLINE_SESSION"
+      });
+    }
+
+    try {
+      const result =
+        await ACS_runCDMaintenanceResolverForAirline(
+          airlineId
+        );
+
+      return res.json(result);
+    } catch (err) {
+      return res.status(500).json({
+        ok: false,
+        error:
+          "CD_MAINTENANCE_RESOLVER_FAILED",
+        details: err.message
+      });
+    }
+  }
+);
 
 /* ============================================================
    🟦 ACS-RA-BE2 — AUTO ASSIGN AIRCRAFT REGISTRATION
