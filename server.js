@@ -41,7 +41,8 @@ import {
 } from "./services/acs_runtime_supervisor.js";
 import {
   ACS_generateFlightOccurrences,
-  ACS_dispatchFlightOccurrences
+  ACS_dispatchFlightOccurrences,
+  ACS_advanceFlightOccurrences
 } from "./services/acs_flight_runtime.js";
 
 
@@ -133,12 +134,27 @@ registerACSRuntimeJobHandler(
 registerACSRuntimeJobHandler(
   "FLIGHT_DISPATCH",
   async ({ job }) => {
-    const result = await ACS_dispatchFlightOccurrences({
-      batchSize: job?.config?.batch_size || 500
-    });
+    const batchSize =
+      job?.config?.batch_size || 500;
+
+    const lifecycleResult =
+      await ACS_advanceFlightOccurrences({
+        batchSize
+      });
+
+    const dispatchResult =
+      await ACS_dispatchFlightOccurrences({
+        batchSize
+      });
 
     return {
-      processedCount: Number(result?.processedCount || 0)
+      processedCount:
+        Number(
+          lifecycleResult?.processedCount || 0
+        ) +
+        Number(
+          dispatchResult?.processedCount || 0
+        )
     };
   }
 );
