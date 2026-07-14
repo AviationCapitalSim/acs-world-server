@@ -722,6 +722,106 @@ export async function ACS_dispatchFlightOccurrences({
   }
 }
 
+export async function ACS_advanceFlightOccurrences({
+  batchSize = 500
+} = {}) {
+  const client = await pool.connect();
+
+  const normalizedBatchSize = Math.min(
+    2000,
+    Math.max(
+      1,
+      Number.parseInt(batchSize, 10) || 500
+    )
+  );
+
+  let transactionStarted = false;
+
+  try {
+    await client.query("BEGIN");
+    transactionStarted = true;
+
+    const result = await client.query(
+      `
+      WITH clock AS MATERIALIZED (
+        SELECT acs_get_current_sim_time() AS sim_time
+      ),
+      due_occurrences AS MATERIALIZED (
+        SELECT
+          occurrence.id,
+          occurrence.scheduled_departure_at,
+          occurrence.scheduled_arrival_at,
+          clock.sim_time
+        FROM public.flight_occurrences occurrence
+        CROSS JOIN clock
+        WHERE occurrence.dispatch_status = 'RELEASED'
+          AND occurrence.operational_status IN (
+            'DISPATCHED',
+            'EN_ROUTE'
+          )
+          AND occurrence.scheduled_departure_at <= clock.sim_time
+        ORDER BY
+          occurrence.scheduled_departure_at,
+          occurrence.id
+        LIMIT $1
+        FOR UPDATE OF occurrence SKIP LOCKED
+      )
+      UPDATE public.flight_occurrences occurrence
+      SET
+        operational_status = CASE
+          WHEN due.scheduled_arrival_at <= due.sim_time
+            THEN 'ARRIVED'
+          ELSE 'EN_ROUTE'
+        END,
+        departed_at = COALESCE(
+          occurrence.departed_at,
+          due.scheduled_departure_at
+        ),
+        arrived_at = CASE
+          WHEN due.scheduled_arrival_at <= due.sim_time
+            THEN COALESCE(
+              occurrence.arrived_at,
+              due.scheduled_arrival_at
+            )
+          ELSE occurrence.arrived_at
+        END,
+        updated_at = CURRENT_TIMESTAMP
+      FROM due_occurrences due
+      WHERE occurrence.id = due.id
+      RETURNING occurrence.operational_status
+      `,
+      [normalizedBatchSize]
+    );
+
+    await client.query("COMMIT");
+    transactionStarted = false;
+
+    const enRouteCount = result.rows.filter(
+      row => row.operational_status === "EN_ROUTE"
+    ).length;
+
+    const arrivedCount = result.rows.filter(
+      row => row.operational_status === "ARRIVED"
+    ).length;
+
+    return {
+      processedCount: result.rowCount,
+      enRouteCount,
+      arrivedCount
+    };
+  } catch (error) {
+    if (transactionStarted) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (_) {}
+    }
+
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function ACS_generateFlightOccurrences({
   horizonSimDays = 8
 } = {}) {
