@@ -254,8 +254,37 @@ router.get("/snapshot", requireAuth, async (req, res) => {
 
         FROM public.flight_occurrences candidate
 
-        WHERE candidate.airline_id = fleet.airline_id
+                WHERE candidate.airline_id = fleet.airline_id
           AND candidate.aircraft_id = fleet.aircraft_id
+
+          AND NOT (
+            UPPER(
+              COALESCE(
+                fleet.maintenance_control_status,
+                ''
+              )
+            ) IN (
+              'IN_MAINTENANCE',
+              'MAINTENANCE_REQUIRED',
+              'UNSERVICEABLE'
+            )
+
+            OR UPPER(
+              COALESCE(
+                fleet.maintenance_control_reason,
+                ''
+              )
+            ) IN (
+              'A_CHECK',
+              'B_CHECK',
+              'C_CHECK',
+              'D_CHECK',
+              'A_CHECK_OVERDUE',
+              'B_CHECK_OVERDUE',
+              'C_CHECK_OVERDUE',
+              'D_CHECK_OVERDUE'
+            )
+          )
 
           AND (
             (
