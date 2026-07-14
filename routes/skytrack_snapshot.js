@@ -157,10 +157,10 @@ router.get("/snapshot", requireAuth, async (req, res) => {
             'UNSERVICEABLE'
           )
             THEN COALESCE(
-              fleet.current_airport,
-              fleet.base_icao,
-              occurrence.origin
-            )
+             fleet.base_icao,
+             fleet.current_airport,
+             occurrence.origin
+          )
 
           WHEN occurrence.flight_context = 'LAST'
             THEN occurrence.destination
