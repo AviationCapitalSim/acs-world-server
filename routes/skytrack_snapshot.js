@@ -108,16 +108,7 @@ router.get("/snapshot", requireAuth, async (req, res) => {
           + EXTRACT(MINUTE FROM occurrence.scheduled_arrival_at)::int
         )::int AS arr_abs_min,
 
-        CASE
-          WHEN occurrence.flight_context = 'ACTIVE'
-            THEN 'EN_ROUTE'
-
-          WHEN occurrence.flight_context = 'HELD'
-            THEN COALESCE(
-              NULLIF(occurrence.dispatch_reason, ''),
-              'NOT_DISPATCHED'
-            )
-
+                CASE
           WHEN UPPER(
             COALESCE(fleet.maintenance_control_status, '')
           ) IN (
@@ -130,25 +121,38 @@ router.get("/snapshot", requireAuth, async (req, res) => {
                 UPPER(fleet.maintenance_control_reason),
                 ''
               ),
-              'MAINTENANCE'
+              'GROUND'
+            )
+
+          WHEN occurrence.flight_context = 'ACTIVE'
+            THEN 'EN_ROUTE'
+
+          WHEN occurrence.flight_context = 'HELD'
+            THEN COALESCE(
+              NULLIF(occurrence.dispatch_reason, ''),
+              'NOT_DISPATCHED'
             )
 
           ELSE 'GROUND'
         END AS state,
 
         CASE
+          WHEN UPPER(
+            COALESCE(fleet.maintenance_control_status, '')
+          ) IN (
+            'IN_MAINTENANCE',
+            'MAINTENANCE_REQUIRED',
+            'UNSERVICEABLE'
+          )
+            THEN 'AIRPORT'
+
           WHEN occurrence.flight_context = 'ACTIVE'
             THEN 'ROUTE'
+
           ELSE 'AIRPORT'
         END AS position_type,
 
         CASE
-          WHEN occurrence.flight_context = 'ACTIVE'
-            THEN NULL
-
-          WHEN occurrence.flight_context = 'HELD'
-            THEN occurrence.origin
-
           WHEN UPPER(
             COALESCE(fleet.maintenance_control_status, '')
           ) IN (
@@ -157,10 +161,15 @@ router.get("/snapshot", requireAuth, async (req, res) => {
             'UNSERVICEABLE'
           )
             THEN COALESCE(
-              fleet.current_airport,
               fleet.base_icao,
-              occurrence.origin
+              fleet.current_airport
             )
+
+          WHEN occurrence.flight_context = 'ACTIVE'
+            THEN NULL
+
+          WHEN occurrence.flight_context = 'HELD'
+            THEN occurrence.origin
 
           WHEN occurrence.flight_context = 'LAST'
             THEN occurrence.destination
