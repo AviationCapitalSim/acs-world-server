@@ -137,15 +137,15 @@ registerACSRuntimeJobHandler(
     const batchSize =
       job?.config?.batch_size || 500;
 
-    const lifecycleResult =
-      await ACS_advanceFlightOccurrences({
-        batchSize
-      });
-
     const dispatchResult =
-      await ACS_dispatchFlightOccurrences({
-        batchSize
-      });
+  await ACS_dispatchFlightOccurrences({
+    batchSize
+  });
+
+const lifecycleResult =
+  await ACS_advanceFlightOccurrences({
+    batchSize
+  });
 
     return {
       processedCount:
