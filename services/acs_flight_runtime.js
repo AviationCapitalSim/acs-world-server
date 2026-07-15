@@ -788,11 +788,74 @@ export async function ACS_advanceFlightOccurrences({
         updated_at = CURRENT_TIMESTAMP
       FROM due_occurrences due
       WHERE occurrence.id = due.id
-      RETURNING occurrence.operational_status
+      RETURNING
+      occurrence.operational_status,
+      occurrence.airline_id,
+      occurrence.aircraft_id,
+      occurrence.destination,
+      occurrence.block_time_min,
+      occurrence.scheduled_arrival_at
       `,
       [normalizedBatchSize]
     );
 
+    const arrivedRows = result.rows.filter(
+  row => row.operational_status === "ARRIVED"
+);
+
+if (arrivedRows.length > 0) {
+  await client.query(
+    `
+    WITH arrivals AS MATERIALIZED (
+      SELECT *
+      FROM jsonb_to_recordset($1::jsonb) AS arrival (
+        airline_id integer,
+        aircraft_id integer,
+        destination text,
+        block_time_min integer,
+        scheduled_arrival_at timestamp
+      )
+    ),
+    aircraft_delta AS MATERIALIZED (
+      SELECT
+        airline_id,
+        aircraft_id,
+        ROUND(
+          SUM(block_time_min)::numeric / 60,
+          2
+        ) AS hours_to_add,
+        COUNT(*)::integer AS cycles_to_add,
+        (
+          ARRAY_AGG(
+            destination
+            ORDER BY scheduled_arrival_at DESC
+          )
+        )[1] AS current_airport
+      FROM arrivals
+      GROUP BY airline_id, aircraft_id
+    )
+    UPDATE public.aircraft_fleet fleet
+    SET
+      total_hours =
+        COALESCE(fleet.total_hours, 0)
+        + delta.hours_to_add,
+      total_cycles =
+        COALESCE(fleet.total_cycles, 0)
+        + delta.cycles_to_add,
+      current_airport =
+        COALESCE(
+          delta.current_airport,
+          fleet.current_airport
+        ),
+      updated_at = CURRENT_TIMESTAMP
+    FROM aircraft_delta delta
+    WHERE fleet.id = delta.aircraft_id
+      AND fleet.airline_id = delta.airline_id
+    `,
+    [JSON.stringify(arrivedRows)]
+  );
+}
+     
     await client.query("COMMIT");
     transactionStarted = false;
 
