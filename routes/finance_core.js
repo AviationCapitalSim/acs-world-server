@@ -548,6 +548,12 @@ async function ACS_archiveFinanceMonth(
 
       timestamp,
       closed_sim_timestamp,
+      record_kind,
+      data_quality,
+      period_start_sim,
+      period_end_sim,
+      closed_by,
+      metadata,
       created_at
     )
     VALUES (
@@ -588,6 +594,15 @@ async function ACS_archiveFinanceMonth(
 
       $27,
       $27,
+      'MONTHLY_CLOSE',
+      'VERIFIED',
+      make_date($2, $3, 1)::timestamp,
+      (make_date($2, $3, 1) + INTERVAL '1 month')::timestamp,
+      'ACS_FINANCE_RUNTIME_V1',
+      jsonb_build_object(
+        'month_key', $4,
+        'monthly_breakdown_available', TRUE
+      ),
       NOW()
     )
 
