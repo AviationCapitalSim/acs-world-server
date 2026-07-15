@@ -44,7 +44,9 @@ import {
   ACS_dispatchFlightOccurrences,
   ACS_advanceFlightOccurrences
 } from "./services/acs_flight_runtime.js";
-
+import {
+  ACS_runAircraftDeliveryRuntime
+} from "./services/acs_aircraft_delivery_runtime.js";
 
 dotenv.config();
 
@@ -155,6 +157,24 @@ const lifecycleResult =
         Number(
           dispatchResult?.processedCount || 0
         )
+    };
+  }
+);
+
+registerACSRuntimeJobHandler(
+  "AIRCRAFT_DELIVERY",
+  async ({ job }) => {
+    const batchSize =
+      Number(job?.config?.batch_size) || 100;
+
+    const result =
+      await ACS_runAircraftDeliveryRuntime({
+        batchSize
+      });
+
+    return {
+      processedCount:
+        Number(result?.processedCount || 0)
     };
   }
 );
