@@ -47,6 +47,9 @@ import {
 import {
   ACS_runAircraftDeliveryRuntime
 } from "./services/acs_aircraft_delivery_runtime.js";
+import {
+  ACS_runFinanceMonthlyCloseRuntime
+} from "./services/acs_finance_runtime.js";
 
 dotenv.config();
 
@@ -171,6 +174,19 @@ registerACSRuntimeJobHandler(
       await ACS_runAircraftDeliveryRuntime({
         batchSize
       });
+
+    return {
+      processedCount:
+        Number(result?.processedCount || 0)
+    };
+  }
+);
+
+registerACSRuntimeJobHandler(
+  "FINANCE_MONTHLY_CLOSE",
+  async () => {
+    const result =
+      await ACS_runFinanceMonthlyCloseRuntime();
 
     return {
       processedCount:
