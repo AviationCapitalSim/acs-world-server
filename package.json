@@ -17,7 +17,7 @@
     "express": "^4.19.2",
     "express-rate-limit": "^7.0.0",
     "helmet": "^7.0.0",
-    "nodemailer": "7.0.13",
+    "nodemailer": "9.0.1",
     "pg": "^8.12.0"
   }
 }
