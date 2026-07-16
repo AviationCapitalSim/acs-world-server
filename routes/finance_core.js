@@ -230,6 +230,13 @@ async function ACS_getPeriodBoundaries(
 
       FLOOR(
         EXTRACT(
+          EPOCH FROM MAKE_DATE($1, $2, 1)
+        ) * 1000
+      )::BIGINT
+        AS period_start_timestamp_ms,
+
+      FLOOR(
+        EXTRACT(
           EPOCH FROM (
             MAKE_DATE($1, $2, 1)
             + INTERVAL '1 month'
@@ -238,7 +245,10 @@ async function ACS_getPeriodBoundaries(
       )::BIGINT
         AS next_period_timestamp_ms
     `,
-    [year, month]
+    [
+      year,
+      month
+    ]
   );
 
   return result.rows[0];
@@ -256,7 +266,7 @@ async function ACS_settleMonthlyPayroll(
   airlineId,
   year,
   month,
-  closingTimestampMs
+  settlementTimestampMs
 ) {
   const monthKey = ACS_monthKey(year, month);
   const referenceUid =
@@ -316,7 +326,7 @@ async function ACS_settleMonthlyPayroll(
     `,
     [
       airlineId,
-      closingTimestampMs,
+      settlementTimestampMs,
       referenceUid,
       `Monthly payroll settled by ACS OCC for ${monthKey}`
     ]
@@ -596,12 +606,17 @@ async function ACS_archiveFinanceMonth(
       $27,
       'MONTHLY_CLOSE',
       'VERIFIED',
-      make_date($2, $3, 1)::timestamp,
-      (make_date($2, $3, 1) + INTERVAL '1 month')::timestamp,
+      MAKE_DATE($2, $3, 1)::TIMESTAMP,
+      (
+        MAKE_DATE($2, $3, 1)
+        + INTERVAL '1 month'
+      )::TIMESTAMP,
       'ACS_FINANCE_RUNTIME_V1',
-      jsonb_build_object(
-        'month_key', $4::varchar,
-        'monthly_breakdown_available', TRUE
+      JSONB_BUILD_OBJECT(
+        'month_key',
+        $4::VARCHAR,
+        'monthly_breakdown_available',
+        TRUE
       ),
       NOW()
     )
@@ -813,7 +828,9 @@ export async function ACS_ensureFinancePeriod(
     !Number.isInteger(normalizedAirlineId) ||
     normalizedAirlineId <= 0
   ) {
-    throw new Error("INVALID_AUTHENTICATED_AIRLINE_ID");
+    throw new Error(
+      "INVALID_AUTHENTICATED_AIRLINE_ID"
+    );
   }
 
   const officialPeriod =
@@ -851,11 +868,54 @@ export async function ACS_ensureFinancePeriod(
     );
   }
 
+  /*
+   * Ensure payroll for the currently open month.
+   * The canonical reference prevents duplicate charges.
+   *
+   * This also repairs a month already opened by the previous
+   * rollover sequence without its opening payroll.
+   */
+  const currentBoundaries =
+    await ACS_getPeriodBoundaries(
+      client,
+      financeYear,
+      financeMonth
+    );
+
+  const currentPayrollAmount =
+    await ACS_settleMonthlyPayroll(
+      client,
+      normalizedAirlineId,
+      financeYear,
+      financeMonth,
+      Number(
+        currentBoundaries.period_start_timestamp_ms
+      )
+    );
+
+  let payrollAppliedCount = 0;
+
+  if (currentPayrollAmount > 0) {
+    finance =
+      await ACS_applyMonthlyObligations(
+        client,
+        normalizedAirlineId,
+        currentPayrollAmount,
+        0
+      );
+
+    payrollAppliedCount += 1;
+  }
+
   if (openPeriodNumber === officialPeriodNumber) {
     return {
       ok: true,
       rolled_over: false,
       closed_months: [],
+      payroll_applied_count:
+        payrollAppliedCount,
+      current_payroll:
+        currentPayrollAmount,
       current_period: officialPeriod,
       finance
     };
@@ -865,7 +925,7 @@ export async function ACS_ensureFinancePeriod(
 
   /*
    * Close every missing month in sequence.
-   * This also handles OCC recovery that advances several months.
+   * Every newly opened month receives its payroll immediately.
    */
   while (
     ACS_periodNumber(
@@ -897,14 +957,12 @@ export async function ACS_ensureFinancePeriod(
         boundaries.next_period_timestamp_ms
       ) - 1;
 
-    const payrollAmount =
-      await ACS_settleMonthlyPayroll(
-        client,
-        normalizedAirlineId,
-        closingYear,
-        closingMonth,
-        closingTimestampMs
-      );
+    /*
+     * Payroll was applied when this month opened.
+     * Capture the HR total without charging it again.
+     */
+    const closedPayrollAmount =
+      ACS_toInteger(finance.cost_hr);
 
     const leasingAmount =
       await ACS_settleMonthlyLeasing(
@@ -916,13 +974,15 @@ export async function ACS_ensureFinancePeriod(
         boundaries
       );
 
-    finance =
-      await ACS_applyMonthlyObligations(
-        client,
-        normalizedAirlineId,
-        payrollAmount,
-        leasingAmount
-      );
+    if (leasingAmount > 0) {
+      finance =
+        await ACS_applyMonthlyObligations(
+          client,
+          normalizedAirlineId,
+          0,
+          leasingAmount
+        );
+    }
 
     const flightCount =
       await ACS_countMonthlyFlights(
@@ -956,23 +1016,62 @@ export async function ACS_ensureFinancePeriod(
         nextPeriod.month
       );
 
+    /*
+     * Apply payroll immediately after opening the new month.
+     * PostgreSQL provides the exact first timestamp of the month.
+     */
+    const nextBoundaries =
+      await ACS_getPeriodBoundaries(
+        client,
+        nextPeriod.year,
+        nextPeriod.month
+      );
+
+    const nextPayrollAmount =
+      await ACS_settleMonthlyPayroll(
+        client,
+        normalizedAirlineId,
+        nextPeriod.year,
+        nextPeriod.month,
+        Number(
+          nextBoundaries.period_start_timestamp_ms
+        )
+      );
+
+    if (nextPayrollAmount > 0) {
+      finance =
+        await ACS_applyMonthlyObligations(
+          client,
+          normalizedAirlineId,
+          nextPayrollAmount,
+          0
+        );
+
+      payrollAppliedCount += 1;
+    }
+
     closedMonths.push({
       history_id: historyId,
       year: closingYear,
       month: closingMonth,
       month_key: closingMonthKey,
-      payroll: payrollAmount,
+      payroll: closedPayrollAmount,
       leasing: leasingAmount,
       flight_count: flightCount,
       closing_capital:
-        ACS_toInteger(finance.opening_capital)
+        ACS_toInteger(finance.opening_capital),
+      next_month_payroll:
+        nextPayrollAmount
     });
   }
 
   return {
     ok: true,
-    rolled_over: closedMonths.length > 0,
+    rolled_over:
+      closedMonths.length > 0,
     closed_months: closedMonths,
+    payroll_applied_count:
+      payrollAppliedCount,
     current_period: officialPeriod,
     finance
   };
