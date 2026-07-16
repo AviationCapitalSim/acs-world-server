@@ -133,10 +133,10 @@ async function ACS_syncHrAlerts(client, airlineId, currentSimTime) {
       client,
       {
         airline_id: airlineId,
-        alert_key: `HR_COMMAND:${row.dept_id}`,
+        alert_key: `HR_CENTER:${row.dept_id}`,
         category: "hr",
         level,
-        title: "HR COMMAND",
+        title: "HR CENTER",
         message: `HR staff: ${row.dept_name} ${staff}/${required}.`,
         source: "hr_departments",
         source_ref: row.dept_id
@@ -386,7 +386,7 @@ async function ACS_syncExpiredSlotRoutes(client, airlineId, currentSimTime) {
           alert_key: `SLOT_NON_USE:${row.route_plan_id}`,
           category: "schedule",
           level: "critical",
-          title: "SLOT COMMAND",
+          title: "SLOT CENTER",
           message: `Flight ${flightLabel} / ${row.origin}-${row.destination} slot released for non-use.`,
           source: "airport_slot_bookings",
           source_ref: String(row.route_plan_id)
@@ -442,10 +442,10 @@ async function ACS_syncFinanceAlerts(client, airlineId, currentSimTime) {
     client,
     {
       airline_id: airlineId,
-      alert_key: `FINANCE_COMMAND:NEGATIVE_CAPITAL:${financeWeekKey}`,
+      alert_key: `FINANCE_CENTER:NEGATIVE_CAPITAL:${financeWeekKey}`,
       category: "finance",
       level: "critical",
-      title: "FINANCE COMMAND",
+      title: "FINANCE CENTER",
       message: `Cash balance negative: ${formattedCapital}.`,
       source: "company_finance",
       source_ref: String(airlineId)
