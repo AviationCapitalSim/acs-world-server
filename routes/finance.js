@@ -939,11 +939,55 @@ router.get(
             cost_hr,
             cost_leasing,
             cost_loans,
-            cost_other,
+                        cost_other,
             cost_new_aircraft_purchase,
-            cost_used_aircraft_purchase
-          FROM public.company_finance
-          WHERE airline_id = $1
+            cost_used_aircraft_purchase,
+
+            current_activity.flight_count,
+            current_activity.passenger_count
+
+          FROM public.company_finance finance
+
+          CROSS JOIN LATERAL (
+            SELECT
+              COUNT(*)::integer AS flight_count,
+
+              COALESCE(
+                SUM(
+                  COALESCE(
+                    occurrence.settled_passengers,
+                    0
+                  )
+                ),
+                0
+              )::bigint AS passenger_count
+
+            FROM public.flight_occurrences occurrence
+
+            WHERE occurrence.airline_id =
+                  finance.airline_id
+
+              AND occurrence.settled_at IS NOT NULL
+
+              AND occurrence.arrived_at >=
+                  make_date(
+                    finance.current_sim_year,
+                    finance.current_sim_month,
+                    1
+                  )::timestamp
+
+              AND occurrence.arrived_at <
+                  (
+                    make_date(
+                      finance.current_sim_year,
+                      finance.current_sim_month,
+                      1
+                    )
+                    + INTERVAL '1 month'
+                  )::timestamp
+          ) current_activity
+
+          WHERE finance.airline_id = $1
           LIMIT 1
           `,
           [airlineId]
