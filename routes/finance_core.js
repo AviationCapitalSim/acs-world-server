@@ -560,7 +560,7 @@ async function ACS_archiveFinanceMonth(
       $1,
       $2,
       $3,
-      $4,
+      $4::varchar,
 
       $5,
       $6,
@@ -600,7 +600,7 @@ async function ACS_archiveFinanceMonth(
       (make_date($2, $3, 1) + INTERVAL '1 month')::timestamp,
       'ACS_FINANCE_RUNTIME_V1',
       jsonb_build_object(
-        'month_key', $4,
+        'month_key', $4::varchar,
         'monthly_breakdown_available', TRUE
       ),
       NOW()
