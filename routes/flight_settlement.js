@@ -13,9 +13,10 @@
 
 import express from "express";
 import { pool } from "../db/pool.js";
-import { requireAuth } from "../middleware/auth.js";
 
 const router = express.Router();
+
+const ACS_FLIGHT_SETTLEMENT_LOCK = 1179863380;
 
 const ACS_money = (v) => {
   const n = Number(v);
@@ -23,409 +24,311 @@ const ACS_money = (v) => {
   return Math.round(n);
 };
 
-export async function ACS_settleFlight(client, airlineId, scheduleItemId) {
-  
-   const scheduleResult = await client.query(
-    `
-    SELECT *
-    FROM public.schedule_items
-    WHERE id = $1
-      AND airline_id = $2
-    FOR UPDATE
-    `,
-    [scheduleItemId, airlineId]
+export async function ACS_runFlightSettlementRuntime({
+  batchSize = 100
+} = {}) {
+  const normalizedBatchSize = Math.min(
+    500,
+    Math.max(1, Number.parseInt(batchSize, 10) || 100)
   );
-
-  if (!scheduleResult.rows.length) {
-    return { ok: false, error: "SCHEDULE_NOT_FOUND" };
-  }
-
-  const schedule = scheduleResult.rows[0];
-
-  if (schedule.finance_settled === true) {
-    return {
-      ok: true,
-      skipped: true,
-      reason: "ALREADY_SETTLED",
-      schedule_item_id: scheduleItemId
-    };
-  }
-
-  if (String(schedule.status || "").toUpperCase() === "CANCELLED") {
-    return {
-      ok: false,
-      error: "CANNOT_SETTLE_CANCELLED_FLIGHT"
-    };
-  }
-
-  const routeResult = await client.query(
-    `
-    SELECT *
-    FROM public.route_plans
-    WHERE id = $1
-      AND airline_id = $2
-    LIMIT 1
-    `,
-    [schedule.route_plan_id, airlineId]
-  );
-
-  if (!routeResult.rows.length) {
-    return { ok: false, error: "ROUTE_NOT_FOUND" };
-  }
-
-  const route = routeResult.rows[0];
-
-  const aircraftResult = await client.query(
-  `
-  SELECT
-    af.id AS fleet_aircraft_id,
-    af.airline_id,
-    af.registration,
-    af.aircraft_name,
-    af.model_key AS fleet_model_key,
-
-    ac.model_key AS catalog_model_key,
-    ac.seats,
-    ac.fuel_burn_kgph,
-    ac.speed_kts,
-    ac.range_nm,
-    ac.aircraft_category
-  FROM public.aircraft_fleet af
-  LEFT JOIN public.aircraft_catalog ac
-    ON ac.model_key = af.model_key
-  WHERE af.id = $1
-    AND af.airline_id = $2
-  LIMIT 1
-  `,
-  [schedule.aircraft_id, airlineId]
-);
-
-if (!aircraftResult.rows.length) {
-  return { ok: false, error: "AIRCRAFT_FLEET_NOT_FOUND" };
-}
-
-const aircraft = aircraftResult.rows[0];
-
-if (!aircraft.catalog_model_key) {
-  return {
-    ok: false,
-    error: "AIRCRAFT_CATALOG_MODEL_NOT_FOUND",
-    model_key: aircraft.fleet_model_key,
-    aircraft_id: schedule.aircraft_id
-  };
-}
-   
-  const simResult = await client.query(`
-  
-    SELECT
-      acs_get_current_sim_time() AS sim_time,
-      EXTRACT(YEAR FROM acs_get_current_sim_time())::int AS sim_year
-  `);
-
-  const simYear = Number(simResult.rows[0]?.sim_year || 1940);
-
-  const economicsResult = await client.query(
-    `
-    SELECT fe.*
-    FROM public.flight_economics fe
-    INNER JOIN public.acs_economic_periods ep
-      ON ep.id = fe.period_id
-    WHERE $1 BETWEEN ep.era_start_year AND ep.era_end_year
-    LIMIT 1
-    `,
-    [simYear]
-  );
-
-  if (!economicsResult.rows.length) {
-    return { ok: false, error: "ECONOMICS_NOT_FOUND" };
-  }
-
-  const economics = economicsResult.rows[0];
-
-  const routeOrderResult = await client.query(
-    `
-    SELECT COUNT(*)::int AS route_number
-    FROM public.route_plans
-    WHERE airline_id = $1
-      AND id <= $2
-    `,
-    [airlineId, route.id]
-  );
-
-  const routeNumber = Number(routeOrderResult.rows[0]?.route_number || 999);
-  const starterBoost = routeNumber <= 4 ? 1.18 : 1.0;
-
-  const distanceNm = ACS_money(schedule.distance_nm || route.distance_nm);
-  const blockHours = Math.max(
-    0.25,
-    Number(schedule.block_time_min || route.block_time_min || 60) / 60
-  );
-
-  let loadFactor = 0.62;
-
-  if (routeNumber <= 4) loadFactor = 0.74;
-
-  loadFactor = Math.min(0.92, loadFactor * starterBoost);
-
-  const seats = ACS_money(aircraft.seats || 0);
-
-  const passengers = Math.max(
-    1,
-    Math.round(seats * loadFactor)
-  );
-
-  const revenue = ACS_money(
-    passengers *
-    distanceNm *
-    Number(economics.passenger_yield_usd_per_pax_mile || 0) *
-    Number(economics.demand_multiplier || 1)
-  );
-
-  const fuelKg = Number(aircraft.fuel_burn_kgph || 0) * blockHours;
-  const fuelGallons = fuelKg / 3.04;
-
-  const fuel = ACS_money(
-    fuelGallons *
-    Number(economics.fuel_price_usd_per_gallon || 0)
-  );
-
-  const handling = ACS_money(economics.handling_base_usd || 0);
-  const landing = ACS_money(economics.landing_fee_base_usd || 0);
-
-  const navigation = ACS_money(
-    distanceNm *
-    Number(economics.navigation_usd_per_nm || 0)
-  );
-
-  const overflight = ACS_money(
-    distanceNm *
-    Number(economics.overflight_usd_per_nm || 0)
-  );
-
-  const airportCost = handling + landing + navigation + overflight;
-  const expenses = fuel + airportCost;
-  const profit = revenue - expenses;
-
-   const flightHoursToAdd = Math.max(
-    1,
-    Math.round(blockHours)
-  );
-
-  const flightCyclesToAdd = 1;
-
-  const conditionWearPct = Math.max(
-    0.1,
-    Math.min(
-      2.5,
-      Math.round((0.2 + blockHours * 0.12) * 10) / 10
-    )
-  );
- 
- const financeLogResult = await client.query(
-  `
-  INSERT INTO public.finance_log (
-    airline_id,
-    type,
-    source,
-    amount,
-    timestamp,
-    route_plan_id,
-    schedule_item_id,
-    reference_uid,
-    description,
-    created_at
-  )
-  VALUES
-  ($1, 'INCOME',  'FLIGHT_REVENUE',    $2,  EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, ($5 || ':REVENUE'),    $6,  NOW()),
-  ($1, 'EXPENSE', 'FLIGHT_FUEL',       $7,  EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, ($5 || ':FUEL'),       $8,  NOW()),
-  ($1, 'EXPENSE', 'FLIGHT_HANDLING',   $9,  EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, ($5 || ':HANDLING'),   $10, NOW()),
-  ($1, 'EXPENSE', 'FLIGHT_LANDING',    $11, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, ($5 || ':LANDING'),    $12, NOW()),
-  ($1, 'EXPENSE', 'FLIGHT_NAVIGATION', $13, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, ($5 || ':NAVIGATION'), $14, NOW()),
-  ($1, 'EXPENSE', 'FLIGHT_OVERFLIGHT', $15, EXTRACT(EPOCH FROM NOW())::BIGINT * 1000, $3, $4, ($5 || ':OVERFLIGHT'), $16, NOW())
-  RETURNING id, type, source
-  `,
-  [
-    airlineId,
-    revenue,
-    route.id,
-    schedule.id,
-    schedule.schedule_uid || route.route_uid,
-    `Flight revenue ${schedule.origin}-${schedule.destination} ${schedule.flight_number}`,
-    fuel,
-    `Fuel cost ${schedule.origin}-${schedule.destination} ${schedule.flight_number}`,
-    handling,
-    `Handling cost ${schedule.origin}-${schedule.destination} ${schedule.flight_number}`,
-    landing,
-    `Landing fee ${schedule.origin}-${schedule.destination} ${schedule.flight_number}`,
-    navigation,
-    `Navigation cost ${schedule.origin}-${schedule.destination} ${schedule.flight_number}`,
-    overflight,
-    `Overflight cost ${schedule.origin}-${schedule.destination} ${schedule.flight_number}`
-  ]
-);
-
-const mainFinanceLogId = financeLogResult.rows.find(
-  r => r.type === "INCOME" && r.source === "FLIGHT_REVENUE"
-)?.id;
-
-  await client.query(
-    `
-    UPDATE public.company_finance
-    SET
-      revenue = COALESCE(revenue, 0) + $2,
-      live_revenue = COALESCE(live_revenue, 0) + $2,
-      weekly_revenue = COALESCE(weekly_revenue, 0) + $2,
-
-      expenses = COALESCE(expenses, 0) + $3,
-      profit = COALESCE(profit, 0) + $4,
-      capital = COALESCE(capital, 0) + $4,
-
-      cost_fuel = COALESCE(cost_fuel, 0) + $5,
-      cost_handling = COALESCE(cost_handling, 0) + $6,
-      cost_navigation = COALESCE(cost_navigation, 0) + $7,
-      cost_overflight = COALESCE(cost_overflight, 0) + $8,
-      cost_airport = COALESCE(cost_airport, 0) + $9,
-
-      updated_at = NOW()
-    WHERE airline_id = $1
-    `,
-    [
-      airlineId,
-      revenue,
-      expenses,
-      profit,
-      fuel,
-      handling + landing,
-      navigation,
-      overflight,
-      airportCost
-    ]
-  );
-
-await client.query(
-  `
-  UPDATE public.aircraft_fleet
-  SET
-    total_hours = COALESCE(total_hours, 0) + $3,
-    total_cycles = COALESCE(total_cycles, 0) + $4,
-    condition_pct = GREATEST(
-      0,
-      ROUND(
-        (COALESCE(condition_pct, 100)::numeric - $5::numeric),
-        1
-      )
-    ),
-    current_airport = COALESCE($6, current_airport),
-    updated_at = NOW()
-  WHERE id = $1
-    AND airline_id = $2
-  `,
-  [
-    schedule.aircraft_id,
-    airlineId,
-    flightHoursToAdd,
-    flightCyclesToAdd,
-    conditionWearPct,
-    schedule.destination || null
-  ]
-);
-   
-await client.query(
-  `
-  UPDATE public.schedule_items
-  SET
-    finance_settled = TRUE,
-    finance_log_id = $3,
-    finance_settled_at = NOW(),
-    updated_at = NOW()
-  WHERE id = $1
-    AND airline_id = $2
-  `,
-  [scheduleItemId, airlineId, mainFinanceLogId]
-);
-
-  const financeResult = await client.query(
-    `
-    SELECT *
-    FROM public.company_finance
-    WHERE airline_id = $1
-    `,
-    [airlineId]
-  );
-
-  return {
-    ok: true,
-    airline_id: airlineId,
-    schedule_item_id: scheduleItemId,
-    route_plan_id: route.id,
-    sim_year: simYear,
-    flight: {
-      origin: schedule.origin,
-      destination: schedule.destination,
-      flight_number: schedule.flight_number,
-      aircraft: schedule.aircraft,
-      registration: schedule.aircraft_registration
-    },
-    settlement: {
-      passengers,
-      load_factor: loadFactor,
-      revenue,
-      fuel,
-      handling,
-      landing,
-      navigation,
-      overflight,
-      expenses,
-      profit
-    },
-    finance: financeResult.rows[0]
-  };
-}
-
-router.post("/finance/flight-settlement", requireAuth, async (req, res) => {
-  const airlineId = req.airline_id;
-  const scheduleItemId = Number(req.body.schedule_item_id);
-
-  if (!Number.isInteger(scheduleItemId) || scheduleItemId <= 0) {
-    return res.status(400).json({
-      ok: false,
-      error: "INVALID_SCHEDULE_ITEM_ID"
-    });
-  }
-
   const client = await pool.connect();
 
   try {
     await client.query("BEGIN");
-
-    const result = await ACS_settleFlight(
-      client,
-      airlineId,
-      scheduleItemId
+    await client.query(
+      "SELECT pg_advisory_xact_lock($1)",
+      [ACS_FLIGHT_SETTLEMENT_LOCK]
     );
 
-    if (!result.ok) {
-      await client.query("ROLLBACK");
-      return res.status(409).json(result);
-    }
+    const result = await client.query(
+      `
+      WITH clock AS MATERIALIZED (
+        SELECT
+          acs_get_current_sim_time() AS sim_time,
+          FLOOR(
+            EXTRACT(EPOCH FROM acs_get_current_sim_time()) * 1000
+          )::bigint AS sim_timestamp_ms
+      ),
+      legacy_cutoff AS MATERIALIZED (
+        SELECT
+          airline_id,
+          TO_TIMESTAMP(
+            MAX(closed_sim_timestamp)::double precision / 1000
+          )::timestamp AS cutoff_sim_time
+        FROM public.finance_history
+        WHERE record_kind = 'LEGACY_CUTOVER'
+          AND closed_sim_timestamp IS NOT NULL
+        GROUP BY airline_id
+      ),
+      due AS MATERIALIZED (
+        SELECT occurrence.*
+        FROM public.flight_occurrences occurrence
+        LEFT JOIN legacy_cutoff cutoff
+          ON cutoff.airline_id = occurrence.airline_id
+        WHERE occurrence.operational_status = 'ARRIVED'
+          AND occurrence.settled_at IS NULL
+          AND occurrence.arrived_at IS NOT NULL
+          AND (
+            cutoff.cutoff_sim_time IS NULL
+            OR occurrence.arrived_at > cutoff.cutoff_sim_time
+          )
+        ORDER BY occurrence.arrived_at, occurrence.id
+        LIMIT $1
+        FOR UPDATE OF occurrence SKIP LOCKED
+      ),
+      economics AS MATERIALIZED (
+        SELECT
+          due.*,
+          catalog.seats,
+          catalog.fuel_burn_kgph,
+          flight_economics.passenger_yield_usd_per_pax_mile,
+          flight_economics.demand_multiplier,
+          flight_economics.fuel_price_usd_per_gallon,
+          flight_economics.handling_base_usd,
+          flight_economics.landing_fee_base_usd,
+          flight_economics.navigation_usd_per_nm,
+          flight_economics.overflight_usd_per_nm,
+          route_rank.route_number
+        FROM due
+        JOIN public.route_plans route
+          ON route.id = due.route_plan_id
+         AND route.airline_id = due.airline_id
+        JOIN public.aircraft_fleet fleet
+          ON fleet.id = due.aircraft_id
+         AND fleet.airline_id = due.airline_id
+        JOIN public.aircraft_catalog catalog
+          ON catalog.model_key = fleet.model_key
+        JOIN public.acs_economic_periods period
+          ON EXTRACT(YEAR FROM due.arrived_at)::integer
+             BETWEEN period.era_start_year AND period.era_end_year
+        JOIN public.flight_economics flight_economics
+          ON flight_economics.period_id = period.id
+        CROSS JOIN LATERAL (
+          SELECT COUNT(*)::integer AS route_number
+          FROM public.route_plans ordered_route
+          WHERE ordered_route.airline_id = due.airline_id
+            AND ordered_route.id <= due.route_plan_id
+        ) route_rank
+      ),
+      base_amounts AS MATERIALIZED (
+        SELECT
+          economics.*,
+          LEAST(
+            0.92,
+            CASE
+              WHEN route_number <= 4 THEN 0.74 * 1.18
+              ELSE 0.62
+            END
+          )::numeric AS load_factor,
+          GREATEST(
+            0.25,
+            COALESCE(block_time_min, 60)::numeric / 60
+          ) AS block_hours
+        FROM economics
+      ),
+      amounts AS MATERIALIZED (
+        SELECT
+          base_amounts.*,
+          GREATEST(
+            1,
+            ROUND(COALESCE(seats, 0) * load_factor)
+          )::integer AS passengers,
+          ROUND(
+            GREATEST(1, ROUND(COALESCE(seats, 0) * load_factor))
+            * COALESCE(distance_nm, 0)
+            * COALESCE(passenger_yield_usd_per_pax_mile, 0)
+            * COALESCE(demand_multiplier, 1)
+          )::bigint AS revenue_amount,
+          ROUND(
+            (
+              COALESCE(fuel_burn_kgph, 0)
+              * block_hours / 3.04
+            ) * COALESCE(fuel_price_usd_per_gallon, 0)
+          )::bigint AS fuel_amount,
+          ROUND(COALESCE(handling_base_usd, 0))::bigint AS handling_amount,
+          ROUND(COALESCE(landing_fee_base_usd, 0))::bigint AS landing_amount,
+          ROUND(
+            COALESCE(distance_nm, 0)
+            * COALESCE(navigation_usd_per_nm, 0)
+          )::bigint AS navigation_amount,
+          ROUND(
+            COALESCE(distance_nm, 0)
+            * COALESCE(overflight_usd_per_nm, 0)
+          )::bigint AS overflight_amount
+        FROM base_amounts
+      ),
+      inserted_logs AS MATERIALIZED (
+        INSERT INTO public.finance_log (
+          airline_id,
+          type,
+          source,
+          amount,
+          timestamp,
+          route_plan_id,
+          schedule_item_id,
+          reference_uid,
+          description,
+          created_at
+        )
+        SELECT
+          amounts.airline_id,
+          entry.type,
+          entry.source,
+          entry.amount,
+          clock.sim_timestamp_ms,
+          amounts.route_plan_id,
+          amounts.schedule_item_id,
+          'FLIGHT_OCCURRENCE:' || amounts.occurrence_key || ':' || entry.suffix,
+          entry.description,
+          CURRENT_TIMESTAMP
+        FROM amounts
+        CROSS JOIN clock
+        CROSS JOIN LATERAL (
+          VALUES
+            (
+              'INCOME', 'FLIGHT_REVENUE', amounts.revenue_amount,
+              'REVENUE',
+              'Flight revenue ' || amounts.origin || '-' || amounts.destination
+            ),
+            (
+              'EXPENSE', 'FLIGHT_FUEL', amounts.fuel_amount,
+              'FUEL',
+              'Fuel cost ' || amounts.origin || '-' || amounts.destination
+            ),
+            (
+              'EXPENSE', 'FLIGHT_HANDLING', amounts.handling_amount,
+              'HANDLING',
+              'Handling cost ' || amounts.origin || '-' || amounts.destination
+            ),
+            (
+              'EXPENSE', 'FLIGHT_LANDING', amounts.landing_amount,
+              'LANDING',
+              'Landing fee ' || amounts.origin || '-' || amounts.destination
+            ),
+            (
+              'EXPENSE', 'FLIGHT_NAVIGATION', amounts.navigation_amount,
+              'NAVIGATION',
+              'Navigation cost ' || amounts.origin || '-' || amounts.destination
+            ),
+            (
+              'EXPENSE', 'FLIGHT_OVERFLIGHT', amounts.overflight_amount,
+              'OVERFLIGHT',
+              'Overflight cost ' || amounts.origin || '-' || amounts.destination
+            )
+        ) AS entry(type, source, amount, suffix, description)
+        ON CONFLICT (reference_uid) DO NOTHING
+        RETURNING id, airline_id, type, source, reference_uid
+      ),
+      complete_occurrences AS MATERIALIZED (
+        SELECT
+          amounts.id AS occurrence_id,
+          MIN(inserted_logs.id) FILTER (
+            WHERE inserted_logs.source = 'FLIGHT_REVENUE'
+          ) AS finance_log_id
+        FROM amounts
+        JOIN inserted_logs
+          ON inserted_logs.reference_uid LIKE
+             'FLIGHT_OCCURRENCE:' || amounts.occurrence_key || ':%'
+        GROUP BY amounts.id
+        HAVING COUNT(*) = 6
+      ),
+      finance_delta AS MATERIALIZED (
+        SELECT
+          amounts.airline_id,
+          SUM(amounts.revenue_amount)::bigint AS revenue,
+          SUM(
+            amounts.fuel_amount
+            + amounts.handling_amount
+            + amounts.landing_amount
+            + amounts.navigation_amount
+            + amounts.overflight_amount
+          )::bigint AS expenses,
+          SUM(amounts.fuel_amount)::bigint AS fuel,
+          SUM(amounts.handling_amount + amounts.landing_amount)::bigint AS handling,
+          SUM(amounts.navigation_amount)::bigint AS navigation,
+          SUM(amounts.overflight_amount)::bigint AS overflight,
+          SUM(
+            amounts.handling_amount
+            + amounts.landing_amount
+            + amounts.navigation_amount
+            + amounts.overflight_amount
+          )::bigint AS airport
+        FROM amounts
+        JOIN complete_occurrences complete
+          ON complete.occurrence_id = amounts.id
+        GROUP BY amounts.airline_id
+      ),
+      updated_finance AS (
+        UPDATE public.company_finance finance
+        SET
+          revenue = COALESCE(finance.revenue, 0) + delta.revenue,
+          live_revenue = COALESCE(finance.live_revenue, 0) + delta.revenue,
+          weekly_revenue = COALESCE(finance.weekly_revenue, 0) + delta.revenue,
+          expenses = COALESCE(finance.expenses, 0) + delta.expenses,
+          profit = COALESCE(finance.profit, 0) + delta.revenue - delta.expenses,
+          capital = COALESCE(finance.capital, 0) + delta.revenue - delta.expenses,
+          cost_fuel = COALESCE(finance.cost_fuel, 0) + delta.fuel,
+          cost_handling = COALESCE(finance.cost_handling, 0) + delta.handling,
+          cost_navigation = COALESCE(finance.cost_navigation, 0) + delta.navigation,
+          cost_overflight = COALESCE(finance.cost_overflight, 0) + delta.overflight,
+          cost_airport = COALESCE(finance.cost_airport, 0) + delta.airport,
+          updated_at = CURRENT_TIMESTAMP
+        FROM finance_delta delta
+        WHERE finance.airline_id = delta.airline_id
+        RETURNING finance.airline_id
+      ),
+      updated_occurrences AS (
+        UPDATE public.flight_occurrences occurrence
+        SET
+          settled_at = clock.sim_time,
+          settled_passengers = amounts.passengers,
+          settled_load_factor = amounts.load_factor,
+          settled_revenue = amounts.revenue_amount,
+          settled_expenses = (
+            amounts.fuel_amount
+            + amounts.handling_amount
+            + amounts.landing_amount
+            + amounts.navigation_amount
+            + amounts.overflight_amount
+          ),
+          settled_profit = amounts.revenue_amount - (
+            amounts.fuel_amount
+            + amounts.handling_amount
+            + amounts.landing_amount
+            + amounts.navigation_amount
+            + amounts.overflight_amount
+          ),
+          finance_log_id = complete.finance_log_id,
+          updated_at = CURRENT_TIMESTAMP
+        FROM amounts
+        JOIN complete_occurrences complete
+          ON complete.occurrence_id = amounts.id
+        JOIN updated_finance finance
+          ON finance.airline_id = amounts.airline_id
+        CROSS JOIN clock
+        WHERE occurrence.id = amounts.id
+          AND occurrence.settled_at IS NULL
+        RETURNING occurrence.id
+      )
+      SELECT COUNT(*)::integer AS processed_count
+      FROM updated_occurrences
+      `,
+      [normalizedBatchSize]
+    );
 
     await client.query("COMMIT");
-    return res.json(result);
 
-  } catch (err) {
-    await client.query("ROLLBACK");
-
-    console.error("ACS FLIGHT SETTLEMENT ERROR", err);
-
-    return res.status(500).json({
-      ok: false,
-      error: "FLIGHT_SETTLEMENT_ERROR",
-      message: err.message
-    });
-
+    return {
+      processedCount: Number(result.rows[0]?.processed_count || 0)
+    };
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (_) {}
+    throw error;
   } finally {
     client.release();
   }
-});
+}
 
 export default router;
