@@ -951,7 +951,10 @@ router.get("/hr/departments/:airlineId", async (req, res) => {
         required,
         morale,
         salary,
-        payroll,
+        ROUND(
+        COALESCE(staff, 0)::NUMERIC *
+        COALESCE(salary, 0)::NUMERIC
+        )::BIGINT AS payroll,
         bonus,
         years
       FROM hr_departments
@@ -986,39 +989,56 @@ router.get("/hr/departments/:airlineId", async (req, res) => {
    ============================================================ */
 
 router.patch("/hr/staff", async (req, res) => {
-
- const { airline_id, dept_id, staff, morale, salary, payroll } = req.body;
+  const {
+    airline_id,
+    dept_id,
+    staff,
+    morale,
+    salary
+  } = req.body;
 
   try {
-
     await pool.query(
-`
-UPDATE hr_departments
-SET
-  staff = $3,
-  morale = COALESCE($4, morale),
-  salary = COALESCE($5, salary),
-  payroll = COALESCE($6, payroll),
-  updated_at = NOW()
-WHERE airline_id = $1
-AND dept_id = $2
-`,
-[airline_id, dept_id, staff, morale, salary, payroll]
-);
+      `
+      UPDATE public.hr_departments
+      SET
+        staff = $3,
+        morale = COALESCE($4, morale),
+        salary = COALESCE($5, salary),
 
-    res.json({ ok: true });
+        payroll = ROUND(
+          COALESCE($3::NUMERIC, staff::NUMERIC) *
+          COALESCE($5::NUMERIC, salary::NUMERIC)
+        )::BIGINT,
+
+        updated_at = NOW()
+      WHERE airline_id = $1
+        AND dept_id = $2
+      `,
+      [
+        airline_id,
+        dept_id,
+        staff,
+        morale,
+        salary
+      ]
+    );
+
+    res.json({
+      ok: true
+    });
 
   } catch (err) {
-
-    console.error("HR UPDATE ERROR:", err);
+    console.error(
+      "HR UPDATE ERROR",
+      err
+    );
 
     res.status(500).json({
       ok: false,
       error: err.message
     });
-
   }
-
 });
 
 /* ============================================================
@@ -1032,9 +1052,19 @@ router.get("/hr/payroll/:airlineId", async (req, res) => {
   try {
 
     const result = await pool.query(`
-      SELECT COALESCE(SUM(payroll),0) AS total
-      FROM hr_departments
-      WHERE airline_id = $1
+      SELECT
+  COALESCE(
+    SUM(
+      ROUND(
+        COALESCE(staff, 0)::NUMERIC *
+        COALESCE(salary, 0)::NUMERIC
+      )
+    ),
+    0
+    )::BIGINT AS total
+   FROM public.hr_departments
+   WHERE airline_id = $1
+   
     `,[airlineId]);
 
     res.json({
