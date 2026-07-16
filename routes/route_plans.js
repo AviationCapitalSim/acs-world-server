@@ -938,7 +938,7 @@ async function ACS_createRoutePlanOnce(req, res) {
 
     const origin = ACS_normalizeIcao(body.origin);
     const destination = ACS_normalizeIcao(body.destination);
-    const aircraftId = Number(body.aircraft_id || body.aircraftId || 0);
+    let aircraftId = Number(body.aircraft_id || body.aircraftId || 0);
 
     const selectedDaysRaw = Array.isArray(body.selected_days)
       ? body.selected_days
@@ -1135,7 +1135,7 @@ const currentCapital =
       });
     }
 
-    const aircraft = aircraftResult.rows[0];
+    let aircraft = aircraftResult.rows[0];
 
     const aircraftStatus =
       ACS_normalizeText(aircraft.status).toUpperCase();
@@ -1273,95 +1273,163 @@ if (internalConflict) {
   });
 }
 
-const existingRoutesResult = await client.query(
+const candidateAircraftResult = await client.query(
   `
   SELECT
-    id,
-    route_uid,
-    origin,
-    destination,
-    selected_days,
-    departure,
-    block_time_min,
-    turnaround_min,
-    flight_number_out,
-    flight_number_in,
-    route_state
-  FROM public.route_plans
-  WHERE airline_id = $1
-    AND aircraft_id = $2
-    AND UPPER(COALESCE(route_state, 'ACTIVE')) = 'ACTIVE'
-  ORDER BY id
-  FOR UPDATE
+    af.id,
+    af.airline_id,
+    af.registration,
+    af.aircraft_name,
+    af.model_key,
+    af.status,
+    af.operational_status,
+    af.maintenance_status,
+    af.condition_pct,
+    ams.maintenance_control_status,
+    ac.range_nm,
+    ac.speed_kts,
+    ac.aircraft_category
+  FROM public.aircraft_fleet af
+  LEFT JOIN public.aircraft_maintenance_status ams
+    ON ams.aircraft_id = af.id
+  LEFT JOIN public.aircraft_catalog ac
+    ON ac.model_key = af.model_key
+  WHERE af.airline_id = $1
+    AND UPPER(TRIM(af.model_key)) =
+        UPPER(TRIM($2))
+  ORDER BY
+    CASE WHEN af.id = $3 THEN 0 ELSE 1 END,
+    af.id
+  FOR UPDATE OF af
   `,
   [
     airlineId,
+    aircraft.model_key,
     aircraftId
   ]
 );
 
+let resolvedAircraft = null;
 let scheduleConflict = null;
 
-for (const existingRoute of existingRoutesResult.rows) {
-  const existingIntervals =
-    ACS_buildWeeklyRotationIntervals({
-      selectedDays: existingRoute.selected_days,
-      departure: existingRoute.departure,
-      blockTimeMin: existingRoute.block_time_min,
-      turnaroundMin: existingRoute.turnaround_min
-    });
+for (const candidate of candidateAircraftResult.rows) {
+  const candidateStatus =
+    ACS_normalizeText(candidate.status).toUpperCase();
 
-  for (const proposedInterval of proposedIntervals) {
-    for (const existingInterval of existingIntervals) {
-      if (
-        ACS_weeklyIntervalsOverlap(
-          proposedInterval,
-          existingInterval
-        )
-      ) {
-        scheduleConflict = {
-          route_plan_id: Number(existingRoute.id),
-          route_uid: existingRoute.route_uid,
-          origin: existingRoute.origin,
-          destination: existingRoute.destination,
-          flight_number_out:
-            existingRoute.flight_number_out,
-          flight_number_in:
-            existingRoute.flight_number_in,
-          existing_rotation: existingInterval,
-          proposed_rotation: proposedInterval
-        };
+  if (routePlanningBlockedStatuses.has(candidateStatus)) {
+    continue;
+  }
 
+  const candidateRangeNm =
+    Math.round(Number(candidate.range_nm || 0));
+
+  if (
+    !Number.isFinite(candidateRangeNm) ||
+    candidateRangeNm < distanceNm
+  ) {
+    continue;
+  }
+
+  const existingRoutesResult = await client.query(
+    `
+    SELECT
+      id,
+      route_uid,
+      origin,
+      destination,
+      selected_days,
+      departure,
+      block_time_min,
+      turnaround_min,
+      flight_number_out,
+      flight_number_in,
+      route_state
+    FROM public.route_plans
+    WHERE airline_id = $1
+      AND aircraft_id = $2
+      AND UPPER(COALESCE(route_state, 'ACTIVE')) = 'ACTIVE'
+    ORDER BY id
+    FOR UPDATE
+    `,
+    [
+      airlineId,
+      candidate.id
+    ]
+  );
+
+  let candidateConflict = null;
+
+  for (const existingRoute of existingRoutesResult.rows) {
+    const existingIntervals =
+      ACS_buildWeeklyRotationIntervals({
+        selectedDays: existingRoute.selected_days,
+        departure: existingRoute.departure,
+        blockTimeMin: existingRoute.block_time_min,
+        turnaroundMin: existingRoute.turnaround_min
+      });
+
+    for (const proposedInterval of proposedIntervals) {
+      for (const existingInterval of existingIntervals) {
+        if (
+          ACS_weeklyIntervalsOverlap(
+            proposedInterval,
+            existingInterval
+          )
+        ) {
+          candidateConflict = {
+            aircraft_id: Number(candidate.id),
+            route_plan_id: Number(existingRoute.id),
+            route_uid: existingRoute.route_uid,
+            origin: existingRoute.origin,
+            destination: existingRoute.destination,
+            flight_number_out:
+              existingRoute.flight_number_out,
+            flight_number_in:
+              existingRoute.flight_number_in,
+            existing_rotation: existingInterval,
+            proposed_rotation: proposedInterval
+          };
+
+          break;
+        }
+      }
+
+      if (candidateConflict) {
         break;
       }
     }
 
-    if (scheduleConflict) {
+    if (candidateConflict) {
       break;
     }
   }
 
-  if (scheduleConflict) {
-    break;
+  if (candidateConflict) {
+    scheduleConflict = candidateConflict;
+    continue;
   }
+
+  resolvedAircraft = candidate;
+  scheduleConflict = null;
+  break;
 }
 
-if (scheduleConflict) {
+if (!resolvedAircraft) {
   await client.query("ROLLBACK");
   transactionStarted = false;
 
   return res.status(409).json({
     ok: false,
-    error: "AIRCRAFT_SCHEDULE_CONFLICT",
-    aircraft: {
-      id: aircraft.id,
-      registration: aircraft.registration,
-      operational_status:
-        aircraft.operational_status
-    },
+    error: "AIRCRAFT_MODEL_POOL_EXHAUSTED",
+    model_key: aircraft.model_key,
+    fleet_units_checked:
+      candidateAircraftResult.rows.length,
     conflict: scheduleConflict
   });
 }
+
+aircraft = resolvedAircraft;
+aircraftId = Number(resolvedAircraft.id);
 
     const slotMovements = ACS_sortSlotMovementsForLocking(
   ACS_buildSlotMovements({
