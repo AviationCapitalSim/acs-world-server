@@ -1,5 +1,5 @@
 /* ============================================================
-   ACS OCC — FINANCE CORE
+   ACS OCC —  FINANCE CORE
    ------------------------------------------------------------
    Purpose:
    - Official simulation-month authority
