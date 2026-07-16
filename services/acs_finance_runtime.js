@@ -24,11 +24,20 @@ async function ACS_closeFinanceForAirline(airlineId) {
 
     await client.query("COMMIT");
 
-    return {
-      processedCount: Array.isArray(result?.closed_months)
-        ? result.closed_months.length
-        : 0
-    };
+    const closedMonthCount =
+  Array.isArray(result?.closed_months)
+    ? result.closed_months.length
+    : 0;
+
+const payrollAppliedCount =
+  Number(result?.payroll_applied_count || 0);
+
+return {
+  processedCount:
+    closedMonthCount +
+    payrollAppliedCount
+};
+     
   } catch (error) {
     try {
       await client.query("ROLLBACK");
