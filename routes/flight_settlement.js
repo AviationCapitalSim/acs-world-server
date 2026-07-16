@@ -40,6 +40,18 @@ export async function ACS_runFlightSettlementRuntime({
       [ACS_FLIGHT_SETTLEMENT_LOCK]
     );
 
+        await client.query(
+      `
+      SELECT pg_advisory_xact_lock(
+        1095783253,
+        airline_id
+      )
+      FROM public.company_finance
+      WHERE airline_id IS NOT NULL
+      ORDER BY airline_id
+      `
+    );
+     
     const result = await client.query(
       `
       WITH clock AS MATERIALIZED (
@@ -62,10 +74,16 @@ export async function ACS_runFlightSettlementRuntime({
       ),
       due AS MATERIALIZED (
         SELECT occurrence.*
-        FROM public.flight_occurrences occurrence
+       FROM public.flight_occurrences occurrence
+        JOIN public.company_finance finance
+          ON finance.airline_id = occurrence.airline_id
         LEFT JOIN legacy_cutoff cutoff
           ON cutoff.airline_id = occurrence.airline_id
         WHERE occurrence.operational_status = 'ARRIVED'
+          AND EXTRACT(YEAR FROM occurrence.arrived_at)::integer
+              = finance.current_sim_year
+          AND EXTRACT(MONTH FROM occurrence.arrived_at)::integer
+              = finance.current_sim_month
           AND occurrence.settled_at IS NULL
           AND occurrence.arrived_at IS NOT NULL
           AND (
