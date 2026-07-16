@@ -662,6 +662,60 @@ router.post("/auth/reset-password", async (req, res) => {
 
 import { requireAuth } from "../middleware/auth.js";
 
+/* ============================================================
+   ACS GLOBAL LOGOUT
+   PostgreSQL session invalidation authority
+   ============================================================ */
+
+router.post("/auth/logout", requireAuth, async (req, res) => {
+
+  try {
+
+    await pool.query(
+      `
+        UPDATE sessions
+        SET active = false
+        WHERE user_id = $1
+          AND active = true
+      `,
+      [req.user_id]
+    );
+
+    const cookieOptions = {
+      httpOnly: true,
+      secure: true,
+      sameSite: "none",
+      path: "/"
+    };
+
+    res.clearCookie("acs_session", cookieOptions);
+
+    res.clearCookie("acs_session", {
+      ...cookieOptions,
+      domain: "api.aviationcapitalsim.com"
+    });
+
+    res.clearCookie("acs_session", {
+      ...cookieOptions,
+      domain: ".aviationcapitalsim.com"
+    });
+
+    return res.json({
+      ok: true,
+      status: "SESSION_CLOSED"
+    });
+
+  } catch (err) {
+
+    console.error("ACS LOGOUT ERROR:", err);
+
+    return res.status(500).json({
+      ok: false,
+      error: "LOGOUT_FAILED"
+    });
+  }
+});
+
 router.get("/session", requireAuth, async (req, res) => {
 
   try {
