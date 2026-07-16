@@ -776,4 +776,266 @@ router.post("/finance/payroll", requireAuth, async (req,res)=>{
 
 });
 
+/* ============================================================
+   GET FINANCE HISTORY — ACS POSTGRESQL AUTHORITY
+   ------------------------------------------------------------
+   Returns:
+   - Available simulation years
+   - Closed monthly records
+   - Legacy cutover record
+   - Current open month when applicable
+   ============================================================ */
+
+router.get(
+  "/finance/history",
+  requireAuth,
+  async (req, res) => {
+    const airlineId = Number(req.airline_id);
+    const requestedYear = Number(req.query?.year);
+
+    if (
+      !Number.isInteger(airlineId) ||
+      airlineId <= 0
+    ) {
+      return res.status(401).json({
+        ok: false,
+        error: "NO_AIRLINE_SESSION"
+      });
+    }
+
+    const client = await pool.connect();
+
+    try {
+      const clockResult = await client.query(
+        `
+        SELECT
+          acs_get_current_sim_time() AS sim_time,
+          EXTRACT(
+            YEAR FROM acs_get_current_sim_time()
+          )::integer AS sim_year,
+          EXTRACT(
+            MONTH FROM acs_get_current_sim_time()
+          )::integer AS sim_month
+        `
+      );
+
+      const simTime =
+        clockResult.rows[0]?.sim_time;
+
+      const simYear = Number(
+        clockResult.rows[0]?.sim_year
+      );
+
+      const simMonth = Number(
+        clockResult.rows[0]?.sim_month
+      );
+
+      const selectedYear =
+        Number.isInteger(requestedYear) &&
+        requestedYear >= 1900 &&
+        requestedYear <= 2200
+          ? requestedYear
+          : simYear;
+
+      const yearsResult = await client.query(
+        `
+        SELECT DISTINCT year
+        FROM (
+          SELECT
+            history.year::integer AS year
+          FROM public.finance_history history
+          WHERE history.airline_id = $1
+            AND history.year IS NOT NULL
+
+          UNION
+
+          SELECT $2::integer
+        ) available_years
+        ORDER BY year DESC
+        `,
+        [airlineId, simYear]
+      );
+
+      const historyResult = await client.query(
+        `
+        SELECT
+          id,
+          airline_id,
+          year,
+          month,
+          month_key,
+
+          record_kind,
+          data_quality,
+
+          opening_capital,
+          closing_capital,
+          capital,
+
+          revenue,
+          expenses,
+          profit,
+          debt,
+          fleet_size,
+
+          cost_fuel,
+          cost_handling,
+          cost_landing,
+          cost_slots,
+          cost_navigation,
+          cost_overflight,
+          cost_airport,
+          cost_maintenance,
+          cost_hr,
+          cost_leasing,
+          cost_loans,
+          cost_other,
+          cost_new_aircraft_purchase,
+          cost_used_aircraft_purchase,
+
+          flight_count,
+          passenger_count,
+
+          period_start_sim,
+          period_end_sim,
+          closed_by,
+          metadata
+        FROM public.finance_history
+        WHERE airline_id = $1
+          AND year = $2
+        ORDER BY month, id
+        `,
+        [airlineId, selectedYear]
+      );
+
+      let openMonth = null;
+
+      if (selectedYear === simYear) {
+        const currentResult = await client.query(
+          `
+          SELECT
+            airline_id,
+            current_sim_year AS year,
+            current_sim_month AS month,
+
+            opening_capital,
+            capital AS closing_capital,
+            capital,
+
+            revenue,
+            expenses,
+            profit,
+            debt,
+            fleet_size,
+
+            cost_fuel,
+            cost_handling,
+            cost_landing,
+            cost_slots,
+            cost_navigation,
+            cost_overflight,
+            cost_airport,
+            cost_maintenance,
+            cost_hr,
+            cost_leasing,
+            cost_loans,
+            cost_other,
+            cost_new_aircraft_purchase,
+            cost_used_aircraft_purchase
+          FROM public.company_finance
+          WHERE airline_id = $1
+          LIMIT 1
+          `,
+          [airlineId]
+        );
+
+        if (currentResult.rows.length) {
+          openMonth = {
+            ...currentResult.rows[0],
+            month_key:
+              `${simYear}-${String(simMonth).padStart(2, "0")}`,
+            record_kind: "OPEN_PERIOD",
+            data_quality: "LIVE",
+            period_start_sim:
+              `${simYear}-${String(simMonth).padStart(2, "0")}-01`,
+            period_end_sim: null,
+            closed_by: null,
+            metadata: {
+              monthly_breakdown_available: true,
+              open_period: true
+            }
+          };
+        }
+      }
+
+      const annualRows = [
+        ...historyResult.rows,
+        ...(openMonth ? [openMonth] : [])
+      ];
+
+      const annualSummary = annualRows.reduce(
+        (summary, row) => {
+          summary.revenue += Number(
+            row.revenue || 0
+          );
+
+          summary.expenses += Number(
+            row.expenses || 0
+          );
+
+          summary.profit += Number(
+            row.profit || 0
+          );
+
+          summary.flight_count += Number(
+            row.flight_count || 0
+          );
+
+          summary.passenger_count += Number(
+            row.passenger_count || 0
+          );
+
+          return summary;
+        },
+        {
+          revenue: 0,
+          expenses: 0,
+          profit: 0,
+          flight_count: 0,
+          passenger_count: 0
+        }
+      );
+
+      return res.json({
+        ok: true,
+        authority: "POSTGRESQL",
+        sim_time: simTime,
+        current_year: simYear,
+        current_month: simMonth,
+        selected_year: selectedYear,
+        available_years:
+          yearsResult.rows.map(
+            row => Number(row.year)
+          ),
+        annual_summary: annualSummary,
+        months: historyResult.rows,
+        open_month: openMonth
+      });
+    } catch (error) {
+      console.error(
+        "FINANCE HISTORY FETCH ERROR",
+        error
+      );
+
+      return res.status(500).json({
+        ok: false,
+        error: "FINANCE_HISTORY_FETCH_FAILED",
+        detail: error.message
+      });
+    } finally {
+      client.release();
+    }
+  }
+);
+
 export default router;
