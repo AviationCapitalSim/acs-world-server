@@ -277,9 +277,14 @@ async function ACS_settleMonthlyPayroll(
     WITH payroll_total AS (
       SELECT
         COALESCE(
-          SUM(COALESCE(payroll, 0)),
-          0
-        )::BIGINT AS amount
+      SUM(
+      ROUND(
+      COALESCE(staff, 0)::NUMERIC *
+      COALESCE(salary, 0)::NUMERIC
+        )
+       ),
+        0
+      )::BIGINT AS amount
       FROM public.hr_departments
       WHERE airline_id = $1
     ),
