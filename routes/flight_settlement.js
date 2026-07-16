@@ -193,7 +193,9 @@ export async function ACS_runFlightSettlementRuntime({
           entry.type,
           entry.source,
           entry.amount,
-          clock.sim_timestamp_ms,
+          FLOOR(
+            EXTRACT(EPOCH FROM amounts.arrived_at) * 1000
+          )::bigint,
           amounts.route_plan_id,
           amounts.schedule_item_id,
           'FLIGHT_OCCURRENCE:' || amounts.occurrence_key || ':' || entry.suffix,
