@@ -32,7 +32,9 @@ import skytrackGlobalRoutes
   from "./routes/skytrack_global.js";
 import skytrackSnapshotRoutes
   from "./routes/skytrack_snapshot.js";
-import flightSettlementRoutes from "./routes/flight_settlement.js";
+import flightSettlementRoutes, {
+  ACS_runFlightSettlementRuntime
+} from "./routes/flight_settlement.js";
 import occAlertsRoutes from "./routes/occ_alerts.js";
 import {
   registerACSRuntimeJobHandler,
@@ -187,6 +189,24 @@ registerACSRuntimeJobHandler(
   async () => {
     const result =
       await ACS_runFinanceMonthlyCloseRuntime();
+
+    return {
+      processedCount:
+        Number(result?.processedCount || 0)
+    };
+  }
+);
+
+registerACSRuntimeJobHandler(
+  "FLIGHT_SETTLEMENT",
+  async ({ job }) => {
+    const batchSize =
+      Number(job?.config?.batch_size) || 100;
+
+    const result =
+      await ACS_runFlightSettlementRuntime({
+        batchSize
+      });
 
     return {
       processedCount:
