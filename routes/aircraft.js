@@ -85,9 +85,9 @@ async function ACS_getAircraftAutomationSettings(db, airlineId) {
   } catch (error) {
     console.error("ACS OCC AUTOMATION SETTINGS ERROR:", error);
 
-    return {
-      autoCcheck: true,
-      autoDcheck: true
+      return {
+      autoCcheck: false,
+      autoDcheck: false
     };
   }
 }
@@ -1039,7 +1039,7 @@ router.get("/aircraft/fleet/:id/maintenance/quote", requireAuth, async (req, res
    - Uses acs_get_current_sim_time()
    ============================================================ */
 
-router.post("/aircraft/fleet/:id/maintenance/start", requireAuth, async (req, res) => {
+async function ACS_startCDMaintenance(req, res) {
    
   const client = await pool.connect();
 
