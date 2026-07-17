@@ -1561,10 +1561,61 @@ const financeAfterResult = await client.query(
       details: err.message
     });
 
-  } finally {
+    } finally {
     client.release();
   }
-});
+}
+
+router.post(
+  "/aircraft/fleet/:id/maintenance/start",
+  requireAuth,
+  ACS_startCDMaintenance
+);
+
+async function ACS_startAutomaticCDMaintenance({
+  airlineId,
+  aircraftId,
+  checkType
+}) {
+  let statusCode = 200;
+  let payload = null;
+
+  const response = {
+    status(code) {
+      statusCode = Number(code) || 500;
+      return this;
+    },
+
+    json(body) {
+      payload = body;
+      return body;
+    }
+  };
+
+  await ACS_startCDMaintenance(
+    {
+      airline_id: airlineId,
+      params: {
+        id: String(aircraftId)
+      },
+      body: {
+        check_type: checkType
+      },
+      acs_start_source: "AUTOMATIC"
+    },
+    response
+  );
+
+  return {
+    ok:
+      statusCode >= 200 &&
+      statusCode < 300 &&
+      payload?.ok === true,
+
+    status: statusCode,
+    ...payload
+  };
+}
 
 /* ============================================================
    🟦 ACS MAINTENANCE RESOLVER — C/D AUTHORITY v1.2
@@ -2318,10 +2369,87 @@ END AS c_overdue
       }
     }
 
-        const aircraftAutomationSettings =
-      await ACS_getAircraftAutomationSettings(pool, airlineId);
+       const aircraftAutomationSettings =
+  await ACS_getAircraftAutomationSettings(pool, airlineId);
 
-    const currentSimTime = await ACS_getCurrentSimTimeForOcc(pool);
+const automaticCandidatesResult = await pool.query(
+  `
+  SELECT
+    ams.aircraft_id,
+    ams.registration,
+    ams.aircraft_name,
+
+    CASE
+      WHEN UPPER(COALESCE(ams.d_check_status, '')) = 'OVERDUE'
+        AND $2::BOOLEAN = TRUE
+        THEN 'D_CHECK'
+
+      WHEN UPPER(COALESCE(ams.d_check_status, '')) <> 'OVERDUE'
+        AND UPPER(COALESCE(ams.c_check_status, '')) = 'OVERDUE'
+        AND $3::BOOLEAN = TRUE
+        THEN 'C_CHECK'
+
+      ELSE NULL
+    END AS check_type
+
+  FROM public.aircraft_maintenance_status ams
+
+  WHERE ams.airline_id = $1
+
+    AND NOT EXISTS (
+      SELECT 1
+      FROM public.aircraft_maintenance_events ame
+      WHERE ame.airline_id = ams.airline_id
+        AND ame.aircraft_id = ams.aircraft_id
+        AND ame.event_status = 'IN_PROGRESS'
+    )
+
+    AND (
+      (
+        UPPER(COALESCE(ams.d_check_status, '')) = 'OVERDUE'
+        AND $2::BOOLEAN = TRUE
+      )
+      OR (
+        UPPER(COALESCE(ams.d_check_status, '')) <> 'OVERDUE'
+        AND UPPER(COALESCE(ams.c_check_status, '')) = 'OVERDUE'
+        AND $3::BOOLEAN = TRUE
+      )
+    )
+
+  ORDER BY ams.aircraft_id
+  `,
+  [
+    airlineId,
+    aircraftAutomationSettings.autoDcheck === true,
+    aircraftAutomationSettings.autoCcheck === true
+  ]
+);
+
+for (const candidate of automaticCandidatesResult.rows) {
+  const automaticResult =
+    await ACS_startAutomaticCDMaintenance({
+      airlineId,
+      aircraftId: Number(candidate.aircraft_id),
+      checkType: candidate.check_type
+    });
+
+  if (automaticResult.ok === true) {
+    await ACS_createMaintenanceOccAlert(pool, {
+      airlineId,
+      eventId: automaticResult.event.id,
+      registration:
+        candidate.registration ||
+        candidate.aircraft_name ||
+        "AIRCRAFT",
+      checkType: candidate.check_type,
+      action: "STARTED",
+      eventSimTime: automaticResult.event.started_at
+    });
+  }
+}
+
+const currentSimTime =
+  await ACS_getCurrentSimTimeForOcc(pool);
 
     const overdueMaintenanceOccAlerts = [];
 
