@@ -1452,7 +1452,12 @@ const financeAfterResult = await client.query(
         currency,
         financeLogId,
         JSON.stringify({
-          source: "ACS_SERVICE_CD_CONTROL_START_V1",
+          source:
+          startSource === "AUTOMATIC"
+          ? "ACS_AUTOMATIC_CD_MAINTENANCE_V1"
+          : "ACS_SERVICE_CD_CONTROL_START_V1",
+
+          start_source: startSource,
           policy_code: policy.policy_code,
           size_class: sizeClass,
           condition_pct: conditionPct,
@@ -2601,6 +2606,7 @@ export async function ACS_runCDMaintenanceResolver({
    ============================================================ */
 
 router.post("/aircraft/fleet/:id/registration/auto-assign", requireAuth, async (req, res) => {
+   
   const client = await pool.connect();
 
   try {
