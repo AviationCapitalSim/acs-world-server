@@ -11,6 +11,7 @@ import hrRoutes, {
   stopHRMoraleScheduler
 } from "./routes/hr.js";
 import financeRoutes from "./routes/finance.js";
+import bankRoutes from "./routes/bank.js";
 import companySettingsRoutes from "./routes/company_settings.js";
 import companyContextRoutes from "./routes/company_context.js";
 import cookieParser from "cookie-parser";
@@ -349,6 +350,7 @@ app.use("/v1", hrRoutes);
 app.use("/v1", companySettingsRoutes);
 app.use("/v1", companyContextRoutes);
 app.use("/v1", financeRoutes);
+app.use("/v1", bankRoutes);
 app.use("/v1", usersRoutes);
 app.use("/v1", scheduleRoutes);
 app.use("/v1", occAlertsRoutes);
