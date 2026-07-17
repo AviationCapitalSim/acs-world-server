@@ -1006,10 +1006,10 @@ router.patch("/hr/staff", async (req, res) => {
         morale = COALESCE($4, morale),
         salary = COALESCE($5, salary),
 
-        payroll = ROUND(
-          COALESCE($3::NUMERIC, staff::NUMERIC) *
-          COALESCE($5::NUMERIC, salary::NUMERIC)
-        )::BIGINT,
+       payroll = ROUND(
+        COALESCE($3, staff)::NUMERIC *
+        COALESCE($5, salary)::NUMERIC
+       )::BIGINT,
 
         updated_at = NOW()
       WHERE airline_id = $1
