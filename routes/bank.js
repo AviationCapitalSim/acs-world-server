@@ -978,7 +978,7 @@ router.post("/bank/loans", requireAuth, async (req, res) => {
     const loanId = String(idResult.rows[0].id);
 
     const loanReference =
-      \`ACS-BANK-\${airlineId}-\${loanId}\`;
+  `ACS-BANK-${airlineId}-${loanId}`;
 
     const collateralMode =
       selectedAircraft.length > 0
@@ -1011,8 +1011,8 @@ router.post("/bank/loans", requireAuth, async (req, res) => {
         airlineId,
         amount,
         context.sim_timestamp_ms,
-        \`BANK_LOAN:\${loanReference}:DISBURSEMENT\`,
-        \`Bank loan \${loanReference} disbursed by ACS OCC\`
+       `BANK_LOAN:${loanReference}:DISBURSEMENT`,
+       `Bank loan ${loanReference} disbursed by ACS OCC`
       ]
     );
 
@@ -1353,7 +1353,7 @@ router.post(
         String(paymentIdResult.rows[0].id);
 
       const paymentReference =
-        \`BANK_PAYMENT:\${loan.loan_reference}:\${paymentId}\`;
+      `BANK_PAYMENT:${loan.loan_reference}:${paymentId}`;
 
       const logResult = await client.query(
         `
@@ -1382,7 +1382,7 @@ router.post(
           paymentAmount,
           clock.sim_timestamp_ms,
           paymentReference,
-          \`Manual amortization for \${loan.loan_reference}\`
+         `Manual amortization for ${loan.loan_reference}`
         ]
       );
 
