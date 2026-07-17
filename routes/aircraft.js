@@ -1047,7 +1047,12 @@ async function ACS_startCDMaintenance(req, res) {
     const airlineId = Number(req.airline_id);
     const aircraftId = Number(req.params.id);
     const checkType = String(req.body?.check_type || "").trim().toUpperCase();
-
+    
+    const startSource =
+    req.acs_start_source === "AUTOMATIC"
+    ? "AUTOMATIC"
+    : "MANUAL";
+     
     if (!airlineId || !Number.isInteger(airlineId)) {
       return res.status(401).json({
         ok: false,
