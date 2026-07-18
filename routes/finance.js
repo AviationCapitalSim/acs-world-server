@@ -149,36 +149,45 @@ router.post("/finance/log", requireAuth, async (req,res)=>{
    GET FINANCE LOG HISTORY
    ============================================================ */
 
-router.get("/finance/log", requireAuth, async (req,res)=>{
+router.get("/finance/log", requireAuth, async (req, res) => {
 
   const airlineId = req.airline_id;
 
-  try{
+  try {
+
+    const currentSimTime = await ACS_getCurrentSimTimestampMs(pool);
+    const fifteenDaysMs = 15 * 24 * 60 * 60 * 1000;
+    const cutoffSimTime = currentSimTime - fifteenDaysMs;
 
     const result = await pool.query(
       `
       SELECT *
       FROM finance_log
       WHERE airline_id = $1
-      ORDER BY id DESC
-      LIMIT 50
+        AND timestamp >= $2
+        AND timestamp <= $3
+      ORDER BY timestamp DESC, id DESC
+      LIMIT 1000
       `,
-      [airlineId]
+      [
+        airlineId,
+        cutoffSimTime,
+        currentSimTime
+      ]
     );
 
     return res.json({
-      ok:true,
+      ok: true,
       logs: result.rows
     });
 
-  }
-  catch(err){
+  } catch (err) {
 
-    console.error("FINANCE LOG FETCH ERROR",err);
+    console.error("FINANCE LOG FETCH ERROR", err);
 
     return res.status(500).json({
-      ok:false,
-      error:err.message
+      ok: false,
+      error: err.message
     });
 
   }
