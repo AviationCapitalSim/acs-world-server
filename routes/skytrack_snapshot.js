@@ -9,7 +9,72 @@ import { requireAuth } from "../middleware/auth.js";
 
 const router = express.Router();
 
+/* ============================================================
+   ACS SKYTRACK — CANONICAL AIRLINE IDENTITY COLOR
+   ------------------------------------------------------------
+   Stable color generated from PostgreSQL airline_id.
+   Same airline, same color, on every browser and session.
+   ============================================================ */
+
+function ACS_hslToHex(hue, saturation, lightness) {
+  const s = saturation / 100;
+  const l = lightness / 100;
+
+  const a =
+    s * Math.min(l, 1 - l);
+
+  const channel = n => {
+    const k = (n + hue / 30) % 12;
+
+    const value =
+      l -
+      a *
+        Math.max(
+          -1,
+          Math.min(k - 3, 9 - k, 1)
+        );
+
+    return Math.round(255 * value)
+      .toString(16)
+      .padStart(2, "0");
+  };
+
+  return `#${channel(0)}${channel(8)}${channel(4)}`;
+}
+
+function ACS_buildSkyTrackAirlineColor(airlineId) {
+  const id =
+    Math.max(
+      1,
+      Math.trunc(Number(airlineId) || 1)
+    );
+
+  const hue =
+    (id * 137.50776405) % 360;
+
+  const saturation =
+    82 + ((id % 3) * 5);
+
+  const lightness =
+    43 + ((id % 4) * 5);
+
+  return {
+    hex: ACS_hslToHex(
+      hue,
+      saturation,
+      lightness
+    ),
+
+    hsl:
+      `hsl(${hue.toFixed(3)}, ` +
+      `${saturation}%, ${lightness}%)`,
+
+    index: id
+  };
+}
+
 router.get("/snapshot", requireAuth, async (req, res) => {
+   
   const airlineId = Number(req.airline_id);
 
   if (!Number.isInteger(airlineId) || airlineId <= 0) {
@@ -374,9 +439,16 @@ router.get("/snapshot", requireAuth, async (req, res) => {
     );
 
     const flights = result.rows.map(row => {
-      const rawAircraftId = String(row.aircraft_id);
+  const rawAircraftId =
+    String(row.aircraft_id);
 
-      return {
+  const airlineIdentityColor =
+    ACS_buildSkyTrackAirlineColor(
+      row.airline_id
+    );
+
+  return {
+     
         aircraftId:
           row.scope === "GLOBAL"
             ? `GLOBAL_${row.airline_id}_${rawAircraftId}`
@@ -395,12 +467,14 @@ router.get("/snapshot", requireAuth, async (req, res) => {
         airlineIcao: row.icao || null,
 
         airlineColorHex:
-          row.color_hex || "#3A5FFF",
-        airlineColorHsl:
-          row.color_hsl || "hsl(220,70%,50%)",
-        airlineColorIndex:
-          Number(row.color_index || 0),
+        airlineIdentityColor.hex,
 
+        airlineColorHsl:
+        airlineIdentityColor.hsl,
+   
+        airlineColorIndex:
+        airlineIdentityColor.index,
+     
         registration: row.registration || "-",
         model:
           row.aircraft_name || row.model_key || "-",
