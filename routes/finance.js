@@ -27,11 +27,11 @@ async function ACS_getCurrentSimTimestampMs(client) {
    GET COMPANY FINANCE
    ============================================================ */
 
-router.get("/finance", requireAuth, async (req,res)=>{
+router.get("/finance", requireAuth, async (req, res) => {
 
   const airlineId = req.airline_id;
 
-  try{
+  try {
 
     await pool.query(
       `
@@ -53,38 +53,64 @@ router.get("/finance", requireAuth, async (req,res)=>{
     );
 
     const leasing = await pool.query(
-`
-SELECT
-  aircraft_name,
-  manufacturer,
-  model_key,
-  monthly_payment,
-  lease_start_date,
-  lease_end_date,
-  lease_years,
-  status
-FROM aircraft_leasing_contracts
-WHERE airline_id=$1
-ORDER BY id
-`,
-[airlineId]
-);
-    
+      `
+      SELECT
+        aircraft_name,
+        manufacturer,
+        model_key,
+        monthly_payment,
+        lease_start_date,
+        lease_end_date,
+        lease_years,
+        status
+      FROM aircraft_leasing_contracts
+      WHERE airline_id = $1
+      ORDER BY id
+      `,
+      [airlineId]
+    );
+
+    const bankLoans = await pool.query(
+      `
+      SELECT
+        id,
+        loan_reference,
+        status,
+        collateral_mode,
+        original_principal,
+        remaining_principal,
+        annual_interest_rate,
+        term_months,
+        monthly_payment,
+        total_repayment,
+        total_interest,
+        opened_sim_time,
+        maturity_sim_time,
+        next_payment_sim_time,
+        last_payment_sim_time,
+        closed_sim_time,
+        payment_number
+      FROM bank_loans
+      WHERE airline_id = $1
+      ORDER BY id DESC
+      `,
+      [airlineId]
+    );
+
     return res.json({
-  ok: true,
-  finance: result.rows[0],
-  leasing_contracts: leasing.rows
-  });
+      ok: true,
+      finance: result.rows[0],
+      leasing_contracts: leasing.rows,
+      bank_loans: bankLoans.rows
+    });
 
-  }
-    
-  catch(err){
+  } catch (err) {
 
-    console.error("FINANCE FETCH ERROR",err);
+    console.error("FINANCE FETCH ERROR", err);
 
     return res.status(500).json({
-      ok:false,
-      error:err.message
+      ok: false,
+      error: err.message
     });
 
   }
