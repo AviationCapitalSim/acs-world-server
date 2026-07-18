@@ -30,10 +30,13 @@ async function ACS_getCurrentSimTimestampMs(client) {
 router.get("/finance", requireAuth, async (req, res) => {
 
   const airlineId = req.airline_id;
+  const client = await pool.connect();
 
   try {
 
-    await pool.query(
+    await client.query("BEGIN");
+
+    await client.query(
       `
       INSERT INTO company_finance (airline_id, capital)
       VALUES ($1, 1500000)
@@ -43,7 +46,13 @@ router.get("/finance", requireAuth, async (req, res) => {
       [airlineId]
     );
 
-    const result = await pool.query(
+    const currentSimTimeMs =
+      await ACS_getCurrentSimTimestampMs(client);
+
+    const cutoffSimTimeMs =
+      currentSimTimeMs - (15 * 24 * 60 * 60 * 1000);
+
+    const financeResult = await client.query(
       `
       SELECT *
       FROM company_finance
@@ -52,7 +61,7 @@ router.get("/finance", requireAuth, async (req, res) => {
       [airlineId]
     );
 
-    const leasing = await pool.query(
+    const leasingResult = await client.query(
       `
       SELECT
         aircraft_name,
@@ -70,7 +79,7 @@ router.get("/finance", requireAuth, async (req, res) => {
       [airlineId]
     );
 
-    const bankLoans = await pool.query(
+    const bankLoansResult = await client.query(
       `
       SELECT
         id,
@@ -97,14 +106,57 @@ router.get("/finance", requireAuth, async (req, res) => {
       [airlineId]
     );
 
+    const activityResult = await client.query(
+      `
+      SELECT
+        UPPER(TRIM(type)) AS type,
+        COALESCE(NULLIF(TRIM(source), ''), 'UNKNOWN') AS source,
+        COUNT(*)::INTEGER AS movement_count,
+        SUM(amount)::BIGINT AS total_amount
+      FROM finance_log
+      WHERE airline_id = $1
+        AND timestamp >= $2
+        AND timestamp <= $3
+        AND NOT (
+          type = 'INCOME'
+          AND source LIKE 'FLIGHT %'
+          AND POSITION('→' IN source) > 0
+        )
+      GROUP BY
+        UPPER(TRIM(type)),
+        COALESCE(NULLIF(TRIM(source), ''), 'UNKNOWN')
+      ORDER BY
+        UPPER(TRIM(type)),
+        SUM(amount) DESC
+      `,
+      [
+        airlineId,
+        cutoffSimTimeMs,
+        currentSimTimeMs
+      ]
+    );
+
+    await client.query("COMMIT");
+
+    res.set({
+      "Cache-Control": "no-store, private",
+      "Pragma": "no-cache",
+      "Expires": "0"
+    });
+
     return res.json({
       ok: true,
-      finance: result.rows[0],
-      leasing_contracts: leasing.rows,
-      bank_loans: bankLoans.rows
+      authority: "RAILWAY_POSTGRESQL",
+      current_sim_time_ms: currentSimTimeMs,
+      finance: financeResult.rows[0],
+      leasing_contracts: leasingResult.rows,
+      bank_loans: bankLoansResult.rows,
+      financial_activity: activityResult.rows
     });
 
   } catch (err) {
+
+    await client.query("ROLLBACK");
 
     console.error("FINANCE FETCH ERROR", err);
 
@@ -112,6 +164,10 @@ router.get("/finance", requireAuth, async (req, res) => {
       ok: false,
       error: err.message
     });
+
+  } finally {
+
+    client.release();
 
   }
 
