@@ -176,10 +176,16 @@ router.get("/finance/log", requireAuth, async (req, res) => {
       ]
     );
 
-    return res.json({
-      ok: true,
-      logs: result.rows
-    });
+    res.set({
+  "Cache-Control": "no-store, no-cache, must-revalidate, private",
+  "Pragma": "no-cache",
+  "Expires": "0"
+});
+
+return res.json({
+  ok: true,
+  logs: result.rows
+});
 
   } catch (err) {
 
