@@ -29,3 +29,13 @@ pool.on("error", (err) => {
     err.message
   );
 });
+
+pool.on("connect", (client) => {
+  client.on("error", (err) => {
+    console.error(
+      "ACS POSTGRESQL CLIENT CONNECTION ERROR — connection discarded:",
+      err.message
+    );
+  });
+});
+
