@@ -1,5 +1,5 @@
 /* ============================================================
-   ACS SKYTRACK SNAPSHOT - POSTGRESQL CANONICAL AUTHORITY
+   ACS SKYTRACK SNAPSHOT -  POSTGRESQL CANONICAL AUTHORITY
    File: routes/skytrack_snapshot.js
    ============================================================ */
 
