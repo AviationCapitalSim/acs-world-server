@@ -382,6 +382,88 @@ async function ACS_getOfficialSimTime(client) {
 }
 
 /* ============================================================
+   ACS GLOBAL PASSENGER MARKET AUTHORITY
+   ------------------------------------------------------------
+   - PostgreSQL canonical time
+   - Global airport-pair demand
+   - Independent from airline and aircraft
+   - Directional Y / C / F demand
+   ============================================================ */
+
+async function ACS_getCanonicalPassengerMarket(
+  client,
+  originIcao,
+  destinationIcao
+) {
+  const origin = ACS_normalizeIcao(originIcao);
+  const destination = ACS_normalizeIcao(destinationIcao);
+
+  if (!origin || !destination) {
+    const error = new Error("ORIGIN_DESTINATION_REQUIRED");
+    error.code = "ORIGIN_DESTINATION_REQUIRED";
+    throw error;
+  }
+
+  if (origin === destination) {
+    const error = new Error("ORIGIN_DESTINATION_CANNOT_MATCH");
+    error.code = "ORIGIN_DESTINATION_CANNOT_MATCH";
+    throw error;
+  }
+
+  const result = await client.query(
+    `
+    WITH clock AS MATERIALIZED (
+      SELECT
+        acs_get_current_sim_time()::timestamp AS sim_time
+    )
+    SELECT
+      clock.sim_time AS current_sim_time,
+      demand.origin_icao,
+      demand.destination_icao,
+      demand.sim_date,
+      demand.sim_year,
+      demand.period_code,
+      demand.market_scope,
+      demand.distance_nm,
+      demand.weekday_iso,
+      demand.day_weight,
+      demand.daily_y,
+      demand.daily_c,
+      demand.daily_f,
+      demand.daily_total,
+      demand.weekly_y,
+      demand.weekly_c,
+      demand.weekly_f,
+      demand.weekly_total
+    FROM clock
+    CROSS JOIN LATERAL
+      public.acs_calculate_passenger_demand_daily(
+        $1,
+        $2,
+        clock.sim_time
+      ) demand
+    `,
+    [origin, destination]
+  );
+
+  if (!result.rows.length) {
+    const error = new Error(
+      `PASSENGER_MARKET_NOT_FOUND_${origin}_${destination}`
+    );
+
+    error.code = "PASSENGER_MARKET_NOT_FOUND";
+    error.origin_icao = origin;
+    error.destination_icao = destination;
+    throw error;
+  }
+
+  return {
+    ...result.rows[0],
+    authority: "POSTGRESQL_ACS_GLOBAL_PAX_V1"
+  };
+}
+
+/* ============================================================
    AIRPORT HISTORICAL AUTHORITY
    ============================================================ */
 
