@@ -1040,6 +1040,221 @@ router.get(
 );
 
 /* ============================================================
+   GET /v1/routes/passenger-demand/markets
+   ------------------------------------------------------------
+   Global passenger markets for one origin and one continent.
+
+   Authority:
+   - PostgreSQL simulation time
+   - Active ACS passenger-demand model
+   - Historical airport operational authority
+   - No airline or aircraft allocation
+   ============================================================ */
+
+router.get(
+  "/routes/passenger-demand/markets",
+  requireAuth,
+  async (req, res) => {
+    const client = await pool.connect();
+
+    try {
+      const origin = ACS_normalizeIcao(req.query.origin);
+      const continent = ACS_normalizeText(req.query.continent);
+
+      if (!origin) {
+        return res.status(400).json({
+          ok: false,
+          error: "ORIGIN_REQUIRED"
+        });
+      }
+
+      if (!continent || continent.length > 64) {
+        return res.status(400).json({
+          ok: false,
+          error: "VALID_CONTINENT_REQUIRED"
+        });
+      }
+
+      const result = await client.query(
+        `
+        WITH active_model AS MATERIALIZED (
+          SELECT
+            id AS model_id,
+            version_code AS model_version
+          FROM public.acs_passenger_demand_models
+          WHERE model_status = 'ACTIVE'
+          LIMIT 1
+        ),
+        clock AS MATERIALIZED (
+          SELECT
+            acs_get_current_sim_time()::timestamp AS sim_time
+        ),
+        origin_airport AS MATERIALIZED (
+          SELECT
+            icao,
+            city,
+            country,
+            continent,
+            region,
+            category
+          FROM public.v_acs_airport_authority_current
+          WHERE UPPER(TRIM(icao)) = $1
+            AND passenger_route_allowed = TRUE
+          LIMIT 1
+        ),
+        destinations AS MATERIALIZED (
+          SELECT
+            airport.icao,
+            airport.iata,
+            airport.city,
+            airport.country,
+            airport.continent,
+            airport.region,
+            airport.category
+          FROM public.v_acs_airport_authority_current airport
+          WHERE airport.passenger_route_allowed = TRUE
+            AND UPPER(TRIM(airport.icao)) <> $1
+            AND LOWER(TRIM(airport.continent)) =
+                LOWER(TRIM($2))
+        ),
+        markets AS (
+          SELECT
+            destination.icao AS destination_icao,
+            destination.iata AS destination_iata,
+            destination.city AS destination_city,
+            destination.country AS destination_country,
+            destination.continent AS destination_continent,
+            destination.region AS destination_region,
+            destination.category AS destination_category,
+
+            active_model.model_id,
+            active_model.model_version,
+            clock.sim_time AS current_sim_time,
+
+            daily.sim_date,
+            daily.sim_year,
+            daily.period_code,
+            daily.market_scope,
+            daily.distance_nm,
+            daily.weekday_iso,
+            daily.day_weight,
+            daily.daily_y,
+            daily.daily_c,
+            daily.daily_f,
+            daily.daily_total,
+
+            weekly.weekly_y,
+            weekly.weekly_c,
+            weekly.weekly_f,
+            weekly.weekly_total,
+
+            ROUND(
+              weekly.weekly_total::numeric / 7,
+              2
+            ) AS average_daily
+
+          FROM destinations destination
+          CROSS JOIN active_model
+          CROSS JOIN clock
+          CROSS JOIN LATERAL
+            public.acs_calculate_passenger_demand_daily(
+              $1,
+              destination.icao,
+              clock.sim_time
+            ) daily
+          CROSS JOIN LATERAL
+            public.acs_calculate_passenger_demand(
+              $1,
+              destination.icao,
+              clock.sim_time
+            ) weekly
+        )
+        SELECT
+          origin_airport.icao AS origin_icao,
+          origin_airport.city AS origin_city,
+          origin_airport.country AS origin_country,
+          origin_airport.continent AS origin_continent,
+          origin_airport.region AS origin_region,
+          origin_airport.category AS origin_category,
+          markets.*
+        FROM origin_airport
+        CROSS JOIN markets
+        ORDER BY
+          markets.weekly_total DESC,
+          markets.destination_icao
+        `,
+        [origin, continent]
+      );
+
+      if (!result.rows.length) {
+        const originResult = await client.query(
+          `
+          SELECT
+            icao
+          FROM public.v_acs_airport_authority_current
+          WHERE UPPER(TRIM(icao)) = $1
+            AND passenger_route_allowed = TRUE
+          LIMIT 1
+          `,
+          [origin]
+        );
+
+        if (!originResult.rows.length) {
+          return res.status(404).json({
+            ok: false,
+            error: "ORIGIN_NOT_AVAILABLE_FOR_PASSENGER_ROUTES",
+            origin
+          });
+        }
+      }
+
+      const firstMarket = result.rows[0] || null;
+
+      const marketsWithDemand = result.rows.filter(
+        market => Number(market.weekly_total || 0) > 0
+      ).length;
+
+      return res.json({
+        ok: true,
+        endpoint: "ACS_GLOBAL_PASSENGER_MARKETS",
+        version:
+          firstMarket?.model_version || null,
+        authority:
+          "POSTGRESQL_PASSENGER_MARKET_AUTHORITY",
+        current_sim_time:
+          firstMarket?.current_sim_time || null,
+        origin,
+        continent,
+        summary: {
+          evaluated_markets: result.rows.length,
+          markets_with_demand: marketsWithDemand,
+          zero_demand_markets:
+            result.rows.length - marketsWithDemand
+        },
+        markets: result.rows
+      });
+
+    } catch (error) {
+      console.error(
+        "ACS PASSENGER MARKETS ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        ok: false,
+        error:
+          error.code ||
+          "PASSENGER_MARKETS_QUERY_FAILED",
+        details: error.message
+      });
+
+    } finally {
+      client.release();
+    }
+  }
+);
+
+/* ============================================================
    🟦 GET NEXT FLIGHT NUMBER PAIR — BACKEND AUTHORITY
    ------------------------------------------------------------
    Route:
