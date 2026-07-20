@@ -412,33 +412,53 @@ async function ACS_getCanonicalPassengerMarket(
 
   const result = await client.query(
     `
-    WITH clock AS MATERIALIZED (
+    WITH active_model AS MATERIALIZED (
+      SELECT
+        id AS model_id,
+        version_code AS model_version
+      FROM public.acs_passenger_demand_models
+      WHERE model_status = 'ACTIVE'
+      LIMIT 1
+    ),
+    clock AS MATERIALIZED (
       SELECT
         acs_get_current_sim_time()::timestamp AS sim_time
     )
     SELECT
+      active_model.model_id,
+      active_model.model_version,
       clock.sim_time AS current_sim_time,
-      demand.origin_icao,
-      demand.destination_icao,
-      demand.sim_date,
-      demand.sim_year,
-      demand.period_code,
-      demand.market_scope,
-      demand.distance_nm,
-      demand.weekday_iso,
-      demand.day_weight,
-      demand.daily_y,
-      demand.daily_c,
-      demand.daily_f,
-      demand.daily_total,
-      demand.weekly_total
-    FROM clock
+      daily.origin_icao,
+      daily.destination_icao,
+      daily.sim_date,
+      daily.sim_year,
+      daily.period_code,
+      daily.market_scope,
+      daily.distance_nm,
+      daily.weekday_iso,
+      daily.day_weight,
+      daily.daily_y,
+      daily.daily_c,
+      daily.daily_f,
+      daily.daily_total,
+      weekly.weekly_y,
+      weekly.weekly_c,
+      weekly.weekly_f,
+      weekly.weekly_total
+    FROM active_model
+    CROSS JOIN clock
     CROSS JOIN LATERAL
       public.acs_calculate_passenger_demand_daily(
         $1,
         $2,
         clock.sim_time
-      ) demand
+      ) daily
+    CROSS JOIN LATERAL
+      public.acs_calculate_passenger_demand(
+        $1,
+        $2,
+        clock.sim_time
+      ) weekly
     `,
     [origin, destination]
   );
@@ -456,7 +476,7 @@ async function ACS_getCanonicalPassengerMarket(
 
   return {
     ...result.rows[0],
-    authority: "POSTGRESQL_ACS_GLOBAL_PAX_V1"
+    authority: "POSTGRESQL_PASSENGER_MARKET_AUTHORITY"
   };
 }
 
@@ -896,9 +916,17 @@ router.get(
         });
       }
 
-          const result = await client.query(
+      const result = await client.query(
         `
-        WITH clock AS MATERIALIZED (
+        WITH active_model AS MATERIALIZED (
+          SELECT
+            id AS model_id,
+            version_code AS model_version
+          FROM public.acs_passenger_demand_models
+          WHERE model_status = 'ACTIVE'
+          LIMIT 1
+        ),
+        clock AS MATERIALIZED (
           SELECT
             acs_get_current_sim_time()::timestamp AS sim_time
         ),
@@ -906,12 +934,15 @@ router.get(
           SELECT
             1 AS direction_order,
             'OUTBOUND'::text AS direction,
+            active_model.model_id,
+            active_model.model_version,
             clock.sim_time AS current_sim_time,
             daily.*,
             weekly.weekly_y,
             weekly.weekly_c,
             weekly.weekly_f
-          FROM clock
+          FROM active_model
+          CROSS JOIN clock
           CROSS JOIN LATERAL
             public.acs_calculate_passenger_demand_daily(
               $1,
@@ -930,12 +961,15 @@ router.get(
           SELECT
             2 AS direction_order,
             'INBOUND'::text AS direction,
+            active_model.model_id,
+            active_model.model_version,
             clock.sim_time AS current_sim_time,
             daily.*,
             weekly.weekly_y,
             weekly.weekly_c,
             weekly.weekly_f
-          FROM clock
+          FROM active_model
+          CROSS JOIN clock
           CROSS JOIN LATERAL
             public.acs_calculate_passenger_demand_daily(
               $2,
@@ -976,7 +1010,7 @@ router.get(
       return res.json({
         ok: true,
         endpoint: "ACS_GLOBAL_PASSENGER_DEMAND",
-        version: "ACS_GLOBAL_PAX_V1",
+        version: outbound.model_version,
         authority: "POSTGRESQL_PASSENGER_MARKET_AUTHORITY",
         current_sim_time: outbound.current_sim_time,
         origin,
