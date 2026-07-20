@@ -792,4 +792,353 @@ router.get(
   }
 );
 
+/* ============================================================
+   GET /v1/airports/base-market/:icao
+   ------------------------------------------------------------
+   Purpose:
+   - Analyze one authorized base candidate
+   - Use every historically available passenger destination
+   - Read ACS_GLOBAL_PAX active model from PostgreSQL
+   - No airline-specific demand
+   - No aircraft or seat dependency
+   - No frontend simulation-time authority
+   ============================================================ */
+
+router.get(
+  "/airports/base-market/:icao",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const airlineId = Number(req.airline_id);
+
+      if (
+        !Number.isInteger(airlineId) ||
+        airlineId <= 0
+      ) {
+        return res.status(401).json({
+          ok: false,
+          error: "NO_AIRLINE_SESSION"
+        });
+      }
+
+      const baseIcao =
+        String(req.params?.icao || "")
+          .trim()
+          .toUpperCase();
+
+      if (!/^[A-Z0-9]{4}$/.test(baseIcao)) {
+        return res.status(400).json({
+          ok: false,
+          error: "INVALID_BASE_ICAO"
+        });
+      }
+
+      const result = await pool.query(
+        `
+        WITH clock AS MATERIALIZED (
+          SELECT
+            acs_get_current_sim_time()::timestamp
+              AS current_sim_time
+        ),
+        active_model AS MATERIALIZED (
+          SELECT
+            id AS model_id,
+            version_code AS model_version
+          FROM public.acs_passenger_demand_models
+          WHERE model_status = 'ACTIVE'
+          LIMIT 1
+        ),
+        base_airport AS MATERIALIZED (
+          SELECT
+            airport_id,
+            icao,
+            iata,
+            city,
+            country,
+            continent,
+            region,
+            category
+          FROM public.v_acs_airport_authority_current
+          WHERE UPPER(icao) = $1
+            AND base_operation_allowed = TRUE
+            AND latitude IS NOT NULL
+            AND longitude IS NOT NULL
+          LIMIT 1
+        ),
+        destinations AS MATERIALIZED (
+          SELECT
+            airport_id,
+            icao,
+            iata,
+            city,
+            country,
+            continent,
+            region,
+            category
+          FROM public.v_acs_airport_authority_current
+          WHERE passenger_route_allowed = TRUE
+            AND UPPER(icao) <> $1
+            AND latitude IS NOT NULL
+            AND longitude IS NOT NULL
+        )
+        SELECT
+          clock.current_sim_time,
+          active_model.model_id,
+          active_model.model_version,
+
+          base_airport.icao AS base_icao,
+          base_airport.iata AS base_iata,
+          base_airport.city AS base_city,
+          base_airport.country AS base_country,
+          base_airport.continent AS base_continent,
+          base_airport.region AS base_region,
+          base_airport.category AS base_category,
+
+          destinations.icao AS destination_icao,
+          destinations.iata AS destination_iata,
+          destinations.city AS destination_city,
+          destinations.country AS destination_country,
+          destinations.continent
+            AS destination_continent,
+          destinations.region AS destination_region,
+          destinations.category
+            AS destination_category,
+
+          demand.sim_year,
+          demand.period_code,
+          demand.market_scope,
+          demand.distance_nm,
+          demand.weekly_y,
+          demand.weekly_c,
+          demand.weekly_f,
+          demand.weekly_total,
+          demand.average_daily
+
+        FROM clock
+        CROSS JOIN active_model
+        CROSS JOIN base_airport
+        CROSS JOIN destinations
+        CROSS JOIN LATERAL
+          public.acs_calculate_passenger_demand(
+            base_airport.icao,
+            destinations.icao,
+            clock.current_sim_time
+          ) demand
+
+        ORDER BY
+          demand.weekly_total DESC,
+          destinations.icao
+        `,
+        [baseIcao]
+      );
+
+      if (!result.rows.length) {
+        const baseCheck = await pool.query(
+          `
+          SELECT
+            icao,
+            base_operation_allowed,
+            latitude,
+            longitude
+          FROM public.v_acs_airport_authority_current
+          WHERE UPPER(icao) = $1
+          LIMIT 1
+          `,
+          [baseIcao]
+        );
+
+        if (!baseCheck.rows.length) {
+          return res.status(404).json({
+            ok: false,
+            error:
+              "BASE_AIRPORT_NOT_AVAILABLE_IN_CURRENT_SIM_PERIOD",
+            icao: baseIcao
+          });
+        }
+
+        if (
+          baseCheck.rows[0]
+            .base_operation_allowed !== true
+        ) {
+          return res.status(409).json({
+            ok: false,
+            error: "BASE_OPERATION_NOT_ALLOWED",
+            icao: baseIcao
+          });
+        }
+
+        return res.status(409).json({
+          ok: false,
+          error: "BASE_MARKET_DATA_UNAVAILABLE",
+          icao: baseIcao
+        });
+      }
+
+      const firstRow = result.rows[0];
+
+      const markets = result.rows.map(row => ({
+        destination_icao:
+          row.destination_icao,
+        destination_iata:
+          row.destination_iata,
+        destination_city:
+          row.destination_city,
+        destination_country:
+          row.destination_country,
+        destination_continent:
+          row.destination_continent,
+        destination_region:
+          row.destination_region,
+        destination_category:
+          row.destination_category,
+        market_scope:
+          row.market_scope,
+        distance_nm:
+          Number(row.distance_nm || 0),
+        weekly_y:
+          Number(row.weekly_y || 0),
+        weekly_c:
+          Number(row.weekly_c || 0),
+        weekly_f:
+          Number(row.weekly_f || 0),
+        weekly_total:
+          Number(row.weekly_total || 0),
+        average_daily:
+          Number(row.average_daily || 0)
+      }));
+
+      const marketsWithDemand =
+        markets.filter(
+          market => market.weekly_total > 0
+        );
+
+      const zeroDemandMarkets =
+        markets.length -
+        marketsWithDemand.length;
+
+      const weeklyTotals =
+        marketsWithDemand
+          .map(market => market.weekly_total)
+          .sort((a, b) => a - b);
+
+      let medianWeeklyDemand = 0;
+
+      if (weeklyTotals.length > 0) {
+        const middle =
+          Math.floor(weeklyTotals.length / 2);
+
+        medianWeeklyDemand =
+          weeklyTotals.length % 2 === 0
+            ? (
+                weeklyTotals[middle - 1] +
+                weeklyTotals[middle]
+              ) / 2
+            : weeklyTotals[middle];
+      }
+
+      const opportunityTotals =
+        markets.reduce(
+          (totals, market) => {
+            totals.weekly_y += market.weekly_y;
+            totals.weekly_c += market.weekly_c;
+            totals.weekly_f += market.weekly_f;
+            totals.weekly_total +=
+              market.weekly_total;
+
+            return totals;
+          },
+          {
+            weekly_y: 0,
+            weekly_c: 0,
+            weekly_f: 0,
+            weekly_total: 0
+          }
+        );
+
+      const businessMarkets =
+        markets.filter(
+          market => market.weekly_c > 0
+        ).length;
+
+      const firstClassMarkets =
+        markets.filter(
+          market => market.weekly_f > 0
+        ).length;
+
+      const topMarkets =
+        markets
+          .filter(
+            market => market.weekly_total > 0
+          )
+          .slice(0, 12);
+
+      return res.json({
+        ok: true,
+        endpoint:
+          "ACS_BASE_PASSENGER_MARKET_ANALYSIS",
+        version:
+          firstRow.model_version,
+        authority:
+          "POSTGRESQL_PASSENGER_MARKET_AUTHORITY",
+
+        airline_id: airlineId,
+
+        current_sim_time:
+          firstRow.current_sim_time,
+        sim_year:
+          Number(firstRow.sim_year),
+        period_code:
+          firstRow.period_code,
+
+        base: {
+          icao: firstRow.base_icao,
+          iata: firstRow.base_iata,
+          city: firstRow.base_city,
+          country: firstRow.base_country,
+          continent: firstRow.base_continent,
+          region: firstRow.base_region,
+          category: firstRow.base_category
+        },
+
+        summary: {
+          evaluated_markets:
+            markets.length,
+          markets_with_demand:
+            marketsWithDemand.length,
+          zero_demand_markets:
+            zeroDemandMarkets,
+          business_markets:
+            businessMarkets,
+          first_class_markets:
+            firstClassMarkets,
+          median_weekly_demand:
+            medianWeeklyDemand,
+          maximum_weekly_demand:
+            topMarkets[0]?.weekly_total || 0
+        },
+
+        opportunity_totals:
+          opportunityTotals,
+
+        top_markets:
+          topMarkets
+      });
+
+    } catch (err) {
+      console.error(
+        "ACS BASE MARKET ANALYSIS ERROR:",
+        err
+      );
+
+      return res.status(500).json({
+        ok: false,
+        error:
+          err.code ||
+          "BASE_MARKET_ANALYSIS_FAILED",
+        details: err.message
+      });
+    }
+  }
+);
+
 export default router;
