@@ -869,6 +869,128 @@ async function ACS_getReservedSlotCount(client, movement) {
 }
 
 /* ============================================================
+   GET /v1/routes/passenger-demand
+   ------------------------------------------------------------
+   Returns the current canonical market in both directions.
+   The same PostgreSQL simulation instant is used throughout.
+   ============================================================ */
+
+router.get(
+  "/routes/passenger-demand",
+  requireAuth,
+  async (req, res) => {
+    const client = await pool.connect();
+
+    try {
+      const origin = ACS_normalizeIcao(req.query.origin);
+      const destination = ACS_normalizeIcao(req.query.destination);
+
+      if (!origin || !destination) {
+        return res.status(400).json({
+          ok: false,
+          error: "ORIGIN_DESTINATION_REQUIRED"
+        });
+      }
+
+      if (origin === destination) {
+        return res.status(400).json({
+          ok: false,
+          error: "ORIGIN_DESTINATION_CANNOT_MATCH"
+        });
+      }
+
+      const result = await client.query(
+        `
+        WITH clock AS MATERIALIZED (
+          SELECT
+            acs_get_current_sim_time()::timestamp AS sim_time
+        ),
+        directional_markets AS (
+          SELECT
+            1 AS direction_order,
+            'OUTBOUND'::text AS direction,
+            clock.sim_time AS current_sim_time,
+            demand.*
+          FROM clock
+          CROSS JOIN LATERAL
+            public.acs_calculate_passenger_demand_daily(
+              $1,
+              $2,
+              clock.sim_time
+            ) demand
+
+          UNION ALL
+
+          SELECT
+            2 AS direction_order,
+            'INBOUND'::text AS direction,
+            clock.sim_time AS current_sim_time,
+            demand.*
+          FROM clock
+          CROSS JOIN LATERAL
+            public.acs_calculate_passenger_demand_daily(
+              $2,
+              $1,
+              clock.sim_time
+            ) demand
+        )
+        SELECT *
+        FROM directional_markets
+        ORDER BY direction_order
+        `,
+        [origin, destination]
+      );
+
+      const outbound = result.rows.find(
+        row => row.direction === "OUTBOUND"
+      );
+
+      const inbound = result.rows.find(
+        row => row.direction === "INBOUND"
+      );
+
+      if (!outbound || !inbound) {
+        return res.status(404).json({
+          ok: false,
+          error: "PASSENGER_MARKET_NOT_FOUND",
+          origin,
+          destination
+        });
+      }
+
+      return res.json({
+        ok: true,
+        endpoint: "ACS_GLOBAL_PASSENGER_DEMAND",
+        version: "ACS_GLOBAL_PAX_V1",
+        authority: "POSTGRESQL_PASSENGER_MARKET_AUTHORITY",
+        current_sim_time: outbound.current_sim_time,
+        origin,
+        destination,
+        outbound,
+        inbound
+      });
+
+    } catch (error) {
+      console.error(
+        "ACS PASSENGER DEMAND ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        ok: false,
+        error:
+          error.code ||
+          "PASSENGER_DEMAND_QUERY_FAILED",
+        details: error.message
+      });
+
+    } finally {
+      client.release();
+    }
+  }
+);
+
+/* ============================================================
    🟦 GET NEXT FLIGHT NUMBER PAIR — BACKEND AUTHORITY
    ------------------------------------------------------------
    Route:
