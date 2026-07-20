@@ -240,10 +240,17 @@ const airlineId = Number(req.airline_id);
         values.push(userId);
     const userIdParameter = values.length;
 
-    values.push(operation !== "base");
-    const demandProjectionParameter =
-      values.length;
+        const shouldProjectPassengerDemand =
+      Boolean(continent) &&
+      (
+        !operation ||
+        operation === "route"
+      );
 
+    values.push(shouldProjectPassengerDemand);
+    const demandProjectionParameter =
+    values.length;
+     
     values.push(limit);
     const limitParameter = values.length;
 
