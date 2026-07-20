@@ -113,21 +113,13 @@ router.get("/airports/health", requireAuth, async (req, res) => {
    ============================================================ */
 
 router.get("/airports/catalog", requireAuth, async (req, res) => {
-   
   try {
-     
-const airlineId = Number(req.airline_id);
-    const userId =
-      String(req.user_id || "").trim();
+    const airlineId = Number(req.airline_id);
 
-    if (
-      !Number.isInteger(airlineId) ||
-      airlineId <= 0 ||
-      !userId
-    ) {
+    if (!Number.isInteger(airlineId) || airlineId <= 0) {
       return res.status(401).json({
         ok: false,
-        error: "NO_AUTHENTICATED_PLAYER_CONTEXT"
+        error: "NO_AIRLINE_SESSION"
       });
     }
 
@@ -237,22 +229,7 @@ const airlineId = Number(req.airline_id);
       where.push(OPERATION_FILTERS[operation]);
     }
 
-        values.push(userId);
-    const userIdParameter = values.length;
-
-        const shouldProjectPassengerDemand =
-      Boolean(continent) &&
-      (
-        !operation ||
-        operation === "route"
-      );
-
-    values.push(shouldProjectPassengerDemand);
-    const demandProjectionParameter =
-    values.length;
-     
     values.push(limit);
-    const limitParameter = values.length;
 
     const whereSql =
       where.length > 0
@@ -261,19 +238,7 @@ const airlineId = Number(req.airline_id);
 
     const result = await pool.query(
       `
-      WITH player_context AS MATERIALIZED (
-        SELECT
-          UPPER(
-            NULLIF(
-              TRIM(base_icao),
-              ''
-            )
-          ) AS base_icao
-        FROM public.users
-        WHERE user_id = $${userIdParameter}
-        LIMIT 1
-      ),
-      reserved_slots AS (
+      WITH reserved_slots AS (
         SELECT
           airport_icao AS icao,
           COUNT(*)::INTEGER AS reserved_slots
@@ -318,42 +283,9 @@ const airlineId = Number(req.airline_id);
           aa.aircraft_limit
         ) AS aircraft_limit,
 
-                aa.demand_y
-          AS airport_reference_demand_y,
-        aa.demand_c
-          AS airport_reference_demand_c,
-        aa.demand_f
-          AS airport_reference_demand_f,
-
-        COALESCE(
-          market_demand.weekly_y,
-          aa.demand_y
-        )::INTEGER AS demand_y,
-
-        COALESCE(
-          market_demand.weekly_c,
-          aa.demand_c
-        )::INTEGER AS demand_c,
-
-        COALESCE(
-          market_demand.weekly_f,
-          aa.demand_f
-        )::INTEGER AS demand_f,
-
-        market_demand.weekly_total
-          AS passenger_market_weekly_total,
-
-        market_demand.average_daily
-          AS passenger_market_daily_average,
-
-        market_demand.period_code
-          AS passenger_market_period,
-
-        market_demand.market_scope
-          AS passenger_market_scope,
-
-        player_context.base_icao
-          AS passenger_market_origin,
+        aa.demand_y,
+        aa.demand_c,
+        aa.demand_f,
 
         aa.slot_cost_usd
           AS slot_cost_base_usd,
@@ -497,23 +429,6 @@ const airlineId = Number(req.airline_id);
 
       FROM public.v_acs_airport_authority_current aa
 
-      LEFT JOIN player_context
-        ON TRUE
-
-      LEFT JOIN LATERAL (
-        SELECT demand.*
-        FROM public.acs_calculate_passenger_demand(
-          player_context.base_icao,
-          aa.icao,
-          aa.current_sim_time::timestamp
-        ) demand
-        WHERE $${demandProjectionParameter} = TRUE
-          AND player_context.base_icao IS NOT NULL
-          AND player_context.base_icao
-              <> UPPER(aa.icao)
-      ) market_demand
-        ON TRUE
-        
       LEFT JOIN LATERAL (
         SELECT hp.*
         FROM public.airport_historical_profiles hp
@@ -536,7 +451,7 @@ const airlineId = Number(req.airline_id);
        aa.city,
        aa.icao
 
-      LIMIT $${limitParameter}
+      LIMIT $${values.length}
       `,
       values
     );
