@@ -896,7 +896,7 @@ router.get(
         });
       }
 
-      const result = await client.query(
+          const result = await client.query(
         `
         WITH clock AS MATERIALIZED (
           SELECT
@@ -907,14 +907,23 @@ router.get(
             1 AS direction_order,
             'OUTBOUND'::text AS direction,
             clock.sim_time AS current_sim_time,
-            demand.*
+            daily.*,
+            weekly.weekly_y,
+            weekly.weekly_c,
+            weekly.weekly_f
           FROM clock
           CROSS JOIN LATERAL
             public.acs_calculate_passenger_demand_daily(
               $1,
               $2,
               clock.sim_time
-            ) demand
+            ) daily
+          CROSS JOIN LATERAL
+            public.acs_calculate_passenger_demand(
+              $1,
+              $2,
+              clock.sim_time
+            ) weekly
 
           UNION ALL
 
@@ -922,14 +931,23 @@ router.get(
             2 AS direction_order,
             'INBOUND'::text AS direction,
             clock.sim_time AS current_sim_time,
-            demand.*
+            daily.*,
+            weekly.weekly_y,
+            weekly.weekly_c,
+            weekly.weekly_f
           FROM clock
           CROSS JOIN LATERAL
             public.acs_calculate_passenger_demand_daily(
               $2,
               $1,
               clock.sim_time
-            ) demand
+            ) daily
+          CROSS JOIN LATERAL
+            public.acs_calculate_passenger_demand(
+              $2,
+              $1,
+              clock.sim_time
+            ) weekly
         )
         SELECT *
         FROM directional_markets
