@@ -431,9 +431,6 @@ async function ACS_getCanonicalPassengerMarket(
       demand.daily_c,
       demand.daily_f,
       demand.daily_total,
-      demand.weekly_y,
-      demand.weekly_c,
-      demand.weekly_f,
       demand.weekly_total
     FROM clock
     CROSS JOIN LATERAL
