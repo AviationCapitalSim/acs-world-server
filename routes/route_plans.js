@@ -899,11 +899,8 @@ router.get(
     const client = await pool.connect();
 
     try {
-      const origin =
-        ACS_normalizeIcao(req.query.origin);
-
-      const destination =
-        ACS_normalizeIcao(req.query.destination);
+      const origin = ACS_normalizeIcao(req.query.origin);
+      const destination = ACS_normalizeIcao(req.query.destination);
 
       if (!origin || !destination) {
         return res.status(400).json({
@@ -931,139 +928,61 @@ router.get(
         ),
         clock AS MATERIALIZED (
           SELECT
-            acs_get_current_sim_time()::timestamp
-              AS sim_time
+            acs_get_current_sim_time()::timestamp AS sim_time
         ),
         directional_markets AS (
           SELECT
             1 AS direction_order,
             'OUTBOUND'::text AS direction,
-
             active_model.model_id,
             active_model.model_version,
-
             clock.sim_time AS current_sim_time,
-
             daily.*,
-
             weekly.weekly_y,
             weekly.weekly_c,
-            weekly.weekly_f,
-
-            week_data.week_days
-
+            weekly.weekly_f
           FROM active_model
           CROSS JOIN clock
-
           CROSS JOIN LATERAL
             public.acs_calculate_passenger_demand_daily(
               $1,
               $2,
               clock.sim_time
             ) daily
-
           CROSS JOIN LATERAL
             public.acs_calculate_passenger_demand(
               $1,
               $2,
               clock.sim_time
             ) weekly
-
-          CROSS JOIN LATERAL (
-            SELECT
-              COALESCE(
-                jsonb_agg(
-                  to_jsonb(week_day)
-                  ORDER BY week_day.weekday_iso
-                ),
-                '[]'::jsonb
-              ) AS week_days
-
-            FROM generate_series(0, 6)
-              AS week_offset(day_offset)
-
-            CROSS JOIN LATERAL
-              public.acs_calculate_passenger_demand_daily(
-                $1,
-                $2,
-                (
-                  date_trunc(
-                    'week',
-                    clock.sim_time
-                  )
-                  +
-                  week_offset.day_offset
-                    * interval '1 day'
-                )::timestamp
-              ) week_day
-          ) week_data
 
           UNION ALL
 
           SELECT
             2 AS direction_order,
             'INBOUND'::text AS direction,
-
             active_model.model_id,
             active_model.model_version,
-
             clock.sim_time AS current_sim_time,
-
             daily.*,
-
             weekly.weekly_y,
             weekly.weekly_c,
-            weekly.weekly_f,
-
-            week_data.week_days
-
+            weekly.weekly_f
           FROM active_model
           CROSS JOIN clock
-
           CROSS JOIN LATERAL
             public.acs_calculate_passenger_demand_daily(
               $2,
               $1,
               clock.sim_time
             ) daily
-
           CROSS JOIN LATERAL
             public.acs_calculate_passenger_demand(
               $2,
               $1,
               clock.sim_time
             ) weekly
-
-          CROSS JOIN LATERAL (
-            SELECT
-              COALESCE(
-                jsonb_agg(
-                  to_jsonb(week_day)
-                  ORDER BY week_day.weekday_iso
-                ),
-                '[]'::jsonb
-              ) AS week_days
-
-            FROM generate_series(0, 6)
-              AS week_offset(day_offset)
-
-            CROSS JOIN LATERAL
-              public.acs_calculate_passenger_demand_daily(
-                $2,
-                $1,
-                (
-                  date_trunc(
-                    'week',
-                    clock.sim_time
-                  )
-                  +
-                  week_offset.day_offset
-                    * interval '1 day'
-                )::timestamp
-              ) week_day
-          ) week_data
         )
-
         SELECT *
         FROM directional_markets
         ORDER BY direction_order
@@ -1088,37 +1007,16 @@ router.get(
         });
       }
 
-      const outboundWeek =
-        Array.isArray(outbound.week_days)
-          ? outbound.week_days
-          : [];
-
-      const inboundWeek =
-        Array.isArray(inbound.week_days)
-          ? inbound.week_days
-          : [];
-
-      delete outbound.week_days;
-      delete inbound.week_days;
-
       return res.json({
         ok: true,
-        endpoint:
-          "ACS_GLOBAL_PASSENGER_DEMAND",
-        version:
-          outbound.model_version,
-        authority:
-          "POSTGRESQL_PASSENGER_MARKET_AUTHORITY",
-        current_sim_time:
-          outbound.current_sim_time,
+        endpoint: "ACS_GLOBAL_PASSENGER_DEMAND",
+        version: outbound.model_version,
+        authority: "POSTGRESQL_PASSENGER_MARKET_AUTHORITY",
+        current_sim_time: outbound.current_sim_time,
         origin,
         destination,
-
         outbound,
-        inbound,
-
-        outbound_week: outboundWeek,
-        inbound_week: inboundWeek
+        inbound
       });
 
     } catch (error) {
@@ -2615,630 +2513,357 @@ router.post("/routes/plans", requireAuth, async (req, res) => {
 });
 
 /* ============================================================
-   PUT /v1/routes/plans/:route_plan_id
-   PHYSICAL EDIT + CONFLICT VALIDATION + SLOT REPLACEMENT
+   🟦 PUT /v1/routes/plans/:route_plan_id — EDIT ROUTE
    ------------------------------------------------------------
-   Replace the complete current PUT endpoint with this block.
+   Purpose:
+   - Update the original route_plan
+   - Replace its flight schedule_items
+   - Preserve original flight numbers
+   - Prevent duplicate edited routes
    ============================================================ */
 
-router.put(
-  "/routes/plans/:route_plan_id",
-  requireAuth,
-  async (req, res) => {
-    const client = await pool.connect();
-    let transactionStarted = false;
+router.put("/routes/plans/:route_plan_id", requireAuth, async (req, res) => {
+  const client = await pool.connect();
+  let transactionStarted = false;
 
-    try {
-      const airlineId = Number(req.airline_id);
-      const routePlanId = Number(req.params.route_plan_id);
-      const body = req.body || {};
+  try {
+    const airlineId = Number(req.airline_id);
+    const routePlanId = Number(req.params.route_plan_id);
+    const body = req.body || {};
 
-      if (!Number.isInteger(airlineId) || airlineId <= 0) {
-        return res.status(401).json({
-          ok: false,
-          error: "NO_AIRLINE_SESSION"
-        });
-      }
-
-      if (!Number.isInteger(routePlanId) || routePlanId <= 0) {
-        return res.status(400).json({
-          ok: false,
-          error: "ROUTE_PLAN_ID_REQUIRED"
-        });
-      }
-
-      const selectedDaysRaw =
-        Array.isArray(body.selected_days)
-          ? body.selected_days
-          : Array.isArray(body.days)
-            ? body.days
-            : [];
-
-      const selectedDays = [...new Set(
-        selectedDaysRaw
-          .map(ACS_normalizeWeekday)
-          .filter(day => ACS_WEEKDAYS.includes(day))
-      )];
-
-      const departure = ACS_normalizeText(body.departure);
-      const arrival = ACS_normalizeText(body.arrival);
-      const aircraftId = Number(
-        body.aircraft_id || body.aircraftId || 0
-      );
-      const distanceNm = Math.round(Number(body.distance_nm || 0));
-      const blockTimeMin = Math.round(Number(body.block_time_min || 0));
-      const turnaroundMin = Math.round(Number(body.turnaround_min || 0));
-      const totalRotationMin = Math.round(Number(body.total_rotation_min || 0));
-
-      if (!selectedDays.length) {
-        return res.status(400).json({
-          ok: false,
-          error: "SELECTED_DAYS_REQUIRED"
-        });
-      }
-
-      if (!ACS_isValidHHMM(departure) || !ACS_isValidHHMM(arrival)) {
-        return res.status(400).json({
-          ok: false,
-          error: "INVALID_DEPARTURE_OR_ARRIVAL_TIME"
-        });
-      }
-
-      if (!Number.isInteger(aircraftId) || aircraftId <= 0) {
-        return res.status(400).json({
-          ok: false,
-          error: "AIRCRAFT_ID_REQUIRED"
-        });
-      }
-
-      if (
-        !Number.isFinite(distanceNm) || distanceNm <= 0 ||
-        !Number.isFinite(blockTimeMin) || blockTimeMin <= 0 ||
-        !Number.isFinite(turnaroundMin) || turnaroundMin < 0 ||
-        !Number.isFinite(totalRotationMin) || totalRotationMin <= 0
-      ) {
-        return res.status(400).json({
-          ok: false,
-          error: "INVALID_ROUTE_TECHNICAL_DATA"
-        });
-      }
-
-      await client.query("BEGIN");
-      transactionStarted = true;
-
-      await client.query(
-        `SELECT pg_advisory_xact_lock(hashtext($1))`,
-        ["ACS_EDIT_ROUTE|" + airlineId + "|" + routePlanId]
-      );
-
-      const routeResult = await client.query(
-        `
-        SELECT *
-        FROM public.route_plans
-        WHERE id = $1
-          AND airline_id = $2
-          AND UPPER(COALESCE(route_state, 'ACTIVE')) = 'ACTIVE'
-        LIMIT 1
-        FOR UPDATE
-        `,
-        [routePlanId, airlineId]
-      );
-
-      if (!routeResult.rows.length) {
-        await client.query("ROLLBACK");
-        transactionStarted = false;
-        return res.status(404).json({
-          ok: false,
-          error: "ROUTE_PLAN_NOT_FOUND"
-        });
-      }
-
-      const oldRoute = routeResult.rows[0];
-      const origin = ACS_normalizeIcao(oldRoute.origin);
-      const destination = ACS_normalizeIcao(oldRoute.destination);
-
-      const aircraftResult = await client.query(
-        `
-        SELECT
-          af.id,
-          af.airline_id,
-          af.registration,
-          af.aircraft_name,
-          af.model_key,
-          af.status,
-          af.operational_status,
-          af.maintenance_status,
-          af.condition_pct,
-          ac.range_nm,
-          ac.speed_kts,
-          ac.aircraft_category
-        FROM public.aircraft_fleet af
-        LEFT JOIN public.aircraft_catalog ac
-          ON ac.model_key = af.model_key
-        WHERE af.id = $1
-          AND af.airline_id = $2
-        LIMIT 1
-        FOR UPDATE OF af
-        `,
-        [aircraftId, airlineId]
-      );
-
-      if (!aircraftResult.rows.length) {
-        await client.query("ROLLBACK");
-        transactionStarted = false;
-        return res.status(404).json({
-          ok: false,
-          error: "AIRCRAFT_NOT_FOUND_OR_NOT_OWNED"
-        });
-      }
-
-      const aircraft = aircraftResult.rows[0];
-      const blockedStatuses = new Set([
-        "SOLD", "SCRAPPED", "RETIRED",
-        "PENDING_DELIVERY", "CANCELLED"
-      ]);
-      const aircraftStatus = ACS_normalizeText(
-        aircraft.status
-      ).toUpperCase();
-
-      if (blockedStatuses.has(aircraftStatus)) {
-        await client.query("ROLLBACK");
-        transactionStarted = false;
-        return res.status(409).json({
-          ok: false,
-          error: "AIRCRAFT_NOT_DISPATCHABLE",
-          aircraft_status: aircraftStatus
-        });
-      }
-
-      const aircraftRangeNm = Math.round(
-        Number(aircraft.range_nm || 0)
-      );
-
-      if (
-        !Number.isFinite(aircraftRangeNm) ||
-        aircraftRangeNm < distanceNm
-      ) {
-        await client.query("ROLLBACK");
-        transactionStarted = false;
-        return res.status(409).json({
-          ok: false,
-          error: "AIRCRAFT_RANGE_INSUFFICIENT",
-          distance_nm: distanceNm,
-          aircraft_range_nm: aircraftRangeNm
-        });
-      }
-
-      const proposedIntervals = ACS_buildWeeklyRotationIntervals({
-        selectedDays,
-        departure,
-        blockTimeMin,
-        turnaroundMin
+    if (!Number.isInteger(airlineId) || airlineId <= 0) {
+      return res.status(401).json({
+        ok: false,
+        error: "NO_AIRLINE_SESSION"
       });
+    }
 
-      if (!proposedIntervals.length) {
-        await client.query("ROLLBACK");
-        transactionStarted = false;
-        return res.status(400).json({
-          ok: false,
-          error: "INVALID_PROPOSED_ROTATION"
-        });
-      }
+    if (!Number.isInteger(routePlanId) || routePlanId <= 0) {
+      return res.status(400).json({
+        ok: false,
+        error: "ROUTE_PLAN_ID_REQUIRED"
+      });
+    }
 
-      const internalConflict =
-        ACS_findInternalRotationConflict(proposedIntervals);
+    const selectedDaysRaw = Array.isArray(body.selected_days)
+      ? body.selected_days
+      : Array.isArray(body.days)
+        ? body.days
+        : [];
 
-      if (internalConflict) {
-        await client.query("ROLLBACK");
-        transactionStarted = false;
-        return res.status(409).json({
-          ok: false,
-          error: "AIRCRAFT_SCHEDULE_CONFLICT",
-          conflict_type: "PROPOSED_ROUTE_INTERNAL_OVERLAP",
-          conflict: internalConflict
-        });
-      }
+    const selectedDays = [...new Set(
+      selectedDaysRaw
+        .map(ACS_normalizeWeekday)
+        .filter(day => ACS_WEEKDAYS.includes(day))
+    )];
 
-      const existingRoutesResult = await client.query(
+    const departure = ACS_normalizeText(body.departure);
+    const arrival = ACS_normalizeText(body.arrival);
+
+    const aircraftId = Number(body.aircraft_id || body.aircraftId || 0);
+
+    const distanceNm = Math.round(Number(body.distance_nm || 0));
+    const blockTimeMin = Math.round(Number(body.block_time_min || 0));
+    const turnaroundMin = Math.round(Number(body.turnaround_min || 0));
+    const totalRotationMin = Math.round(Number(body.total_rotation_min || 0));
+
+    if (!selectedDays.length) {
+      return res.status(400).json({
+        ok: false,
+        error: "SELECTED_DAYS_REQUIRED"
+      });
+    }
+
+    if (!ACS_isValidHHMM(departure) || !ACS_isValidHHMM(arrival)) {
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_DEPARTURE_OR_ARRIVAL_TIME"
+      });
+    }
+
+    if (!Number.isInteger(aircraftId) || aircraftId <= 0) {
+      return res.status(400).json({
+        ok: false,
+        error: "AIRCRAFT_ID_REQUIRED"
+      });
+    }
+
+    await client.query("BEGIN");
+    transactionStarted = true;
+
+    /* ========================================================
+       1) LOCK ORIGINAL ROUTE
+       ======================================================== */
+
+    const routeResult = await client.query(
+      `
+      SELECT *
+      FROM public.route_plans
+      WHERE id = $1
+        AND airline_id = $2
+        AND UPPER(COALESCE(route_state, 'ACTIVE')) <> 'CANCELLED'
+      LIMIT 1
+      FOR UPDATE
+      `,
+      [routePlanId, airlineId]
+    );
+
+    if (!routeResult.rows.length) {
+      const error = new Error("ROUTE_PLAN_NOT_FOUND");
+      error.code = "ROUTE_PLAN_NOT_FOUND";
+      throw error;
+    }
+
+    const oldRoute = routeResult.rows[0];
+
+    /* ========================================================
+       2) LOCK SELECTED AIRCRAFT
+       ======================================================== */
+
+    const aircraftResult = await client.query(
+      `
+      SELECT
+        id,
+        airline_id,
+        registration,
+        aircraft_name,
+        manufacturer,
+        model_key,
+        status,
+        operational_status,
+        maintenance_status
+      FROM public.aircraft_fleet
+      WHERE id = $1
+        AND airline_id = $2
+      LIMIT 1
+      FOR UPDATE
+      `,
+      [aircraftId, airlineId]
+    );
+
+    if (!aircraftResult.rows.length) {
+      const error = new Error("AIRCRAFT_NOT_FOUND");
+      error.code = "AIRCRAFT_NOT_FOUND";
+      throw error;
+    }
+
+    const aircraft = aircraftResult.rows[0];
+
+    const modelKey = ACS_normalizeText(
+      aircraft.model_key || body.model_key || body.modelKey
+    ).toUpperCase();
+
+    const aircraftName = ACS_normalizeText(
+      aircraft.aircraft_name || body.aircraft || body.aircraftName
+    );
+
+    const registration = ACS_normalizeText(
+      aircraft.registration || body.registration
+    );
+
+    /* ========================================================
+       3) UPDATE ROUTE PLAN — SAME ROUTE, SAME FLIGHT NUMBERS
+       ======================================================== */
+
+    const updatedRouteResult = await client.query(
+      `
+      UPDATE public.route_plans
+      SET
+        selected_days = $1,
+        departure = $2,
+        arrival = $3,
+        aircraft_id = $4,
+        model_key = $5,
+        aircraft = $6,
+        registration = $7,
+        distance_nm = $8,
+        block_time_min = $9,
+        turnaround_min = $10,
+        total_rotation_min = $11,
+        updated_at = NOW()
+      WHERE id = $12
+        AND airline_id = $13
+      RETURNING *
+      `,
+      [
+        JSON.stringify(selectedDays),
+        departure,
+        arrival,
+        aircraftId,
+        modelKey,
+        aircraftName,
+        registration,
+        distanceNm || Number(oldRoute.distance_nm || 0),
+        blockTimeMin || Number(oldRoute.block_time_min || 0),
+        turnaroundMin || Number(oldRoute.turnaround_min || 0),
+        totalRotationMin || Number(oldRoute.total_rotation_min || 0),
+        routePlanId,
+        airlineId
+      ]
+    );
+
+    const routePlan = updatedRouteResult.rows[0];
+
+    /* ========================================================
+       4) REMOVE OLD FLIGHT ITEMS FOR THIS ROUTE
+       ======================================================== */
+
+    await client.query(
+      `
+      UPDATE public.schedule_items
+      SET
+        status = 'cancelled',
+        updated_at = NOW()
+      WHERE route_plan_id = $1
+        AND airline_id = $2
+        AND item_type = 'flight'
+        AND LOWER(COALESCE(status, 'planned')) <> 'cancelled'
+      `,
+      [routePlanId, airlineId]
+    );
+
+    await client.query(
+      `
+      UPDATE public.airport_slot_bookings
+      SET
+        slot_status = 'CANCELLED',
+        updated_at = NOW()
+      WHERE route_plan_id = $1
+        AND airline_id = $2
+        AND slot_status = 'RESERVED'
+      `,
+      [routePlanId, airlineId]
+    );
+
+    /* ========================================================
+       5) CREATE NEW FLIGHT ITEMS FOR SAME ROUTE
+       ======================================================== */
+
+    const insertedScheduleItems = [];
+
+    for (const day of selectedDays) {
+      const abs = ACS_buildAbsMinutes(day, departure, arrival);
+
+      const itemResult = await client.query(
         `
-        SELECT
-          id,
+        INSERT INTO public.schedule_items (
+          schedule_uid,
+          route_plan_id,
           route_uid,
+          airline_id,
+          item_type,
+          service_type,
           origin,
           destination,
-          selected_days,
+          selected_day,
           departure,
+          arrival,
+          model_key,
+          aircraft,
+          aircraft_id,
+          aircraft_registration,
+          flight_number,
+          paired_flight_number,
+          flight_direction,
+          distance_nm,
+          dep_abs_min,
+          arr_abs_min,
           block_time_min,
           turnaround_min,
-          flight_number_out,
-          flight_number_in
-        FROM public.route_plans
-        WHERE airline_id = $1
-          AND aircraft_id = $2
-          AND id <> $3
-          AND UPPER(COALESCE(route_state, 'ACTIVE')) = 'ACTIVE'
-        ORDER BY id
-        FOR UPDATE
-        `,
-        [airlineId, aircraftId, routePlanId]
-      );
-
-      let scheduleConflict = null;
-
-      for (const existingRoute of existingRoutesResult.rows) {
-        const existingIntervals = ACS_buildWeeklyRotationIntervals({
-          selectedDays: existingRoute.selected_days,
-          departure: existingRoute.departure,
-          blockTimeMin: existingRoute.block_time_min,
-          turnaroundMin: existingRoute.turnaround_min
-        });
-
-        for (const proposedInterval of proposedIntervals) {
-          for (const existingInterval of existingIntervals) {
-            if (
-              ACS_weeklyIntervalsOverlap(
-                proposedInterval,
-                existingInterval
-              )
-            ) {
-              scheduleConflict = {
-                aircraft_id: aircraftId,
-                route_plan_id: Number(existingRoute.id),
-                route_uid: existingRoute.route_uid,
-                origin: existingRoute.origin,
-                destination: existingRoute.destination,
-                flight_number_out: existingRoute.flight_number_out,
-                flight_number_in: existingRoute.flight_number_in,
-                existing_rotation: existingInterval,
-                proposed_rotation: proposedInterval
-              };
-              break;
-            }
-          }
-          if (scheduleConflict) break;
-        }
-        if (scheduleConflict) break;
-      }
-
-      if (scheduleConflict) {
-        await client.query("ROLLBACK");
-        transactionStarted = false;
-        return res.status(409).json({
-          ok: false,
-          error: "AIRCRAFT_SCHEDULE_CONFLICT",
-          conflict: scheduleConflict
-        });
-      }
-
-      const airportsResult = await client.query(
-        `
-        SELECT
-          icao,
-          slot_capacity,
-          slot_reservation_allowed
-        FROM public.v_acs_airport_authority_current
-        WHERE UPPER(TRIM(icao)) = ANY($1::TEXT[])
-        `,
-        [[origin, destination]]
-      );
-
-      const airportByIcao = new Map(
-        airportsResult.rows.map(row => [
-          ACS_normalizeIcao(row.icao),
-          row
-        ])
-      );
-      const originAirport = airportByIcao.get(origin);
-      const destinationAirport = airportByIcao.get(destination);
-
-      if (
-        !originAirport ||
-        !destinationAirport ||
-        originAirport.slot_reservation_allowed !== true ||
-        destinationAirport.slot_reservation_allowed !== true
-      ) {
-        await client.query("ROLLBACK");
-        transactionStarted = false;
-        return res.status(409).json({
-          ok: false,
-          error: "AIRPORT_SLOT_RESERVATION_NOT_ALLOWED"
-        });
-      }
-
-      const flightNumberOut = ACS_normalizeText(
-        oldRoute.flight_number_out
-      );
-      const flightNumberIn = ACS_normalizeText(
-        oldRoute.flight_number_in
-      );
-
-      const slotMovements = ACS_sortSlotMovementsForLocking(
-        ACS_buildSlotMovements({
-          origin,
-          destination,
-          selectedDays,
-          departure,
-          blockTimeMin,
-          turnaroundMin,
-          flightNumberOut,
-          flightNumberIn
-        })
-      );
-
-      if (!slotMovements.length) {
-        await client.query("ROLLBACK");
-        transactionStarted = false;
-        return res.status(400).json({
-          ok: false,
-          error: "NO_SLOT_MOVEMENTS_BUILT"
-        });
-      }
-
-      /*
-        Physical replacement inside one transaction.
-        Rollback restores the previous version on any failure.
-      */
-      await client.query(
-        `
-        DELETE FROM public.airport_slot_bookings
-        WHERE route_plan_id = $1
-          AND airline_id = $2
-        `,
-        [routePlanId, airlineId]
-      );
-
-      await client.query(
-        `
-        DELETE FROM public.schedule_items
-        WHERE route_plan_id = $1
-          AND airline_id = $2
-          AND item_type = 'flight'
-        `,
-        [routePlanId, airlineId]
-      );
-
-      for (const movement of slotMovements) {
-        await ACS_lockSlotKey(client, movement);
-        const used = await ACS_getReservedSlotCount(client, movement);
-        const airport =
-          movement.airport_icao === origin
-            ? originAirport
-            : destinationAirport;
-        const capacity = Number(airport.slot_capacity || 0);
-
-        if (
-          !Number.isFinite(capacity) ||
-          capacity <= 0 ||
-          used >= capacity
-        ) {
-          await client.query("ROLLBACK");
-          transactionStarted = false;
-          return res.status(409).json({
-            ok: false,
-            error: "SLOT_UNAVAILABLE",
-            slot: {
-              airport_icao: movement.airport_icao,
-              weekday: movement.weekday,
-              time_local: movement.time_local,
-              movement_type: movement.movement_type,
-              used,
-              max: capacity,
-              free: Math.max(0, capacity - used)
-            }
-          });
-        }
-      }
-
-      const updatedRouteResult = await client.query(
-        `
-        UPDATE public.route_plans
-        SET
-          selected_days = $1::JSONB,
-          departure = $2,
-          arrival = $3,
-          aircraft_id = $4,
-          model_key = $5,
-          aircraft = $6,
-          registration = $7,
-          distance_nm = $8,
-          aircraft_range_nm = $9,
-          range_margin_nm = $10,
-          block_time_min = $11,
-          turnaround_min = $12,
-          total_rotation_min = $13,
-          speed_kts = $14,
-          updated_at = NOW()
-        WHERE id = $15
-          AND airline_id = $16
+          status,
+          notes,
+          created_at,
+          updated_at
+        )
+        VALUES (
+          gen_random_uuid()::TEXT,
+          $1,
+          $2,
+          $3,
+          'flight',
+          NULL,
+          $4,
+          $5,
+          $6,
+          $7,
+          $8,
+          $9,
+          $10,
+          $11,
+          $12,
+          $13,
+          $14,
+          'OUTBOUND',
+          $15,
+          $16,
+          $17,
+          $18,
+          $19,
+          'planned',
+          'Edited by ACS Route Plans Backend Authority',
+          NOW(),
+          NOW()
+        )
         RETURNING *
         `,
         [
-          JSON.stringify(selectedDays),
+          routePlan.id,
+          routePlan.route_uid,
+          airlineId,
+          routePlan.origin,
+          routePlan.destination,
+          day,
           departure,
           arrival,
+          routePlan.model_key,
+          routePlan.aircraft,
           aircraftId,
-          ACS_normalizeText(aircraft.model_key).toUpperCase(),
-          ACS_normalizeText(aircraft.aircraft_name),
-          ACS_normalizeText(aircraft.registration),
-          distanceNm,
-          aircraftRangeNm,
-          Math.max(0, aircraftRangeNm - distanceNm),
-          blockTimeMin,
-          turnaroundMin,
-          totalRotationMin,
-          Number(aircraft.speed_kts) || null,
-          routePlanId,
-          airlineId
+          routePlan.registration,
+          routePlan.flight_number_out,
+          routePlan.flight_number_in,
+          Number(routePlan.distance_nm || 0),
+          abs.depAbsMin,
+          abs.arrAbsMin,
+          Number(routePlan.block_time_min || 0),
+          Number(routePlan.turnaround_min || 0)
         ]
       );
 
-      const routePlan = updatedRouteResult.rows[0];
-      const insertedSlots = [];
-
-      for (const movement of slotMovements) {
-        const slotResult = await client.query(
-          `
-          INSERT INTO public.airport_slot_bookings (
-            airline_id,
-            route_plan_id,
-            aircraft_id,
-            airport_icao,
-            movement_type,
-            weekday,
-            time_local,
-            origin,
-            destination,
-            flight_number,
-            registration,
-            model_key,
-            slot_status,
-            source,
-            reserved_sim_time,
-            created_at,
-            updated_at
-          )
-          VALUES (
-            $1,$2,$3,$4,$5,$6,$7,$8,$9,
-            $10,$11,$12,
-            'RESERVED',
-            'ACS_ROUTE_PLAN_EDIT_SLOT_REPLACEMENT',
-            acs_get_current_sim_time(),
-            NOW(),
-            NOW()
-          )
-          RETURNING *
-          `,
-          [
-            airlineId,
-            routePlanId,
-            aircraftId,
-            movement.airport_icao,
-            movement.movement_type,
-            movement.weekday,
-            movement.time_local,
-            movement.origin,
-            movement.destination,
-            movement.flight_number,
-            routePlan.registration,
-            routePlan.model_key
-          ]
-        );
-        insertedSlots.push(slotResult.rows[0]);
-      }
-
-      const insertedScheduleItems = [];
-
-      for (const day of selectedDays) {
-        const abs = ACS_buildAbsMinutes(day, departure, arrival);
-        const itemResult = await client.query(
-          `
-          INSERT INTO public.schedule_items (
-            schedule_uid,
-            route_plan_id,
-            route_uid,
-            airline_id,
-            item_type,
-            service_type,
-            origin,
-            destination,
-            selected_day,
-            departure,
-            arrival,
-            model_key,
-            aircraft,
-            aircraft_id,
-            aircraft_registration,
-            flight_number,
-            paired_flight_number,
-            flight_direction,
-            distance_nm,
-            dep_abs_min,
-            arr_abs_min,
-            block_time_min,
-            turnaround_min,
-            status,
-            notes,
-            created_at,
-            updated_at
-          )
-          VALUES (
-            gen_random_uuid()::TEXT,
-            $1,$2,$3,
-            'flight',
-            NULL,
-            $4,$5,$6,$7,$8,$9,$10,$11,
-            $12,$13,$14,
-            'OUTBOUND',
-            $15,$16,$17,$18,$19,
-            'planned',
-            'Edited by ACS Route Plans Backend Authority',
-            NOW(),
-            NOW()
-          )
-          RETURNING *
-          `,
-          [
-            routePlan.id,
-            routePlan.route_uid,
-            airlineId,
-            routePlan.origin,
-            routePlan.destination,
-            day,
-            departure,
-            arrival,
-            routePlan.model_key,
-            routePlan.aircraft,
-            aircraftId,
-            routePlan.registration,
-            routePlan.flight_number_out,
-            routePlan.flight_number_in,
-            Number(routePlan.distance_nm || 0),
-            abs.depAbsMin,
-            abs.arrAbsMin,
-            Number(routePlan.block_time_min || 0),
-            Number(routePlan.turnaround_min || 0)
-          ]
-        );
-        insertedScheduleItems.push(itemResult.rows[0]);
-      }
-
-      await client.query("COMMIT");
-      transactionStarted = false;
-
-      return res.json({
-        ok: true,
-        endpoint: "ACS_ROUTE_PLAN_PHYSICAL_EDIT",
-        version: "v2.2",
-        route_plan: routePlan,
-        slot_bookings: insertedSlots,
-        schedule_items: insertedScheduleItems
-      });
-
-    } catch (error) {
-      if (transactionStarted) {
-        try {
-          await client.query("ROLLBACK");
-        } catch (rollbackError) {
-          console.error(
-            "ACS ROUTE PLAN EDIT ROLLBACK ERROR:",
-            rollbackError
-          );
-        }
-      }
-
-      console.error("ACS ROUTE PLAN EDIT ERROR:", error);
-
-      return res.status(500).json({
-        ok: false,
-        error: error.code || "ROUTE_PLAN_EDIT_FAILED",
-        details: error.message
-      });
-
-    } finally {
-      client.release();
+      insertedScheduleItems.push(itemResult.rows[0]);
     }
+
+    await client.query("COMMIT");
+    transactionStarted = false;
+
+    return res.json({
+      ok: true,
+      endpoint: "ACS_ROUTE_PLAN_EDIT",
+      version: "v1.0",
+      route_plan: routePlan,
+      schedule_items: insertedScheduleItems
+    });
+
+  } catch (error) {
+    if (transactionStarted) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        console.error("ACS ROUTE PLAN EDIT ROLLBACK ERROR:", rollbackError);
+      }
+    }
+
+    console.error("ACS ROUTE PLAN EDIT ERROR:", error);
+
+    return res.status(500).json({
+      ok: false,
+      error: error.code || "ROUTE_PLAN_EDIT_FAILED",
+      details: error.message
+    });
+
+  } finally {
+    client.release();
   }
-);
+});
+
 
 export default router;
-
