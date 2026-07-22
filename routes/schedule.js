@@ -4611,7 +4611,8 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
           UPDATE public.aircraft_maintenance_events ame
 
           SET
-            event_status = 'SCHEDULED',
+           event_uid = gen_random_uuid()::TEXT,
+           event_status = 'SCHEDULED',
 
             started_at = NULL,
             expected_completion_at =
