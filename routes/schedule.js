@@ -5362,11 +5362,7 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
          - The OCC-visible maintenance label is A-Check/B-Check.
          ======================================================== */
 
-      const autoStartEnabled =
-        process.env.ACS_AB_AUTO_START_ENABLED === "true";
-
-      const dueEventsResult = autoStartEnabled
-        ? await client.query(
+      const dueEventsResult = await client.query(
         `
         WITH eligible AS (
           SELECT
@@ -5439,8 +5435,8 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
         ORDER BY scheduled_start_at, id
         `,
         [airlineId]
-      )
-        : { rows: [], rowCount: 0 };
+         
+      );
 
       const startedEvents = [];
       const blockedEvents = [];
