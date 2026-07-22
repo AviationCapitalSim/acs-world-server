@@ -5946,7 +5946,7 @@ const financeLogId =
           phase0Result.rowCount || 0,
         phase1_candidate_count:
           completionResult.rowCount || 0,
-        auto_start_enabled: autoStartEnabled,
+        auto_start_enabled: true,
         completed_count: completedEvents.length,
         completed_events: completedEvents,
         started_count: startedEvents.length,
