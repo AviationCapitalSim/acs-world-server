@@ -899,8 +899,11 @@ router.get(
     const client = await pool.connect();
 
     try {
-      const origin = ACS_normalizeIcao(req.query.origin);
-      const destination = ACS_normalizeIcao(req.query.destination);
+      const origin =
+        ACS_normalizeIcao(req.query.origin);
+
+      const destination =
+        ACS_normalizeIcao(req.query.destination);
 
       if (!origin || !destination) {
         return res.status(400).json({
@@ -928,61 +931,139 @@ router.get(
         ),
         clock AS MATERIALIZED (
           SELECT
-            acs_get_current_sim_time()::timestamp AS sim_time
+            acs_get_current_sim_time()::timestamp
+              AS sim_time
         ),
         directional_markets AS (
           SELECT
             1 AS direction_order,
             'OUTBOUND'::text AS direction,
+
             active_model.model_id,
             active_model.model_version,
+
             clock.sim_time AS current_sim_time,
+
             daily.*,
+
             weekly.weekly_y,
             weekly.weekly_c,
-            weekly.weekly_f
+            weekly.weekly_f,
+
+            week_data.week_days
+
           FROM active_model
           CROSS JOIN clock
+
           CROSS JOIN LATERAL
             public.acs_calculate_passenger_demand_daily(
               $1,
               $2,
               clock.sim_time
             ) daily
+
           CROSS JOIN LATERAL
             public.acs_calculate_passenger_demand(
               $1,
               $2,
               clock.sim_time
             ) weekly
+
+          CROSS JOIN LATERAL (
+            SELECT
+              COALESCE(
+                jsonb_agg(
+                  to_jsonb(week_day)
+                  ORDER BY week_day.weekday_iso
+                ),
+                '[]'::jsonb
+              ) AS week_days
+
+            FROM generate_series(0, 6)
+              AS week_offset(day_offset)
+
+            CROSS JOIN LATERAL
+              public.acs_calculate_passenger_demand_daily(
+                $1,
+                $2,
+                (
+                  date_trunc(
+                    'week',
+                    clock.sim_time
+                  )
+                  +
+                  week_offset.day_offset
+                    * interval '1 day'
+                )::timestamp
+              ) week_day
+          ) week_data
 
           UNION ALL
 
           SELECT
             2 AS direction_order,
             'INBOUND'::text AS direction,
+
             active_model.model_id,
             active_model.model_version,
+
             clock.sim_time AS current_sim_time,
+
             daily.*,
+
             weekly.weekly_y,
             weekly.weekly_c,
-            weekly.weekly_f
+            weekly.weekly_f,
+
+            week_data.week_days
+
           FROM active_model
           CROSS JOIN clock
+
           CROSS JOIN LATERAL
             public.acs_calculate_passenger_demand_daily(
               $2,
               $1,
               clock.sim_time
             ) daily
+
           CROSS JOIN LATERAL
             public.acs_calculate_passenger_demand(
               $2,
               $1,
               clock.sim_time
             ) weekly
+
+          CROSS JOIN LATERAL (
+            SELECT
+              COALESCE(
+                jsonb_agg(
+                  to_jsonb(week_day)
+                  ORDER BY week_day.weekday_iso
+                ),
+                '[]'::jsonb
+              ) AS week_days
+
+            FROM generate_series(0, 6)
+              AS week_offset(day_offset)
+
+            CROSS JOIN LATERAL
+              public.acs_calculate_passenger_demand_daily(
+                $2,
+                $1,
+                (
+                  date_trunc(
+                    'week',
+                    clock.sim_time
+                  )
+                  +
+                  week_offset.day_offset
+                    * interval '1 day'
+                )::timestamp
+              ) week_day
+          ) week_data
         )
+
         SELECT *
         FROM directional_markets
         ORDER BY direction_order
@@ -1007,16 +1088,37 @@ router.get(
         });
       }
 
+      const outboundWeek =
+        Array.isArray(outbound.week_days)
+          ? outbound.week_days
+          : [];
+
+      const inboundWeek =
+        Array.isArray(inbound.week_days)
+          ? inbound.week_days
+          : [];
+
+      delete outbound.week_days;
+      delete inbound.week_days;
+
       return res.json({
         ok: true,
-        endpoint: "ACS_GLOBAL_PASSENGER_DEMAND",
-        version: outbound.model_version,
-        authority: "POSTGRESQL_PASSENGER_MARKET_AUTHORITY",
-        current_sim_time: outbound.current_sim_time,
+        endpoint:
+          "ACS_GLOBAL_PASSENGER_DEMAND",
+        version:
+          outbound.model_version,
+        authority:
+          "POSTGRESQL_PASSENGER_MARKET_AUTHORITY",
+        current_sim_time:
+          outbound.current_sim_time,
         origin,
         destination,
+
         outbound,
-        inbound
+        inbound,
+
+        outbound_week: outboundWeek,
+        inbound_week: inboundWeek
       });
 
     } catch (error) {
