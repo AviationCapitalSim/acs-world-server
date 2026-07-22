@@ -5586,36 +5586,66 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
 
           break;
         }
+         
 const financeLogResult = await client.query(
   `
-  INSERT INTO public.finance_log (
-    airline_id,
-    type,
-    source,
-    amount,
-    timestamp,
-    schedule_item_id,
-    reference_uid,
-    description
+  WITH existing_log AS (
+    SELECT
+      id,
+      TRUE AS already_charged
+    FROM public.finance_log
+    WHERE reference_uid = $5
+      AND airline_id = $1
+      AND type = 'EXPENSE'
+      AND amount = $3
+    LIMIT 1
+  ),
+
+  inserted_log AS (
+    INSERT INTO public.finance_log (
+      airline_id,
+      type,
+      source,
+      amount,
+      timestamp,
+      schedule_item_id,
+      reference_uid,
+      description
+    )
+    SELECT
+      $1,
+      'EXPENSE',
+      $2,
+      $3,
+      (
+        EXTRACT(
+          EPOCH FROM acs_get_current_sim_time()
+        ) * 1000
+      )::BIGINT,
+      $4,
+      $5,
+      $6
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM existing_log
+    )
+    ON CONFLICT (reference_uid)
+    WHERE reference_uid IS NOT NULL
+    DO NOTHING
+    RETURNING
+      id,
+      FALSE AS already_charged
   )
-  VALUES (
-    $1,
-    'EXPENSE',
-    $2,
-    $3,
-    (
-      EXTRACT(
-        EPOCH FROM acs_get_current_sim_time()
-      ) * 1000
-    )::BIGINT,
-    $4,
-    $5,
-    $6
-  )
-  ON CONFLICT (reference_uid)
-  WHERE reference_uid IS NOT NULL
-  DO NOTHING
-  RETURNING id
+
+  SELECT id, already_charged
+  FROM existing_log
+
+  UNION ALL
+
+  SELECT id, already_charged
+  FROM inserted_log
+
+  LIMIT 1
   `,
   [
     airlineId,
@@ -5631,47 +5661,57 @@ const financeLogResult = await client.query(
 );
 
 if (!financeLogResult.rows.length) {
-  blockedEvents.push({
-    event_id: event.id,
-    aircraft_id: event.aircraft_id,
-    registration: event.registration,
-    check_type: checkType,
-    reason: "FINANCE_ALREADY_CHARGED",
-    reference_uid: String(event.event_uid)
-  });
+  const error = new Error(
+    "MAINTENANCE_FINANCE_RECONCILIATION_FAILED"
+  );
 
-  break;
+  error.code =
+    "MAINTENANCE_FINANCE_RECONCILIATION_FAILED";
+
+  throw error;
 }
 
 const financeLogId =
   financeLogResult.rows[0].id;
 
-        const financeUpdateResult = await client.query(
-          `
-          UPDATE public.company_finance
-          SET
-            capital = COALESCE(capital, 0) - $2,
-            expenses = COALESCE(expenses, 0) + $2,
-            profit = COALESCE(profit, 0) - $2,
-            cost_maintenance =
-              COALESCE(cost_maintenance, 0) + $2,
-            updated_at =
-              (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
-          WHERE airline_id = $1
-          RETURNING airline_id
-          `,
-          [airlineId, cost]
-        );
+const chargeAlreadyExists =
+  financeLogResult.rows[0].already_charged === true;
 
-        if (!financeUpdateResult.rows.length) {
-          const error =
-            new Error("COMPANY_FINANCE_NOT_FOUND");
+/*
+ * Existing matching charge:
+ * preserve it and do not debit the airline again.
+ *
+ * New occurrence:
+ * create the charge and debit the airline exactly once.
+ */
+if (!chargeAlreadyExists) {
+  const financeUpdateResult = await client.query(
+    `
+    UPDATE public.company_finance
+    SET
+      capital = COALESCE(capital, 0) - $2,
+      expenses = COALESCE(expenses, 0) + $2,
+      profit = COALESCE(profit, 0) - $2,
+      cost_maintenance =
+        COALESCE(cost_maintenance, 0) + $2,
+      updated_at =
+        (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+    WHERE airline_id = $1
+    RETURNING airline_id
+    `,
+    [airlineId, cost]
+  );
 
-          error.code =
-            "COMPANY_FINANCE_NOT_FOUND";
+  if (!financeUpdateResult.rows.length) {
+    const error =
+      new Error("COMPANY_FINANCE_NOT_FOUND");
 
-          throw error;
-        }
+    error.code =
+      "COMPANY_FINANCE_NOT_FOUND";
+
+    throw error;
+  }
+}
 
         const startedEventResult = await client.query(
           `
