@@ -5581,65 +5581,108 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
 
           break;
         }
-const financeLogResult = await client.query(
-  `
-  INSERT INTO public.finance_log (
-    airline_id,
-    type,
-    source,
-    amount,
-    timestamp,
-    schedule_item_id,
-    reference_uid,
-    description
-  )
-  VALUES (
-    $1,
-    'EXPENSE',
-    $2,
-    $3,
-    (
-      EXTRACT(
-        EPOCH FROM acs_get_current_sim_time()
-      ) * 1000
-    )::BIGINT,
-    $4,
-    $5,
-    $6
-  )
-  ON CONFLICT (reference_uid)
-  WHERE reference_uid IS NOT NULL
-  DO NOTHING
-  RETURNING id
-  `,
-  [
-    airlineId,
-    `AIRCRAFT ${checkType} — ` +
-      `${event.registration || "UNREGISTERED"} ` +
-      `${event.aircraft_name}`,
-    cost,
-    event.schedule_item_id,
-    String(event.event_uid),
-    `${ACS_checkDisplayName(checkType)} ` +
-      `started automatically by ACS Time`
-  ]
-);
+        /*
+         * FINANCE IDEMPOTENCY PER OCCURRENCE
+         * ------------------------------------------------------
+         * event_uid belongs to the persistent recycled event.
+         * scheduled_start_at distinguishes each A/B occurrence.
+         */
+        const scheduledStartDate =
+          new Date(event.scheduled_start_at);
 
-if (!financeLogResult.rows.length) {
-  blockedEvents.push({
-    event_id: event.id,
-    aircraft_id: event.aircraft_id,
-    registration: event.registration,
-    check_type: checkType,
-    reason: "FINANCE_ALREADY_CHARGED",
-    reference_uid: String(event.event_uid)
-  });
+        if (
+          Number.isNaN(
+            scheduledStartDate.getTime()
+          )
+        ) {
+          const error =
+            new Error(
+              "MAINTENANCE_SCHEDULED_START_INVALID"
+            );
 
-  break;
-}
+          error.code =
+            "MAINTENANCE_SCHEDULED_START_INVALID";
 
-const financeLogId =
-  financeLogResult.rows[0].id;
+          throw error;
+        }
+
+        const occurrenceReferenceUid =
+          `MAINTENANCE_AB:` +
+          `${event.event_uid}:` +
+          `${scheduledStartDate.getTime()}`;
+
+        const financeLogResult =
+          await client.query(
+            `
+            INSERT INTO public.finance_log (
+              airline_id,
+              type,
+              source,
+              amount,
+              timestamp,
+              schedule_item_id,
+              reference_uid,
+              description
+            )
+            VALUES (
+              $1,
+              'EXPENSE',
+              $2,
+              $3,
+              (
+                EXTRACT(
+                  EPOCH FROM acs_get_current_sim_time()
+                ) * 1000
+              )::BIGINT,
+              $4,
+              $5,
+              $6
+            )
+            ON CONFLICT (reference_uid)
+            WHERE reference_uid IS NOT NULL
+            DO NOTHING
+            RETURNING id
+            `,
+            [
+              airlineId,
+
+              `AIRCRAFT ${checkType} — ` +
+                `${event.registration || "UNREGISTERED"} ` +
+                `${event.aircraft_name}`,
+
+              cost,
+              event.schedule_item_id,
+              occurrenceReferenceUid,
+
+              `${ACS_checkDisplayName(checkType)} ` +
+                `started automatically by ACS Time`
+            ]
+          );
+
+        if (!financeLogResult.rows.length) {
+          blockedEvents.push({
+            event_id: event.id,
+            aircraft_id:
+              event.aircraft_id,
+            registration:
+              event.registration,
+            check_type:
+              checkType,
+            reason:
+              "FINANCE_ALREADY_CHARGED",
+            reference_uid:
+              occurrenceReferenceUid
+          });
+
+          /*
+           * One inconsistent occurrence must not prevent other
+           * eligible aircraft of the airline from being processed.
+           */
+          continue;
+        }
+
+        const financeLogId =
+          financeLogResult.rows[0].id;
 
         const financeUpdateResult = await client.query(
           `
