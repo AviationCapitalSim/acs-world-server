@@ -220,14 +220,25 @@ async function ACS_executeActiveRuntimeJobs() {
     `
   );
 
-  await Promise.allSettled(
-    dueResult.rows.map((row) =>
-      ACS_runActiveRuntimeJob(
-        String(row.job_key || "")
-          .toUpperCase()
-      )
-    )
-  );
+  /*
+   * Execute runtime jobs sequentially.
+   *
+   * Every active job acquires an advisory-lock connection and its
+   * handler may require additional PostgreSQL connections. Running
+   * all jobs simultaneously can exhaust the shared pool and leave
+   * jobs indefinitely in RUNNING.
+   */
+  for (const row of dueResult.rows) {
+    const jobKey = String(row.job_key || "")
+      .trim()
+      .toUpperCase();
+
+    if (!jobKey) {
+      continue;
+    }
+
+    await ACS_runActiveRuntimeJob(jobKey);
+  }
 }
 
 async function ACS_executeRuntimePoll() {
