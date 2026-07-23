@@ -2940,7 +2940,7 @@ const ACS_AIRCRAFT_DB = [
   // 1980s
   {
     manufacturer: "Fairchild",
-    model: "Swearingen Metro III",
+    model: "Metro III",
     year: 1981,
     seats: 19,
     range_nm: 600,
