@@ -2099,23 +2099,10 @@ const ACS_AIRCRAFT_DB = [
     engines: "PW118",
     required_runway_m: 1050
   },
-  {
-    manufacturer: "Fairchild Swearingen",
-    model: "Metro III",
-    year: 1981,
-    seats: 19,
-    range_nm: 900,
-    speed_kts: 285,
-    mtow_kg: 6400,
-    fuel_burn_kgph: 380,
-    price_acs_usd: 4200000,
-    engines: "Garrett TPE331-11U",
-    required_runway_m: 900
-  },
-
+  
   // 1990s
   {
-    manufacturer: "Fairchild Swearingen",
+    manufacturer: "Fairchild",
     model: "Metro 23",
     year: 1992,
     seats: 19,
