@@ -5539,6 +5539,12 @@ router.get("/aircraft/factory/catalog", requireAuth, async (req, res) => {
         ac.fuel_burn_kgph,
         ac.price_acs_usd,
         ac.engines,
+
+        COALESCE(
+          NULLIF(ac.raw_data ->> 'required_runway_m', '')::integer,
+          0
+        ) AS required_runway_m,
+
         ac.aircraft_category,
         ac.status,
         ac.image_filename,
