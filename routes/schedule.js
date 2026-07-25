@@ -5966,12 +5966,103 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
 
         FROM normalized
 
-        WHERE ams.airline_id = normalized.airline_id
+         WHERE ams.airline_id = normalized.airline_id
           AND ams.aircraft_id = normalized.aircraft_id
         `,
         [airlineId]
       );
-       
+
+      /* ========================================================
+         PHASE 0.1 — B CHECK OVERDUE OCC ALERT
+         --------------------------------------------------------
+         Alert only.
+         No maintenance, schedule, fleet or finance mutation.
+         ======================================================== */
+
+      await client.query(
+        `
+        INSERT INTO public.occ_alerts (
+          airline_id,
+          alert_key,
+          category,
+          level,
+          title,
+          message,
+          source,
+          source_ref,
+          event_sim_time,
+          created_at,
+          updated_at
+        )
+
+        SELECT
+          ams.airline_id,
+          'MAINTENANCE_B_CHECK_OVERDUE:'
+            || ams.aircraft_id,
+          'maintenance',
+          'warning',
+          'B CHECK OVERDUE',
+          'Aircraft '
+            || COALESCE(
+              NULLIF(
+                BTRIM(ams.registration),
+                ''
+              ),
+              NULLIF(
+                BTRIM(ams.aircraft_name),
+                ''
+              ),
+              'AIRCRAFT'
+            )
+            || ' B Check overdue.',
+          'aircraft_maintenance_status',
+          ams.aircraft_id::TEXT,
+          COALESCE(
+            ams.b_check_due_date,
+            acs_get_current_sim_time()
+          ),
+          NOW(),
+          NOW()
+
+        FROM public.aircraft_maintenance_status ams
+
+        WHERE ams.airline_id = $1
+          AND UPPER(
+            COALESCE(
+              ams.b_check_status,
+              ''
+            )
+          ) = 'OVERDUE'
+
+          AND NOT EXISTS (
+            SELECT 1
+            FROM public.occ_alerts existing_alert
+            WHERE existing_alert.airline_id =
+                    ams.airline_id
+              AND existing_alert.alert_key =
+                    'MAINTENANCE_B_CHECK_OVERDUE:'
+                    || ams.aircraft_id
+              AND (
+                existing_alert.deleted_at IS NULL
+                OR
+                existing_alert.deleted_sim_time IS NULL
+                OR
+                acs_get_current_sim_time() <
+                  existing_alert.deleted_sim_time
+                  + INTERVAL '7 days'
+              )
+          )
+
+        ON CONFLICT (
+          airline_id,
+          alert_key
+        )
+        WHERE deleted_at IS NULL
+        DO NOTHING
+        `,
+        [airlineId]
+      );
+
       await client.query("COMMIT");
       transactionStarted = false;
 
