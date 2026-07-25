@@ -673,11 +673,37 @@ router.get("/aircraft/fleet", requireAuth, async (req, res) => {
         af.created_at,
         af.updated_at,
 
+         /* =====================================================
+           AIRCRAFT CATALOG — TECHNICAL REFERENCE
+           Read-only information for My Aircraft.
+           ===================================================== */
+
+        ac.catalog_uid,
+        ac.manufacturer AS catalog_manufacturer,
+        ac.model AS catalog_model,
+        ac.aircraft_name AS catalog_aircraft_name,
+        ac.production_year AS catalog_production_year,
+        ac.year AS catalog_reference_year,
+
         ac.aircraft_category,
         ac.seats,
         ac.range_nm,
         ac.speed_kts,
+        ac.mtow_kg,
+        ac.fuel_burn_kgph,
+        ac.engines,
         ac.price_acs_usd,
+
+        COALESCE(
+          NULLIF(
+            ac.raw_data ->> 'required_runway_m',
+            ''
+          )::INTEGER,
+          0
+        ) AS required_runway_m,
+
+        ac.status AS catalog_status,
+        ac.image_filename,
 
         ams.a_check_due_date,
         ams.a_check_status,
