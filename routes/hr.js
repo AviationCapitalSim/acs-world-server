@@ -1208,6 +1208,8 @@ router.get("/hr/departments/:airlineId", async (req, res) => {
         required,
         morale,
         salary,
+        salary_percent,
+        salary_decade,
         ROUND(
         COALESCE(staff, 0)::NUMERIC *
         COALESCE(salary, 0)::NUMERIC
@@ -1250,46 +1252,67 @@ router.patch("/hr/staff", async (req, res) => {
     airline_id,
     dept_id,
     staff,
-    morale,
-    salary
+    morale
   } = req.body;
 
   try {
-    await pool.query(
+    const airlineId = Number(airline_id);
+    const resolvedStaff = Math.max(0, Number(staff || 0));
+
+    if (!Number.isInteger(airlineId) || !dept_id) {
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_HR_STAFF_PAYLOAD"
+      });
+    }
+
+    await ensureHRInitialized(airlineId);
+
+    const result = await pool.query(
       `
       UPDATE public.hr_departments
       SET
         staff = $3,
         morale = COALESCE($4, morale),
-        salary = COALESCE($5, salary),
-
-       payroll = ROUND(
-        COALESCE($3, staff)::NUMERIC *
-        COALESCE($5, salary)::NUMERIC
-       )::BIGINT,
-
+        payroll = ROUND(
+          $3::numeric *
+          COALESCE(salary, 0)::numeric
+        )::bigint,
         updated_at = NOW()
       WHERE airline_id = $1
         AND dept_id = $2
-      `,
-      [
-        airline_id,
+      RETURNING
         dept_id,
         staff,
+        required,
         morale,
-        salary
+        salary,
+        salary_percent,
+        salary_decade,
+        payroll
+      `,
+      [
+        airlineId,
+        dept_id,
+        resolvedStaff,
+        morale ?? null
       ]
     );
 
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        ok: false,
+        error: "HR_DEPARTMENT_NOT_FOUND"
+      });
+    }
+
     res.json({
-      ok: true
+      ok: true,
+      department: result.rows[0]
     });
 
   } catch (err) {
-    console.error(
-      "HR UPDATE ERROR",
-      err
-    );
+    console.error("HR UPDATE ERROR", err);
 
     res.status(500).json({
       ok: false,
