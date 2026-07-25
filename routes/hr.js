@@ -51,6 +51,242 @@ const HR_DEFAULT = [
 
 ];
 
+/* ============================================================
+   ACS HR HISTORICAL SALARY AUTHORITY
+   ------------------------------------------------------------
+   • PostgreSQL/backend is salary authority
+   • Uses official simulator time
+   • Preserves player salary percentage
+   • Applies each historical decade exactly once
+============================================================ */
+
+const HR_HISTORICAL_SALARY_TABLE = {
+  1940: {
+    pilot: 380,
+    cabin: 140,
+    maintenance: 200,
+    ground: 120,
+    admin: 180,
+    flight_ops: 220,
+    ceo: 650
+  },
+  1950: {
+    pilot: 520,
+    cabin: 170,
+    maintenance: 240,
+    ground: 140,
+    admin: 210,
+    flight_ops: 260,
+    ceo: 800
+  },
+  1960: {
+    pilot: 900,
+    cabin: 240,
+    maintenance: 330,
+    ground: 190,
+    admin: 280,
+    flight_ops: 340,
+    ceo: 1200
+  },
+  1970: {
+    pilot: 1600,
+    cabin: 360,
+    maintenance: 500,
+    ground: 280,
+    admin: 420,
+    flight_ops: 520,
+    ceo: 2200
+  },
+  1980: {
+    pilot: 2600,
+    cabin: 600,
+    maintenance: 800,
+    ground: 420,
+    admin: 620,
+    flight_ops: 760,
+    ceo: 3600
+  },
+  1990: {
+    pilot: 3600,
+    cabin: 820,
+    maintenance: 1050,
+    ground: 520,
+    admin: 820,
+    flight_ops: 980,
+    ceo: 5200
+  },
+  2000: {
+    pilot: 4700,
+    cabin: 1100,
+    maintenance: 1400,
+    ground: 720,
+    admin: 1100,
+    flight_ops: 1300,
+    ceo: 7200
+  },
+  2010: {
+    pilot: 6200,
+    cabin: 1600,
+    maintenance: 2000,
+    ground: 1050,
+    admin: 1600,
+    flight_ops: 1850,
+    ceo: 9800
+  },
+  2020: {
+    pilot: 8300,
+    cabin: 2400,
+    maintenance: 2800,
+    ground: 1450,
+    admin: 2300,
+    flight_ops: 2600,
+    ceo: 13500
+  }
+};
+
+const HR_PILOT_MULTIPLIERS = {
+  pilot_small: 0.55,
+  pilot_medium: 0.75,
+  pilot_large: 1,
+  pilot_vlarge: 1.4
+};
+
+function getHRSalaryDecade(year) {
+  const validYear = Number(year);
+
+  const decades = Object.keys(HR_HISTORICAL_SALARY_TABLE)
+    .map(Number)
+    .sort((a, b) => a - b);
+
+  return decades.reduce(
+    (selected, decade) =>
+      validYear >= decade ? decade : selected,
+    decades[0]
+  );
+}
+
+function getHRHistoricalSalary(year, baseRole) {
+  const decade = getHRSalaryDecade(year);
+  const table = HR_HISTORICAL_SALARY_TABLE[decade];
+
+  if (Object.prototype.hasOwnProperty.call(
+    HR_PILOT_MULTIPLIERS,
+    baseRole
+  )) {
+    return Math.round(
+      table.pilot * HR_PILOT_MULTIPLIERS[baseRole]
+    );
+  }
+
+  const salaryByRole = {
+    ceo: table.ceo,
+    admin: table.admin,
+    ground: table.ground,
+    flight_ops: table.flight_ops,
+    maintenance: table.maintenance,
+    cabin: table.cabin
+  };
+
+  return Number(salaryByRole[baseRole] || table.admin);
+}
+
+async function getHROfficialSimYear() {
+  const result = await pool.query(`
+    SELECT
+      EXTRACT(
+        YEAR FROM acs_get_current_sim_time()
+      )::int AS sim_year
+  `);
+
+  const simYear = Number(result.rows[0]?.sim_year);
+
+  if (!Number.isInteger(simYear)) {
+    throw new Error("HR_INVALID_OFFICIAL_SIM_YEAR");
+  }
+
+  return simYear;
+}
+
+async function applyHRHistoricalSalaryResolver(airlineId) {
+  const simYear = await getHROfficialSimYear();
+  const salaryDecade = getHRSalaryDecade(simYear);
+
+  const result = await pool.query(
+    `
+    SELECT
+      dept_id,
+      base_role,
+      staff,
+      salary,
+      payroll,
+      salary_percent,
+      salary_decade
+    FROM public.hr_departments
+    WHERE airline_id = $1
+    `,
+    [airlineId]
+  );
+
+  let updatedCount = 0;
+
+  for (const department of result.rows) {
+    const percentage =
+      Number(department.salary_percent) > 0
+        ? Number(department.salary_percent)
+        : 100;
+
+    const historicalBaseSalary = getHRHistoricalSalary(
+      simYear,
+      department.base_role
+    );
+
+    const resolvedSalary = Math.round(
+      historicalBaseSalary * (percentage / 100)
+    );
+
+    const resolvedPayroll = Math.round(
+      Number(department.staff || 0) * resolvedSalary
+    );
+
+    const requiresUpdate =
+      Number(department.salary_decade) !== salaryDecade ||
+      Number(department.salary || 0) !== resolvedSalary ||
+      Number(department.payroll || 0) !== resolvedPayroll;
+
+    if (!requiresUpdate) continue;
+
+    await pool.query(
+      `
+      UPDATE public.hr_departments
+      SET
+        salary = $3,
+        payroll = $4,
+        salary_percent = $5,
+        salary_decade = $6,
+        updated_at = NOW()
+      WHERE airline_id = $1
+        AND dept_id = $2
+      `,
+      [
+        airlineId,
+        department.dept_id,
+        resolvedSalary,
+        resolvedPayroll,
+        percentage,
+        salaryDecade
+      ]
+    );
+
+    updatedCount += 1;
+  }
+
+  return {
+    ok: true,
+    sim_year: simYear,
+    salary_decade: salaryDecade,
+    updated_count: updatedCount
+  };
+}
 
 /* ============================================================
    HR BOOTSTRAP (SERVER SIDE ONLY)
@@ -60,55 +296,76 @@ const HR_DEFAULT = [
 ============================================================ */
 
 async function ensureHRInitialized(airlineId) {
+  const simYear = await getHROfficialSimYear();
+  const salaryDecade = getHRSalaryDecade(simYear);
 
   const check = await pool.query(
-    `SELECT COUNT(*) FROM hr_departments WHERE airline_id = $1`,
+    `
+    SELECT COUNT(*)
+    FROM public.hr_departments
+    WHERE airline_id = $1
+    `,
     [airlineId]
   );
 
-  const count = Number(check.rows[0].count);
+  const existingCount = Number(check.rows[0]?.count || 0);
 
-  if (count > 0) return;
+  if (existingCount < HR_DEFAULT.length) {
+    console.log(
+      `HR INIT → Ensuring departments for airline ${airlineId}`
+    );
+  }
 
-  console.log(`HR INIT → Creating default departments for airline ${airlineId}`);
+  for (const department of HR_DEFAULT) {
+    const initialSalary = getHRHistoricalSalary(
+      simYear,
+      department.role
+    );
 
-  for (const d of HR_DEFAULT) {
+    const initialPayroll = Math.round(
+      Number(department.staff || 0) * initialSalary
+    );
 
     await pool.query(
       `
-      INSERT INTO hr_departments
-(
-  airline_id,
-  dept_id,
-  dept_name,
-  base_role,
-  staff,
-  required,
-  morale,
-  salary,
-  payroll,
-  bonus,
-  years
-)
-VALUES
-(
-  $1,$2,$3,$4,$5,$6,100,0,0,0,0
-)
-ON CONFLICT (airline_id, dept_id)
-DO NOTHING
+      INSERT INTO public.hr_departments
+      (
+        airline_id,
+        dept_id,
+        dept_name,
+        base_role,
+        staff,
+        required,
+        morale,
+        salary,
+        payroll,
+        bonus,
+        years,
+        salary_percent,
+        salary_decade
+      )
+      VALUES
+      (
+        $1,$2,$3,$4,$5,$6,100,$7,$8,0,0,100,$9
+      )
+      ON CONFLICT (airline_id, dept_id)
+      DO NOTHING
       `,
       [
         airlineId,
-        d.id,
-        d.name,
-        d.role,
-        d.staff,
-        d.required
+        department.id,
+        department.name,
+        department.role,
+        department.staff,
+        department.required,
+        initialSalary,
+        initialPayroll,
+        salaryDecade
       ]
     );
-
   }
 
+  await applyHRHistoricalSalaryResolver(airlineId);
 }
 
 /* ============================================================
