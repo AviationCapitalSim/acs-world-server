@@ -420,8 +420,16 @@ async function recalculateHRRequired(airlineId) {
   END
 ), 0)::int AS cabin,
 
-GREATEST(1, CEIL(COUNT(*) * 1.2))::int AS maintenance,
-GREATEST(1, CEIL(COUNT(*) * 2.0))::int AS ground,
+CASE
+  WHEN COUNT(*) = 0 THEN 0
+  ELSE GREATEST(1, CEIL(COUNT(*) * 1.2))
+END::int AS maintenance,
+
+CASE
+  WHEN COUNT(*) = 0 THEN 0
+  ELSE GREATEST(1, CEIL(COUNT(*) * 2.0))
+END::int AS ground,
+
 GREATEST(1, CEIL(COALESCE(SUM(weekly_legs), 0) / 18.0))::int AS flightops,
 GREATEST(1, CEIL(COUNT(DISTINCT model_key) / 2.0))::int AS quality,
 GREATEST(1, CEIL(COALESCE(SUM(weekly_legs), 0) / 22.0))::int AS routes,
