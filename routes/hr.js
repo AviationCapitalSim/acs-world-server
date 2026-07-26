@@ -295,15 +295,18 @@ async function ensureHRInitialized(airlineId) {
           $2,
           $3,
           $4,
-          $5,
-          $6,
+          $5::INTEGER,
+          $6::INTEGER,
           100,
-          $7,
-          ROUND($5::NUMERIC * $7::NUMERIC)::BIGINT,
+          $7::NUMERIC,
+          ROUND(
+            ($5::INTEGER)::NUMERIC *
+            $7::NUMERIC
+          )::BIGINT,
           0,
           0,
           100,
-          $8
+          $8::INTEGER
         )
         ON CONFLICT (airline_id, dept_id)
         DO NOTHING
