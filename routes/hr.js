@@ -858,9 +858,11 @@ function ACS_HR_classifyDepartmentRisk(dept) {
 export async function resolveHROperationalRisk(airlineId) {
   await ensureHRInitialized(airlineId);
 
-  if (typeof recalculateHRRequired === "function") {
+if (typeof recalculateHRRequired === "function") {
     await recalculateHRRequired(airlineId);
   }
+
+  await applyHRAutomation(airlineId);
 
   const result = await pool.query(
     `
@@ -2010,42 +2012,79 @@ export function stopHRMoraleScheduler() {
    GET HR OPERATIONAL RISK
    ============================================================ */
 
-router.get("/hr/ops-risk/:airlineId", async (req, res) => {
-   
-  const airlineId = Number(req.params.airlineId);
+router.get(
+  "/hr/ops-risk/:airlineId",
+  requireAuth,
+  async (req, res) => {
+    const sessionAirlineId = Number(req.airline_id);
+    const requestedAirlineId = Number(req.params.airlineId);
 
-  try {
-    const risk = await resolveHROperationalRisk(airlineId);
-    res.json(risk);
-  } catch (err) {
-    console.error("HR OPS RISK ERROR:", err);
+    if (
+      !Number.isInteger(sessionAirlineId) ||
+      requestedAirlineId !== sessionAirlineId
+    ) {
+      return res.status(403).json({
+        ok: false,
+        error: "AIRLINE_ACCESS_DENIED"
+      });
+    }
 
-    res.status(500).json({
-      ok: false,
-      error: err.message
-    });
+    try {
+      const risk = await resolveHROperationalRisk(
+        sessionAirlineId
+      );
+
+      return res.json(risk);
+
+    } catch (err) {
+      console.error("HR OPS RISK ERROR:", err);
+
+      return res.status(500).json({
+        ok: false,
+        error: err.message
+      });
+    }
   }
-});
+);
 
 /* ============================================================
    GET HR → SKYTRACK PERSONNEL RISK FEED
    ============================================================ */
 
-router.get("/hr/skytrack-risk/:airlineId", async (req, res) => {
-  const airlineId = Number(req.params.airlineId);
+router.get(
+  "/hr/skytrack-risk/:airlineId",
+  requireAuth,
+  async (req, res) => {
+    const sessionAirlineId = Number(req.airline_id);
+    const requestedAirlineId = Number(req.params.airlineId);
 
-  try {
-    const feed = await resolveHRSkyTrackRiskFeed(airlineId);
-    res.json(feed);
-  } catch (err) {
-    console.error("HR SKYTRACK RISK FEED ERROR:", err);
+    if (
+      !Number.isInteger(sessionAirlineId) ||
+      requestedAirlineId !== sessionAirlineId
+    ) {
+      return res.status(403).json({
+        ok: false,
+        error: "AIRLINE_ACCESS_DENIED"
+      });
+    }
 
-    res.status(500).json({
-      ok: false,
-      error: err.message
-    });
+    try {
+      const feed = await resolveHRSkyTrackRiskFeed(
+        sessionAirlineId
+      );
+
+      return res.json(feed);
+
+    } catch (err) {
+      console.error("HR SKYTRACK RISK FEED ERROR:", err);
+
+      return res.status(500).json({
+        ok: false,
+        error: err.message
+      });
+    }
   }
-});
+);
 
 /* ============================================================
    APPLY HR OPS IMPACT — MANUAL TEST / PHASE 3E
