@@ -4848,4 +4848,531 @@ const ACS_AIRCRAFT_DB = [
     required_runway_m: 1850
   },
 
+
+  // Missing historical commercial aircraft — catalog expansion
+  {
+    manufacturer: "Handley Page",
+    model: "H.P.42",
+    aircraft_type: "passenger",
+    year: 1931,
+    seats: 38,
+    range_nm: 500,
+    speed_kts: 100,
+    mtow_kg: 12700,
+    fuel_burn_kgph: 600,
+    price_acs_usd: 250000,
+    engines: "Bristol Jupiter XIF",
+    required_runway_m: 700
+  },
+
+  {
+    manufacturer: "Junkers",
+    model: "Ju 52/3m",
+    aircraft_type: "passenger",
+    year: 1932,
+    seats: 17,
+    range_nm: 700,
+    speed_kts: 143,
+    mtow_kg: 11030,
+    fuel_burn_kgph: 600,
+    price_acs_usd: 250000,
+    engines: "BMW 132",
+    required_runway_m: 800
+  },
+
+  {
+    manufacturer: "Short",
+    model: "S.23 Empire",
+    aircraft_type: "passenger",
+    year: 1936,
+    seats: 24,
+    range_nm: 650,
+    speed_kts: 174,
+    mtow_kg: 18400,
+    fuel_burn_kgph: 900,
+    price_acs_usd: 500000,
+    engines: "Bristol Pegasus Xc",
+    required_runway_m: 1000
+  },
+
+  {
+    manufacturer: "Boeing",
+    model: "314 Clipper",
+    aircraft_type: "passenger",
+    year: 1939,
+    seats: 74,
+    range_nm: 3200,
+    speed_kts: 188,
+    mtow_kg: 38100,
+    fuel_burn_kgph: 1800,
+    price_acs_usd: 550000,
+    engines: "Wright R-2600",
+    required_runway_m: 1200
+  },
+
+  {
+    manufacturer: "Lockheed",
+    model: "L-188 Electra",
+    aircraft_type: "passenger",
+    year: 1959,
+    seats: 98,
+    range_nm: 2400,
+    speed_kts: 324,
+    mtow_kg: 52800,
+    fuel_burn_kgph: 1800,
+    price_acs_usd: 2500000,
+    engines: "Allison 501-D13",
+    required_runway_m: 1550
+  },
+
+  {
+    manufacturer: "Convair",
+    model: "CV-880",
+    aircraft_type: "passenger",
+    year: 1960,
+    seats: 110,
+    range_nm: 2500,
+    speed_kts: 470,
+    mtow_kg: 87000,
+    fuel_burn_kgph: 4200,
+    price_acs_usd: 4800000,
+    engines: "GE CJ805-3",
+    required_runway_m: 2400
+  },
+
+  {
+    manufacturer: "Boeing",
+    model: "707-420",
+    aircraft_type: "passenger",
+    year: 1960,
+    seats: 147,
+    range_nm: 4000,
+    speed_kts: 485,
+    mtow_kg: 142900,
+    fuel_burn_kgph: 5200,
+    price_acs_usd: 5200000,
+    engines: "RR Conway 508",
+    required_runway_m: 2600
+  },
+
+  {
+    manufacturer: "Boeing",
+    model: "720B",
+    aircraft_type: "passenger",
+    year: 1961,
+    seats: 149,
+    range_nm: 2800,
+    speed_kts: 500,
+    mtow_kg: 106100,
+    fuel_burn_kgph: 4100,
+    price_acs_usd: 4500000,
+    engines: "PW JT3D",
+    required_runway_m: 2100
+  },
+
+  {
+    manufacturer: "Convair",
+    model: "CV-990 Coronado",
+    aircraft_type: "passenger",
+    year: 1962,
+    seats: 110,
+    range_nm: 3300,
+    speed_kts: 480,
+    mtow_kg: 114000,
+    fuel_burn_kgph: 5000,
+    price_acs_usd: 5500000,
+    engines: "GE CJ805-23",
+    required_runway_m: 2500
+  },
+
+  {
+    manufacturer: "Tupolev",
+    model: "Tu-124",
+    aircraft_type: "passenger",
+    year: 1962,
+    seats: 56,
+    range_nm: 1130,
+    speed_kts: 470,
+    mtow_kg: 38000,
+    fuel_burn_kgph: 2400,
+    price_acs_usd: 3500000,
+    engines: "Soloviev D-20P",
+    required_runway_m: 1800
+  },
+
+  {
+    manufacturer: "Vickers",
+    model: "VC10",
+    aircraft_type: "passenger",
+    year: 1964,
+    seats: 135,
+    range_nm: 5000,
+    speed_kts: 500,
+    mtow_kg: 141500,
+    fuel_burn_kgph: 5600,
+    price_acs_usd: 6000000,
+    engines: "RR Conway 540",
+    required_runway_m: 2500
+  },
+
+  {
+    manufacturer: "Vickers",
+    model: "Super VC10",
+    aircraft_type: "passenger",
+    year: 1965,
+    seats: 174,
+    range_nm: 5300,
+    speed_kts: 500,
+    mtow_kg: 151000,
+    fuel_burn_kgph: 5900,
+    price_acs_usd: 7000000,
+    engines: "RR Conway 550",
+    required_runway_m: 2600
+  },
+
+  {
+    manufacturer: "NAMC",
+    model: "YS-11",
+    aircraft_type: "passenger",
+    year: 1965,
+    seats: 64,
+    range_nm: 1330,
+    speed_kts: 255,
+    mtow_kg: 24500,
+    fuel_burn_kgph: 900,
+    price_acs_usd: 2500000,
+    engines: "RR Dart 542",
+    required_runway_m: 1300
+  },
+
+  {
+    manufacturer: "Douglas",
+    model: "DC-9-15",
+    aircraft_type: "passenger",
+    year: 1966,
+    seats: 90,
+    range_nm: 1300,
+    speed_kts: 490,
+    mtow_kg: 41100,
+    fuel_burn_kgph: 2200,
+    price_acs_usd: 3000000,
+    engines: "PW JT8D",
+    required_runway_m: 1600
+  },
+
+  {
+    manufacturer: "Ilyushin",
+    model: "Il-62",
+    aircraft_type: "passenger",
+    year: 1967,
+    seats: 168,
+    range_nm: 5400,
+    speed_kts: 485,
+    mtow_kg: 165000,
+    fuel_burn_kgph: 6500,
+    price_acs_usd: 12000000,
+    engines: "Kuznetsov NK-8",
+    required_runway_m: 2800
+  },
+
+  {
+    manufacturer: "McDonnell Douglas",
+    model: "DC-10-30",
+    aircraft_type: "passenger",
+    year: 1972,
+    seats: 270,
+    range_nm: 5200,
+    speed_kts: 490,
+    mtow_kg: 263100,
+    fuel_burn_kgph: 10000,
+    price_acs_usd: 20000000,
+    engines: "GE CF6-50",
+    required_runway_m: 2800
+  },
+
+  {
+    manufacturer: "McDonnell Douglas",
+    model: "DC-10-40",
+    aircraft_type: "passenger",
+    year: 1972,
+    seats: 270,
+    range_nm: 5000,
+    speed_kts: 490,
+    mtow_kg: 251700,
+    fuel_burn_kgph: 10000,
+    price_acs_usd: 22000000,
+    engines: "PW JT9D",
+    required_runway_m: 2800
+  },
+
+  {
+    manufacturer: "Dassault",
+    model: "Mercure 100",
+    aircraft_type: "passenger",
+    year: 1974,
+    seats: 150,
+    range_nm: 1150,
+    speed_kts: 500,
+    mtow_kg: 56500,
+    fuel_burn_kgph: 2800,
+    price_acs_usd: 6000000,
+    engines: "PW JT8D",
+    required_runway_m: 1800
+  },
+
+  {
+    manufacturer: "BAC-Aérospatiale",
+    model: "Concorde",
+    aircraft_type: "passenger",
+    year: 1976,
+    seats: 100,
+    range_nm: 3900,
+    speed_kts: 1177,
+    mtow_kg: 185070,
+    fuel_burn_kgph: 20500,
+    price_acs_usd: 46000000,
+    engines: "RR/Snecma Olympus 593",
+    required_runway_m: 3600
+  },
+
+  {
+    manufacturer: "Ilyushin",
+    model: "Il-86",
+    aircraft_type: "passenger",
+    year: 1980,
+    seats: 350,
+    range_nm: 2700,
+    speed_kts: 470,
+    mtow_kg: 215000,
+    fuel_burn_kgph: 10500,
+    price_acs_usd: 30000000,
+    engines: "Kuznetsov NK-86",
+    required_runway_m: 2800
+  },
+
+  {
+    manufacturer: "Airbus",
+    model: "A310-200",
+    aircraft_type: "passenger",
+    year: 1983,
+    seats: 218,
+    range_nm: 3650,
+    speed_kts: 490,
+    mtow_kg: 144000,
+    fuel_burn_kgph: 5200,
+    price_acs_usd: 40000000,
+    engines: "GE CF6-80 / PW JT9D",
+    required_runway_m: 2400
+  },
+
+  {
+    manufacturer: "Airbus",
+    model: "A300-600",
+    aircraft_type: "passenger",
+    year: 1984,
+    seats: 266,
+    range_nm: 4050,
+    speed_kts: 490,
+    mtow_kg: 171700,
+    fuel_burn_kgph: 6000,
+    price_acs_usd: 45000000,
+    engines: "GE CF6-80C2 / PW4158",
+    required_runway_m: 2500
+  },
+
+  {
+    manufacturer: "ATR",
+    model: "ATR 42-300",
+    aircraft_type: "passenger",
+    year: 1985,
+    seats: 48,
+    range_nm: 850,
+    speed_kts: 265,
+    mtow_kg: 16700,
+    fuel_burn_kgph: 650,
+    price_acs_usd: 5000000,
+    engines: "PW120",
+    required_runway_m: 1100
+  },
+
+  {
+    manufacturer: "Boeing",
+    model: "767-200ER",
+    aircraft_type: "passenger",
+    year: 1984,
+    seats: 216,
+    range_nm: 6590,
+    speed_kts: 470,
+    mtow_kg: 179200,
+    fuel_burn_kgph: 5200,
+    price_acs_usd: 58000000,
+    engines: "GE CF6 / PW4000",
+    required_runway_m: 2500
+  },
+
+  {
+    manufacturer: "Boeing",
+    model: "767-300ER",
+    aircraft_type: "passenger",
+    year: 1988,
+    seats: 269,
+    range_nm: 5980,
+    speed_kts: 470,
+    mtow_kg: 186900,
+    fuel_burn_kgph: 5600,
+    price_acs_usd: 75000000,
+    engines: "GE CF6 / PW4000 / RR RB211",
+    required_runway_m: 2600
+  },
+
+  {
+    manufacturer: "ATR",
+    model: "ATR 72-200",
+    aircraft_type: "passenger",
+    year: 1989,
+    seats: 66,
+    range_nm: 820,
+    speed_kts: 275,
+    mtow_kg: 21500,
+    fuel_burn_kgph: 760,
+    price_acs_usd: 8000000,
+    engines: "PW124B",
+    required_runway_m: 1250
+  },
+
+  {
+    manufacturer: "Ilyushin",
+    model: "Il-96-400",
+    aircraft_type: "passenger",
+    year: 2009,
+    seats: 315,
+    range_nm: 5400,
+    speed_kts: 470,
+    mtow_kg: 270000,
+    fuel_burn_kgph: 9200,
+    price_acs_usd: 70000000,
+    engines: "Aviadvigatel PS-90A1",
+    required_runway_m: 2700
+  },
+
+  {
+    manufacturer: "Boeing",
+    model: "737-900",
+    aircraft_type: "passenger",
+    year: 2001,
+    seats: 177,
+    range_nm: 2745,
+    speed_kts: 453,
+    mtow_kg: 79015,
+    fuel_burn_kgph: 2600,
+    price_acs_usd: 70000000,
+    engines: "CFM56-7B",
+    required_runway_m: 2200
+  },
+
+  {
+    manufacturer: "Tupolev",
+    model: "Tu-214",
+    aircraft_type: "passenger",
+    year: 2001,
+    seats: 210,
+    range_nm: 3500,
+    speed_kts: 460,
+    mtow_kg: 110750,
+    fuel_burn_kgph: 3800,
+    price_acs_usd: 35000000,
+    engines: "Aviadvigatel PS-90A",
+    required_runway_m: 2200
+  },
+
+  {
+    manufacturer: "Airbus",
+    model: "A340-600",
+    aircraft_type: "passenger",
+    year: 2002,
+    seats: 380,
+    range_nm: 7800,
+    speed_kts: 488,
+    mtow_kg: 380000,
+    fuel_burn_kgph: 9700,
+    price_acs_usd: 245000000,
+    engines: "RR Trent 556",
+    required_runway_m: 3000
+  },
+
+  {
+    manufacturer: "Airbus",
+    model: "A340-500",
+    aircraft_type: "passenger",
+    year: 2003,
+    seats: 313,
+    range_nm: 9000,
+    speed_kts: 488,
+    mtow_kg: 372000,
+    fuel_burn_kgph: 9300,
+    price_acs_usd: 233000000,
+    engines: "RR Trent 553",
+    required_runway_m: 3000
+  },
+
+  {
+    manufacturer: "Boeing",
+    model: "777-300ER",
+    aircraft_type: "passenger",
+    year: 2004,
+    seats: 396,
+    range_nm: 7370,
+    speed_kts: 490,
+    mtow_kg: 351500,
+    fuel_burn_kgph: 7600,
+    price_acs_usd: 218000000,
+    engines: "GE90-115B",
+    required_runway_m: 3000
+  },
+
+  {
+    manufacturer: "Sukhoi",
+    model: "Superjet 100-95",
+    aircraft_type: "passenger",
+    year: 2011,
+    seats: 98,
+    range_nm: 2470,
+    speed_kts: 448,
+    mtow_kg: 49450,
+    fuel_burn_kgph: 1700,
+    price_acs_usd: 31000000,
+    engines: "PowerJet SaM146",
+    required_runway_m: 1750
+  },
+
+  {
+    manufacturer: "Boeing",
+    model: "747-8 Intercontinental",
+    aircraft_type: "passenger",
+    year: 2012,
+    seats: 467,
+    range_nm: 7730,
+    speed_kts: 493,
+    mtow_kg: 447700,
+    fuel_burn_kgph: 10500,
+    price_acs_usd: 351000000,
+    engines: "GE GEnx-2B",
+    required_runway_m: 3100
+  },
+
+  {
+    manufacturer: "ATR",
+    model: "ATR 42-600",
+    aircraft_type: "passenger",
+    year: 2012,
+    seats: 48,
+    range_nm: 716,
+    speed_kts: 300,
+    mtow_kg: 18600,
+    fuel_burn_kgph: 650,
+    price_acs_usd: 19500000,
+    engines: "PW127M",
+    required_runway_m: 1100
+  }
+
 ];
