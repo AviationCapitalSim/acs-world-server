@@ -1,7 +1,183 @@
 import express from "express";
 import { pool } from "../db/pool.js";
+import { requireAuth } from "../middleware/auth.js";
 
 const router = express.Router();
+
+/* ============================================================
+   HR HISTORICAL SALARY AUTHORITY
+   ------------------------------------------------------------
+   • One backend authority for all 18 departments
+   • Salary cycles advance by historical decade
+   • salary_percent preserves the airline salary policy
+   • salary_decade records the last applied historical cycle
+   ============================================================ */
+
+const HR_HISTORICAL_SALARIES = Object.freeze({
+  1940: Object.freeze({
+    pilot: 380,
+    cabin: 140,
+    maintenance: 200,
+    ground: 120,
+    admin: 180,
+    flight_ops: 220,
+    security: 150,
+    executive: 650
+  }),
+  1950: Object.freeze({
+    pilot: 520,
+    cabin: 170,
+    maintenance: 240,
+    ground: 140,
+    admin: 210,
+    flight_ops: 260,
+    security: 170,
+    executive: 800
+  }),
+  1960: Object.freeze({
+    pilot: 900,
+    cabin: 240,
+    maintenance: 330,
+    ground: 190,
+    admin: 280,
+    flight_ops: 340,
+    security: 230,
+    executive: 1200
+  }),
+  1970: Object.freeze({
+    pilot: 1600,
+    cabin: 360,
+    maintenance: 500,
+    ground: 280,
+    admin: 420,
+    flight_ops: 520,
+    security: 340,
+    executive: 2200
+  }),
+  1980: Object.freeze({
+    pilot: 2600,
+    cabin: 600,
+    maintenance: 800,
+    ground: 420,
+    admin: 620,
+    flight_ops: 760,
+    security: 520,
+    executive: 3600
+  }),
+  1990: Object.freeze({
+    pilot: 3600,
+    cabin: 820,
+    maintenance: 1050,
+    ground: 520,
+    admin: 820,
+    flight_ops: 980,
+    security: 660,
+    executive: 5200
+  }),
+  2000: Object.freeze({
+    pilot: 4700,
+    cabin: 1100,
+    maintenance: 1400,
+    ground: 720,
+    admin: 1100,
+    flight_ops: 1300,
+    security: 850,
+    executive: 7200
+  }),
+  2010: Object.freeze({
+    pilot: 6200,
+    cabin: 1600,
+    maintenance: 2000,
+    ground: 1050,
+    admin: 1600,
+    flight_ops: 1850,
+    security: 1200,
+    executive: 9800
+  }),
+  2020: Object.freeze({
+    pilot: 8300,
+    cabin: 2400,
+    maintenance: 2800,
+    ground: 1450,
+    admin: 2300,
+    flight_ops: 2600,
+    security: 1700,
+    executive: 13500
+  })
+});
+
+const HR_PILOT_SIZE_MULTIPLIERS = Object.freeze({
+  pilots_small: 0.55,
+  pilots_medium: 0.75,
+  pilots_large: 1,
+  pilots_vlarge: 1.4
+});
+
+const HR_DEPARTMENT_SALARY_ROLES = Object.freeze({
+  ceo: "executive",
+  vp: "executive",
+  middle: "admin",
+  economics: "admin",
+  comms: "admin",
+  hr: "admin",
+  quality: "admin",
+  security: "security",
+  customers: "flight_ops",
+  flightops: "flight_ops",
+  maintenance: "maintenance",
+  ground: "ground",
+  routes: "flight_ops",
+  pilots_small: "pilot",
+  pilots_medium: "pilot",
+  pilots_large: "pilot",
+  pilots_vlarge: "pilot",
+  cabin: "cabin"
+});
+
+function getHRSalaryDecade(year) {
+  const normalizedYear = Number(year);
+
+  if (!Number.isInteger(normalizedYear)) {
+    throw new Error("INVALID_HR_SIM_YEAR");
+  }
+
+  const decades = Object.keys(HR_HISTORICAL_SALARIES)
+    .map(Number)
+    .filter(decade => normalizedYear >= decade);
+
+  if (decades.length === 0) {
+    return 1940;
+  }
+
+  return Math.max(...decades);
+}
+
+function getHRHistoricalBaseSalary(deptId, year) {
+  const salaryDecade = getHRSalaryDecade(year);
+  const salaryRole = HR_DEPARTMENT_SALARY_ROLES[deptId];
+
+  if (!salaryRole) {
+    throw new Error(`UNKNOWN_HR_DEPARTMENT:${deptId}`);
+  }
+
+  const salaryTable = HR_HISTORICAL_SALARIES[salaryDecade];
+  let salary = Number(salaryTable[salaryRole]);
+
+  if (salaryRole === "pilot") {
+    const multiplier = HR_PILOT_SIZE_MULTIPLIERS[deptId];
+
+    if (!Number.isFinite(multiplier)) {
+      throw new Error(`UNKNOWN_HR_PILOT_SIZE:${deptId}`);
+    }
+
+    salary *= multiplier;
+  }
+
+  return {
+    salary: Math.round(salary),
+    salaryDecade
+  };
+}
 
 /* ============================================================
    HR DEFAULT STRUCTURE (18 DEPARTMENTS)
@@ -53,62 +229,124 @@ const HR_DEFAULT = [
 
 
 /* ============================================================
-   HR BOOTSTRAP (SERVER SIDE ONLY)
+   HR BOOTSTRAP — BACKEND AUTHORITY
    ------------------------------------------------------------
-   • Si la airline no tiene departamentos → los crea
-   • Garantiza CEO = 1
-============================================================ */
+   • Creates missing departments without overwriting existing HR
+   • New companies start with the official minimum staff
+   • New companies start with 1940 historical salaries
+   • Auto Hire and Auto Salary start enabled
+   • CEO always remains at least 1
+   ============================================================ */
 
 async function ensureHRInitialized(airlineId) {
+  const normalizedAirlineId = Number(airlineId);
 
-  const check = await pool.query(
-    `SELECT COUNT(*) FROM hr_departments WHERE airline_id = $1`,
-    [airlineId]
-  );
-
-  const count = Number(check.rows[0].count);
-
-  if (count > 0) return;
-
-  console.log(`HR INIT → Creating default departments for airline ${airlineId}`);
-
-  for (const d of HR_DEFAULT) {
-
-    await pool.query(
-      `
-      INSERT INTO hr_departments
-(
-  airline_id,
-  dept_id,
-  dept_name,
-  base_role,
-  staff,
-  required,
-  morale,
-  salary,
-  payroll,
-  bonus,
-  years
-)
-VALUES
-(
-  $1,$2,$3,$4,$5,$6,100,0,0,0,0
-)
-ON CONFLICT (airline_id, dept_id)
-DO NOTHING
-      `,
-      [
-        airlineId,
-        d.id,
-        d.name,
-        d.role,
-        d.staff,
-        d.required
-      ]
-    );
-
+  if (!Number.isInteger(normalizedAirlineId) || normalizedAirlineId <= 0) {
+    throw new Error("INVALID_AIRLINE_ID");
   }
 
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    await client.query(
+      `
+      INSERT INTO public.company_settings (
+        airline_id,
+        auto_hire,
+        auto_salary,
+        manual_salary_override,
+        auto_c_check,
+        auto_d_check
+      )
+      VALUES ($1, true, true, false, false, false)
+      ON CONFLICT (airline_id)
+      DO NOTHING
+      `,
+      [normalizedAirlineId]
+    );
+
+    for (const department of HR_DEFAULT) {
+      const historical = getHRHistoricalBaseSalary(
+        department.id,
+        1940
+      );
+
+      await client.query(
+        `
+        INSERT INTO public.hr_departments (
+          airline_id,
+          dept_id,
+          dept_name,
+          base_role,
+          staff,
+          required,
+          morale,
+          salary,
+          payroll,
+          bonus,
+          years,
+          salary_percent,
+          salary_decade
+        )
+        VALUES (
+          $1,
+          $2,
+          $3,
+          $4,
+          $5,
+          $6,
+          100,
+          $7,
+          ROUND($5::NUMERIC * $7::NUMERIC)::BIGINT,
+          0,
+          0,
+          100,
+          $8
+        )
+        ON CONFLICT (airline_id, dept_id)
+        DO NOTHING
+        `,
+        [
+          normalizedAirlineId,
+          department.id,
+          department.name,
+          department.role,
+          department.staff,
+          department.required,
+          historical.salary,
+          historical.salaryDecade
+        ]
+      );
+    }
+
+    await client.query(
+      `
+      UPDATE public.hr_departments
+      SET
+        staff = GREATEST(COALESCE(staff, 0), 1),
+        required = GREATEST(COALESCE(required, 0), 1),
+        payroll = ROUND(
+          GREATEST(COALESCE(staff, 0), 1)::NUMERIC *
+          COALESCE(salary, 0)::NUMERIC
+        )::BIGINT,
+        updated_at = NOW()
+      WHERE airline_id = $1
+        AND dept_id = 'ceo'
+      `,
+      [normalizedAirlineId]
+    );
+
+    await client.query("COMMIT");
+
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+
+  } finally {
+    client.release();
+  }
 }
 
 /* ============================================================
@@ -234,6 +472,182 @@ GREATEST(0, CEIL(COUNT(*) / 3.0))::int AS security
   }
 
   return required;
+}
+
+/* ============================================================
+   HR AUTOMATION RESOLVER — BACKEND AUTHORITY
+   ------------------------------------------------------------
+   • Reads company_settings from PostgreSQL
+   • Auto Hire fills deficits but never dismisses staff
+   • Auto Salary advances all 18 departments historically
+   • Manual salary mode freezes stored salaries
+   • payroll always equals staff × salary
+   ============================================================ */
+
+async function applyHRAutomation(airlineId) {
+  const normalizedAirlineId = Number(airlineId);
+
+  if (!Number.isInteger(normalizedAirlineId) || normalizedAirlineId <= 0) {
+    throw new Error("INVALID_AIRLINE_ID");
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const settingsResult = await client.query(
+      `
+      SELECT
+        auto_hire,
+        auto_salary,
+        manual_salary_override
+      FROM public.company_settings
+      WHERE airline_id = $1
+      FOR UPDATE
+      `,
+      [normalizedAirlineId]
+    );
+
+    if (settingsResult.rowCount !== 1) {
+      throw new Error("HR_COMPANY_SETTINGS_NOT_FOUND");
+    }
+
+    const settings = settingsResult.rows[0];
+
+    const simResult = await client.query(
+      `
+      SELECT
+        EXTRACT(YEAR FROM acs_get_current_sim_time())::int AS sim_year
+      `
+    );
+
+    const simYear = Number(simResult.rows[0]?.sim_year);
+
+    if (!Number.isInteger(simYear)) {
+      throw new Error("INVALID_HR_SIM_YEAR");
+    }
+
+    const salaryDecade = getHRSalaryDecade(simYear);
+
+    const departmentsResult = await client.query(
+      `
+      SELECT
+        dept_id,
+        staff,
+        required,
+        salary,
+        salary_percent,
+        salary_decade
+      FROM public.hr_departments
+      WHERE airline_id = $1
+      FOR UPDATE
+      `,
+      [normalizedAirlineId]
+    );
+
+    const autoHireEnabled = settings.auto_hire === true;
+
+    const autoSalaryEnabled =
+      settings.auto_salary === true &&
+      settings.manual_salary_override !== true;
+
+    for (const department of departmentsResult.rows) {
+      const deptId = String(department.dept_id || "");
+
+      if (!HR_DEPARTMENT_SALARY_ROLES[deptId]) {
+        throw new Error(`UNKNOWN_HR_DEPARTMENT:${deptId}`);
+      }
+
+      const currentStaff = Math.max(
+        0,
+        Math.trunc(Number(department.staff || 0))
+      );
+
+      const requiredStaff = Math.max(
+        0,
+        Math.trunc(Number(department.required || 0))
+      );
+
+      const resolvedStaff = autoHireEnabled
+        ? Math.max(currentStaff, requiredStaff)
+        : currentStaff;
+
+      let resolvedSalary = Number(department.salary || 0);
+      let resolvedPercent = Number(department.salary_percent || 100);
+      let resolvedDecade = Number(department.salary_decade || 1940);
+
+      if (!Number.isFinite(resolvedPercent) || resolvedPercent <= 0) {
+        resolvedPercent = 100;
+      }
+
+      if (autoSalaryEnabled) {
+        const historical = getHRHistoricalBaseSalary(
+          deptId,
+          simYear
+        );
+
+        resolvedSalary = Math.max(
+          1,
+          Math.round(
+            historical.salary *
+            (resolvedPercent / 100)
+          )
+        );
+
+        resolvedDecade = salaryDecade;
+      }
+
+      if (!Number.isFinite(resolvedSalary) || resolvedSalary <= 0) {
+        throw new Error(`INVALID_STORED_HR_SALARY:${deptId}`);
+      }
+
+      await client.query(
+        `
+        UPDATE public.hr_departments
+        SET
+          staff = $3,
+          salary = $4,
+          payroll = ROUND(
+            $3::NUMERIC *
+            $4::NUMERIC
+          )::BIGINT,
+          salary_percent = $5,
+          salary_decade = $6,
+          updated_at = NOW()
+        WHERE airline_id = $1
+          AND dept_id = $2
+        `,
+        [
+          normalizedAirlineId,
+          deptId,
+          resolvedStaff,
+          resolvedSalary,
+          resolvedPercent,
+          resolvedDecade
+        ]
+      );
+    }
+
+    await client.query("COMMIT");
+
+    return {
+      ok: true,
+      sim_year: simYear,
+      salary_decade: salaryDecade,
+      auto_hire: autoHireEnabled,
+      auto_salary: autoSalaryEnabled,
+      manual_salary_override:
+        settings.manual_salary_override === true
+    };
+
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+
+  } finally {
+    client.release();
+  }
 }
 
 /* ============================================================
@@ -915,175 +1329,615 @@ export async function applyHROpsImpactForAirline(airlineId) {
 }
 
 /* ============================================================
-   GET HR DEPARTMENTS
+   GET HR DEPARTMENTS — BACKEND AUTHORITY
    ------------------------------------------------------------
-   • Server authority
-   • Inicializa HR automáticamente si está vacío
-============================================================ */
-
-router.get("/hr/departments/:airlineId", async (req, res) => {
-
-  const airlineId = req.params.airlineId;
-
-  try {
-
-    /* --------------------------------------------------------
-       1️⃣ Garantizar que HR exista
-    -------------------------------------------------------- */
-
-    await ensureHRInitialized(airlineId);
-
-    await recalculateHRRequired(airlineId);
-
-    await applyHRMoraleMonthlyResolver(airlineId);
-     
-    /* --------------------------------------------------------
-       2️⃣ Obtener departamentos
-    -------------------------------------------------------- */
-
-    const result = await pool.query(
-      `
-      SELECT
-        dept_id,
-        dept_name,
-        base_role,
-        staff,
-        required,
-        morale,
-        salary,
-        ROUND(
-        COALESCE(staff, 0)::NUMERIC *
-        COALESCE(salary, 0)::NUMERIC
-        )::BIGINT AS payroll,
-        bonus,
-        years
-      FROM hr_departments
-      WHERE airline_id = $1
-      ORDER BY dept_id
-      `,
-      [airlineId]
-    );
-
-    res.json({
-      ok: true,
-      departments: result.rows
-    });
-
-  } catch (err) {
-
-    console.error("HR FETCH ERROR:", err);
-
-    res.status(500).json({
-      ok: false,
-      error: err.message
-    });
-
-  }
-
-});
-
-/* ============================================================
-   PATCH HR STAFF (PERSIST STAFF CHANGES)
-   ------------------------------------------------------------
-   Guarda cambios de staff en Railway
+   • Uses authenticated airline
+   • Ensures the complete 18-department structure
+   • Recalculates operational demand
+   • Applies Auto Hire and Auto Salary when enabled
+   • Returns PostgreSQL values without frontend fallbacks
    ============================================================ */
 
-router.patch("/hr/staff", async (req, res) => {
-  const {
-    airline_id,
-    dept_id,
-    staff,
-    morale,
-    salary
-  } = req.body;
+router.get(
+  "/hr/departments/:airlineId",
+  requireAuth,
+  async (req, res) => {
+    const sessionAirlineId = Number(req.airline_id);
+    const requestedAirlineId = Number(req.params.airlineId);
 
-  try {
-    await pool.query(
-      `
-      UPDATE public.hr_departments
-      SET
-        staff = $3,
-        morale = COALESCE($4, morale),
-        salary = COALESCE($5, salary),
+    if (
+      !Number.isInteger(sessionAirlineId) ||
+      sessionAirlineId <= 0
+    ) {
+      return res.status(400).json({
+        ok: false,
+        error: "NO_AIRLINE_ID"
+      });
+    }
 
-       payroll = ROUND(
-        COALESCE($3, staff)::NUMERIC *
-        COALESCE($5, salary)::NUMERIC
-       )::BIGINT,
+    if (
+      !Number.isInteger(requestedAirlineId) ||
+      requestedAirlineId !== sessionAirlineId
+    ) {
+      return res.status(403).json({
+        ok: false,
+        error: "AIRLINE_ACCESS_DENIED"
+      });
+    }
 
-        updated_at = NOW()
-      WHERE airline_id = $1
-        AND dept_id = $2
-      `,
-      [
-        airline_id,
-        dept_id,
-        staff,
-        morale,
-        salary
-      ]
-    );
+    try {
+      await ensureHRInitialized(sessionAirlineId);
+      await recalculateHRRequired(sessionAirlineId);
 
-    res.json({
-      ok: true
-    });
+      const automation = await applyHRAutomation(
+        sessionAirlineId
+      );
 
-  } catch (err) {
-    console.error(
-      "HR UPDATE ERROR",
-      err
-    );
+      await applyHRMoraleMonthlyResolver(
+        sessionAirlineId
+      );
 
-    res.status(500).json({
-      ok: false,
-      error: err.message
-    });
+      const result = await pool.query(
+        `
+        SELECT
+          dept_id,
+          dept_name,
+          base_role,
+          staff,
+          required,
+          morale,
+          salary,
+          ROUND(
+            COALESCE(staff, 0)::NUMERIC *
+            COALESCE(salary, 0)::NUMERIC
+          )::BIGINT AS payroll,
+          bonus,
+          years,
+          salary_percent,
+          salary_decade
+        FROM public.hr_departments
+        WHERE airline_id = $1
+        ORDER BY dept_id
+        `,
+        [sessionAirlineId]
+      );
+
+      return res.json({
+        ok: true,
+        automation,
+        departments: result.rows
+      });
+
+    } catch (err) {
+      console.error("HR FETCH ERROR:", err);
+
+      return res.status(500).json({
+        ok: false,
+        error: err.message
+      });
+    }
   }
-});
+);
 
 /* ============================================================
-   GET HR PAYROLL TOTAL
+   PATCH HR STAFF — MANUAL STAFF OPERATION
+   ------------------------------------------------------------
+   • Uses authenticated airline
+   • Receives a staff delta, never a browser-calculated total
+   • Never accepts or changes salary
+   • Disables Auto Hire after a manual staff decision
+   • Does not change Auto Salary or manual salary protection
    ============================================================ */
 
-router.get("/hr/payroll/:airlineId", async (req, res) => {
+router.patch(
+  "/hr/staff",
+  requireAuth,
+  async (req, res) => {
+    const airlineId = Number(req.airline_id);
+    const deptId = String(req.body?.dept_id || "").trim();
+    const delta = Number(req.body?.delta);
 
-  const { airlineId } = req.params;
+    if (!Number.isInteger(airlineId) || airlineId <= 0) {
+      return res.status(400).json({
+        ok: false,
+        error: "NO_AIRLINE_ID"
+      });
+    }
 
-  try {
+    if (!HR_DEPARTMENT_SALARY_ROLES[deptId]) {
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_HR_DEPARTMENT"
+      });
+    }
 
-    const result = await pool.query(`
-      SELECT
-  COALESCE(
-    SUM(
-      ROUND(
-        COALESCE(staff, 0)::NUMERIC *
-        COALESCE(salary, 0)::NUMERIC
-      )
-    ),
-    0
-    )::BIGINT AS total
-   FROM public.hr_departments
-   WHERE airline_id = $1
-   
-    `,[airlineId]);
+    if (
+      !Number.isInteger(delta) ||
+      delta === 0 ||
+      Math.abs(delta) > 10000
+    ) {
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_STAFF_DELTA"
+      });
+    }
 
-    res.json({
-      ok: true,
-      payroll: Number(result.rows[0].total)
-    });
+    if (deptId === "ceo") {
+      return res.status(409).json({
+        ok: false,
+        error: "CEO_STAFF_IS_FIXED"
+      });
+    }
 
-  } catch(err){
+    try {
+      await ensureHRInitialized(airlineId);
 
-    console.error("HR PAYROLL ERROR:", err);
+      const client = await pool.connect();
 
-    res.status(500).json({
-      ok:false,
-      error: err.message
-    });
+      try {
+        await client.query("BEGIN");
 
+        const departmentResult = await client.query(
+          `
+          SELECT
+            dept_id,
+            staff,
+            required,
+            morale,
+            salary
+          FROM public.hr_departments
+          WHERE airline_id = $1
+            AND dept_id = $2
+          FOR UPDATE
+          `,
+          [airlineId, deptId]
+        );
+
+        if (departmentResult.rowCount !== 1) {
+          await client.query("ROLLBACK");
+
+          return res.status(404).json({
+            ok: false,
+            error: "HR_DEPARTMENT_NOT_FOUND"
+          });
+        }
+
+        const department = departmentResult.rows[0];
+
+        const currentStaff = Math.max(
+          0,
+          Math.trunc(Number(department.staff || 0))
+        );
+
+        const nextStaff = Math.max(
+          0,
+          currentStaff + delta
+        );
+
+        const removedStaff = Math.max(
+          0,
+          currentStaff - nextStaff
+        );
+
+        let nextMorale = Number(department.morale || 100);
+
+        if (removedStaff > 0) {
+          let moraleDrop = 5;
+
+          if (removedStaff >= 3) moraleDrop = 10;
+          if (removedStaff >= 6) moraleDrop = 20;
+
+          nextMorale = Math.max(
+            40,
+            nextMorale - moraleDrop
+          );
+        }
+
+        const updateResult = await client.query(
+          `
+          UPDATE public.hr_departments
+          SET
+            staff = $3,
+            morale = $4,
+            payroll = ROUND(
+              $3::NUMERIC *
+              salary::NUMERIC
+            )::BIGINT,
+            updated_at = NOW()
+          WHERE airline_id = $1
+            AND dept_id = $2
+          RETURNING
+            dept_id,
+            dept_name,
+            base_role,
+            staff,
+            required,
+            morale,
+            salary,
+            payroll,
+            bonus,
+            years,
+            salary_percent,
+            salary_decade
+          `,
+          [
+            airlineId,
+            deptId,
+            nextStaff,
+            nextMorale
+          ]
+        );
+
+        await client.query(
+          `
+          UPDATE public.company_settings
+          SET
+            auto_hire = false,
+            updated_at = NOW()
+          WHERE airline_id = $1
+          `,
+          [airlineId]
+        );
+
+        await client.query("COMMIT");
+
+        return res.json({
+          ok: true,
+          auto_hire: false,
+          department: updateResult.rows[0]
+        });
+
+      } catch (err) {
+        await client.query("ROLLBACK");
+        throw err;
+
+      } finally {
+        client.release();
+      }
+
+    } catch (err) {
+      console.error("HR STAFF UPDATE ERROR:", err);
+
+      return res.status(500).json({
+        ok: false,
+        error: err.message
+      });
+    }
   }
+);
 
-});
+/* ============================================================
+   PATCH HR SALARY — MANUAL SALARY OPERATION
+   ------------------------------------------------------------
+   • Uses authenticated airline
+   • Persists salary and company mode atomically
+   • Disables Auto Salary
+   • Enables manual salary protection
+   • Calculates salary_percent against the historical authority
+   • Never changes staff
+   ============================================================ */
+
+router.patch(
+  "/hr/salary",
+  requireAuth,
+  async (req, res) => {
+    const airlineId = Number(req.airline_id);
+    const deptId = String(req.body?.dept_id || "").trim();
+    const requestedSalary = Number(req.body?.salary);
+
+    if (!Number.isInteger(airlineId) || airlineId <= 0) {
+      return res.status(400).json({
+        ok: false,
+        error: "NO_AIRLINE_ID"
+      });
+    }
+
+    if (!HR_DEPARTMENT_SALARY_ROLES[deptId]) {
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_HR_DEPARTMENT"
+      });
+    }
+
+    if (
+      !Number.isFinite(requestedSalary) ||
+      requestedSalary <= 0 ||
+      requestedSalary > 10000000
+    ) {
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_HR_SALARY"
+      });
+    }
+
+    const newSalary = Math.round(requestedSalary);
+
+    try {
+      await ensureHRInitialized(airlineId);
+
+      const client = await pool.connect();
+
+      try {
+        await client.query("BEGIN");
+
+        const simResult = await client.query(
+          `
+          SELECT
+            EXTRACT(YEAR FROM acs_get_current_sim_time())::int AS sim_year
+          `
+        );
+
+        const simYear = Number(simResult.rows[0]?.sim_year);
+
+        if (!Number.isInteger(simYear)) {
+          throw new Error("INVALID_HR_SIM_YEAR");
+        }
+
+        const historical = getHRHistoricalBaseSalary(
+          deptId,
+          simYear
+        );
+
+        const salaryPercent = Number(
+          (
+            (newSalary / historical.salary) *
+            100
+          ).toFixed(2)
+        );
+
+        const departmentResult = await client.query(
+          `
+          SELECT
+            staff,
+            morale,
+            salary
+          FROM public.hr_departments
+          WHERE airline_id = $1
+            AND dept_id = $2
+          FOR UPDATE
+          `,
+          [airlineId, deptId]
+        );
+
+        if (departmentResult.rowCount !== 1) {
+          await client.query("ROLLBACK");
+
+          return res.status(404).json({
+            ok: false,
+            error: "HR_DEPARTMENT_NOT_FOUND"
+          });
+        }
+
+        const department = departmentResult.rows[0];
+
+        const staff = Math.max(
+          0,
+          Math.trunc(Number(department.staff || 0))
+        );
+
+        const currentSalary = Number(
+          department.salary || 0
+        );
+
+        let nextMorale = Number(
+          department.morale || 100
+        );
+
+        const changePercent =
+          currentSalary > 0
+            ? (
+                (newSalary - currentSalary) /
+                currentSalary
+              ) * 100
+            : 0;
+
+        if (changePercent >= 20) nextMorale += 4;
+        else if (changePercent >= 5) nextMorale += 2;
+        else if (changePercent <= -15) nextMorale -= 6;
+        else if (changePercent < 0) nextMorale -= 3;
+
+        nextMorale = Math.max(
+          40,
+          Math.min(100, nextMorale)
+        );
+
+        await client.query(
+          `
+          UPDATE public.company_settings
+          SET
+            auto_salary = false,
+            manual_salary_override = true,
+            updated_at = NOW()
+          WHERE airline_id = $1
+          `,
+          [airlineId]
+        );
+
+        const updateResult = await client.query(
+          `
+          UPDATE public.hr_departments
+          SET
+            salary = $3,
+            payroll = ROUND(
+              staff::NUMERIC *
+              $3::NUMERIC
+            )::BIGINT,
+            morale = $4,
+            salary_percent = $5,
+            salary_decade = $6,
+            updated_at = NOW()
+          WHERE airline_id = $1
+            AND dept_id = $2
+          RETURNING
+            dept_id,
+            dept_name,
+            base_role,
+            staff,
+            required,
+            morale,
+            salary,
+            payroll,
+            bonus,
+            years,
+            salary_percent,
+            salary_decade
+          `,
+          [
+            airlineId,
+            deptId,
+            newSalary,
+            nextMorale,
+            salaryPercent,
+            historical.salaryDecade
+          ]
+        );
+
+        await client.query("COMMIT");
+
+        return res.json({
+          ok: true,
+          settings: {
+            auto_salary: false,
+            manual_salary_override: true
+          },
+          department: updateResult.rows[0]
+        });
+
+      } catch (err) {
+        await client.query("ROLLBACK");
+        throw err;
+
+      } finally {
+        client.release();
+      }
+
+    } catch (err) {
+      console.error("HR SALARY UPDATE ERROR:", err);
+
+      return res.status(500).json({
+        ok: false,
+        error: err.message
+      });
+    }
+  }
+);
+
+/* ============================================================
+   GET HR PAYROLL TOTAL — BACKEND AUTHORITY
+   ============================================================ */
+
+router.get(
+  "/hr/payroll/:airlineId",
+  requireAuth,
+  async (req, res) => {
+    const sessionAirlineId = Number(req.airline_id);
+    const requestedAirlineId = Number(req.params.airlineId);
+
+    if (
+      !Number.isInteger(sessionAirlineId) ||
+      sessionAirlineId <= 0
+    ) {
+      return res.status(400).json({
+        ok: false,
+        error: "NO_AIRLINE_ID"
+      });
+    }
+
+    if (
+      !Number.isInteger(requestedAirlineId) ||
+      requestedAirlineId !== sessionAirlineId
+    ) {
+      return res.status(403).json({
+        ok: false,
+        error: "AIRLINE_ACCESS_DENIED"
+      });
+    }
+
+    try {
+      await ensureHRInitialized(sessionAirlineId);
+
+      const result = await pool.query(
+        `
+        SELECT
+          COALESCE(
+            SUM(
+              ROUND(
+                COALESCE(staff, 0)::NUMERIC *
+                COALESCE(salary, 0)::NUMERIC
+              )
+            ),
+            0
+          )::BIGINT AS total
+        FROM public.hr_departments
+        WHERE airline_id = $1
+        `,
+        [sessionAirlineId]
+      );
+
+      return res.json({
+        ok: true,
+        payroll: Number(result.rows[0].total)
+      });
+
+    } catch (err) {
+      console.error("HR PAYROLL ERROR:", err);
+
+      return res.status(500).json({
+        ok: false,
+        error: err.message
+      });
+    }
+  }
+);
+
+/* ============================================================
+   POST HR AUTOMATION APPLY
+   ------------------------------------------------------------
+   • Used after saving Auto Hire or Auto Salary in Settings
+   • Applies current backend settings immediately
+   • Uses authenticated airline only
+   ============================================================ */
+
+router.post(
+  "/hr/automation/apply",
+  requireAuth,
+  async (req, res) => {
+    const airlineId = Number(req.airline_id);
+
+    if (!Number.isInteger(airlineId) || airlineId <= 0) {
+      return res.status(400).json({
+        ok: false,
+        error: "NO_AIRLINE_ID"
+      });
+    }
+
+    try {
+      await ensureHRInitialized(airlineId);
+      await recalculateHRRequired(airlineId);
+
+      const automation = await applyHRAutomation(
+        airlineId
+      );
+
+      await applyHRMoraleMonthlyResolver(
+        airlineId
+      );
+
+      return res.json({
+        ok: true,
+        automation
+      });
+
+    } catch (err) {
+      console.error("HR AUTOMATION APPLY ERROR:", err);
+
+      return res.status(500).json({
+        ok: false,
+        error: err.message
+      });
+    }
+  }
+);
 
 let HR_MORALE_SCHEDULER = null;
 let HR_MORALE_RUNNING = false;
@@ -1112,7 +1966,9 @@ async function runHRMoraleSchedulerTick() {
       const airlineId = Number(row.airline_id);
       if (!Number.isInteger(airlineId)) continue;
 
+      await ensureHRInitialized(airlineId);
       await recalculateHRRequired(airlineId);
+      await applyHRAutomation(airlineId);
       await applyHRMoraleMonthlyResolver(airlineId);
     }
 
@@ -1155,6 +2011,7 @@ export function stopHRMoraleScheduler() {
    ============================================================ */
 
 router.get("/hr/ops-risk/:airlineId", async (req, res) => {
+   
   const airlineId = Number(req.params.airlineId);
 
   try {
@@ -1213,6 +2070,7 @@ router.post("/hr/ops-impact/apply/:airlineId", async (req, res) => {
 /* ============================================================
    GET HR OPS IMPACTS FOR CURRENT SIM DAY
    ============================================================ */
+
 router.get("/hr/ops-impact/:airlineId", async (req, res) => {
   const airlineId = Number(req.params.airlineId);
   const startedAt = Date.now();
