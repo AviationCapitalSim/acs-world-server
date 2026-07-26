@@ -617,14 +617,14 @@ async function applyHRAutomation(airlineId) {
         `
         UPDATE public.hr_departments
         SET
-          staff = $3,
-          salary = $4,
+          staff = $3::INTEGER,
+          salary = $4::NUMERIC,
           payroll = ROUND(
-            $3::NUMERIC *
+            ($3::INTEGER)::NUMERIC *
             $4::NUMERIC
           )::BIGINT,
-          salary_percent = $5,
-          salary_decade = $6,
+          salary_percent = $5::NUMERIC,
+          salary_decade = $6::INTEGER,
           updated_at = NOW()
         WHERE airline_id = $1
           AND dept_id = $2
