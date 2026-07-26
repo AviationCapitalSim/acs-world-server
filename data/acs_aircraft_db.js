@@ -1,7 +1,7 @@
 /* ============================================================
-   === ACS AIRCRAFT DATABASE — HISTORICAL UPDATE 2026 =========
-   === Flat schema preserved — Entry into service chronology ===
-   === Historical aircraft plus viable programmes to 2030 =====
+   === ACS AIRCRAFT DATABASE — ACTIVE + FUTURE REAL ===========
+   === Historical records preserved; invalid futures removed ===
+   === Flat schema preserved ===================================
    ============================================================ */
 
 const ACS_AIRCRAFT_DB = [
@@ -4695,19 +4695,6 @@ const ACS_AIRCRAFT_DB = [
     required_runway_m: 3050
   },
   {
-    manufacturer: "Embraer",
-    model: "E175-E2",
-    year: 2020,
-    seats: 88,
-    range_nm: 2200,
-    speed_kts: 455,
-    mtow_kg: 41700,
-    fuel_burn_kgph: 1350,
-    price_acs_usd: 48000000,
-    engines: "PW1715G",
-    required_runway_m: 1600
-  },
-  {
     manufacturer: "Pilatus",
     model: "PC-12 NGX",
     year: 2020,
@@ -4734,19 +4721,6 @@ const ACS_AIRCRAFT_DB = [
     required_runway_m: 2100
   },
   {
-    manufacturer: "Sukhoi",
-    model: "SSJ100-NEW",
-    year: 2021,
-    seats: 98,
-    range_nm: 2100,
-    speed_kts: 450,
-    mtow_kg: 48500,
-    fuel_burn_kgph: 1650,
-    price_acs_usd: 38000000,
-    engines: "PD-8",
-    required_runway_m: 1650
-  },
-  {
     manufacturer: "Daher",
     model: "TBM 960",
     year: 2022,
@@ -4758,19 +4732,6 @@ const ACS_AIRCRAFT_DB = [
     price_acs_usd: 5200000,
     engines: "PT6E-66XT",
     required_runway_m: 850
-  },
-  {
-    manufacturer: "AVIC",
-    model: "MA700",
-    year: 2023,
-    seats: 78,
-    range_nm: 1250,
-    speed_kts: 300,
-    mtow_kg: 27500,
-    fuel_burn_kgph: 880,
-    price_acs_usd: 34000000,
-    engines: "PW150D",
-    required_runway_m: 1300
   },
   {
     manufacturer: "COMAC",
@@ -4797,84 +4758,6 @@ const ACS_AIRCRAFT_DB = [
     price_acs_usd: 68500000,
     engines: "LEAP-1A35",
     required_runway_m: 2500
-  },
-  {
-    manufacturer: "ATR",
-    model: "ATR 72-600 EVO",
-    year: 2024,
-    seats: 74,
-    range_nm: 850,
-    speed_kts: 276,
-    mtow_kg: 23500,
-    fuel_burn_kgph: 720,
-    price_acs_usd: 24500000,
-    engines: "PW127XT-L",
-    required_runway_m: 1250
-  },
-  {
-    manufacturer: "Yakovlev",
-    model: "MC-21-300",
-    year: 2024,
-    seats: 163,
-    range_nm: 3000,
-    speed_kts: 450,
-    mtow_kg: 79000,
-    fuel_burn_kgph: 2100,
-    price_acs_usd: 65000000,
-    engines: "PD-14 / PW1400G",
-    required_runway_m: 2000
-  },
-  {
-    manufacturer: "ATR",
-    model: "ATR 42-600S (STOL)",
-    year: 2025,
-    seats: 48,
-    range_nm: 750,
-    speed_kts: 265,
-    mtow_kg: 19500,
-    fuel_burn_kgph: 690,
-    price_acs_usd: 22500000,
-    engines: "PW127XT-S",
-    required_runway_m: 1150
-  },
-  {
-    manufacturer: "Boeing",
-    model: "787-9 (2025 Update)",
-    year: 2025,
-    seats: 296,
-    range_nm: 7635,
-    speed_kts: 488,
-    mtow_kg: 254000,
-    fuel_burn_kgph: 6500,
-    price_acs_usd: 278000000,
-    engines: "GEnx-1B (PIP)",
-    required_runway_m: 2900
-  },
-  {
-    manufacturer: "Yakovlev",
-    model: "MC-21-200",
-    year: 2025,
-    seats: 132,
-    range_nm: 3300,
-    speed_kts: 450,
-    mtow_kg: 72000,
-    fuel_burn_kgph: 1800,
-    price_acs_usd: 60000000,
-    engines: "PD-14",
-    required_runway_m: 1850
-  },
-  {
-    manufacturer: "Airbus",
-    model: "A220-500",
-    year: 2026,
-    seats: 175,
-    range_nm: 3100,
-    speed_kts: 450,
-    mtow_kg: 72000,
-    fuel_burn_kgph: 1800,
-    price_acs_usd: 98000000,
-    engines: "PW1500G",
-    required_runway_m: 1750
   },
   {
     manufacturer: "Boeing",
@@ -4914,6 +4797,19 @@ const ACS_AIRCRAFT_DB = [
     price_acs_usd: 442200000,
     engines: "2× GE9X-105B1A",
     required_runway_m: 3050
+  },
+  {
+    manufacturer: "Yakovlev",
+    model: "MC-21-300",
+    year: 2027,
+    seats: 163,
+    range_nm: 3000,
+    speed_kts: 450,
+    mtow_kg: 79000,
+    fuel_burn_kgph: 2100,
+    price_acs_usd: 65000000,
+    engines: "PD-14 / PW1400G",
+    required_runway_m: 2000
   },
   {
     manufacturer: "Airbus",
