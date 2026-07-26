@@ -2,7 +2,7 @@
    === ACS AIRCRAFT DATABASE — REQUIRED RUNWAY EDITION =========
    === Flat schema preserved — Ready for Buy/Lease Engine =====
    === Cleanup: duplicates and unbuilt projects removed ========
-   === One added field only: required_runway_m =================
+   === Added classification field: aircraft_type ===============
    ============================================================ */
 
 const ACS_AIRCRAFT_DB = [
@@ -11,7 +11,8 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Junkers",
     model: "F.13",
-    year: 1920,
+    aircraft_type: "passenger",
+    year: 1919,
     seats: 4,
     range_nm: 430,
     speed_kts: 95,
@@ -24,7 +25,8 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Fokker",
     model: "F.VIIb-3m",
-    year: 1924,
+    aircraft_type: "passenger",
+    year: 1928,
     seats: 8,
     range_nm: 750,
     speed_kts: 105,
@@ -37,19 +39,21 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Ford",
     model: "5-AT Trimotor",
-    year: 1926,
-    seats: 10,
+    aircraft_type: "passenger",
+    year: 1928,
+    seats: 11,
     range_nm: 510,
     speed_kts: 105,
     mtow_kg: 6350,
     fuel_burn_kgph: 260,
-    price_acs_usd: 150000,
+    price_acs_usd: 55475,
     engines: "PW Wasp",
     required_runway_m: 950
   },
   {
     manufacturer: "Lockheed",
     model: "Vega 5",
+    aircraft_type: "passenger",
     year: 1927,
     seats: 6,
     range_nm: 725,
@@ -65,6 +69,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Lockheed",
     model: "Model 9 Orion",
+    aircraft_type: "passenger",
     year: 1931,
     seats: 6,
     range_nm: 750,
@@ -78,6 +83,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "de Havilland",
     model: "DH.84 Dragon",
+    aircraft_type: "passenger",
     year: 1932,
     seats: 6,
     range_nm: 500,
@@ -91,6 +97,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "247",
+    aircraft_type: "passenger",
     year: 1933,
     seats: 10,
     range_nm: 745,
@@ -104,6 +111,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "de Havilland",
     model: "DH.89 Dragon Rapide",
+    aircraft_type: "passenger",
     year: 1934,
     seats: 8,
     range_nm: 500,
@@ -119,6 +127,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Convair",
     model: "CV-240",
+    aircraft_type: "passenger",
     year: 1947,
     seats: 40,
     range_nm: 1150,
@@ -134,6 +143,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Convair",
     model: "CV-340",
+    aircraft_type: "passenger",
     year: 1951,
     seats: 44,
     range_nm: 1600,
@@ -147,6 +157,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Convair",
     model: "CV-440 Metropolitan",
+    aircraft_type: "passenger",
     year: 1956,
     seats: 52,
     range_nm: 2100,
@@ -162,6 +173,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Vickers",
     model: "VC.1 Viking",
+    aircraft_type: "passenger",
     year: 1946,
     seats: 27,
     range_nm: 1000,
@@ -177,6 +189,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "de Havilland",
     model: "DH.95 Flamingo",
+    aircraft_type: "passenger",
     year: 1938,
     seats: 12,
     range_nm: 850,
@@ -192,6 +205,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Avro",
     model: "Lancastrian",
+    aircraft_type: "passenger",
     year: 1943,
     seats: 13,
     range_nm: 4300,
@@ -205,6 +219,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "C-97 Stratofreighter",
+    aircraft_type: "military",
     year: 1944,
     seats: 80,
     range_nm: 3500,
@@ -218,6 +233,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Lockheed",
     model: "Model 18-56 Lodestar (Military C-60)",
+    aircraft_type: "military",
     year: 1942,
     seats: 18,
     range_nm: 1500,
@@ -231,6 +247,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Handley Page",
     model: "HP.70 Halton",
+    aircraft_type: "cargo",
     year: 1946,
     seats: 34,
     range_nm: 1540,
@@ -244,6 +261,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Curtiss",
     model: "C-46 Commando",
+    aircraft_type: "cargo",
     year: 1941,
     seats: 40,
     range_nm: 2000,
@@ -259,6 +277,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "de Havilland",
     model: "DH.86 Express",
+    aircraft_type: "passenger",
     year: 1934,
     seats: 10,
     range_nm: 640,
@@ -272,6 +291,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "de Havilland",
     model: "DH.91 Albatross",
+    aircraft_type: "passenger",
     year: 1938,
     seats: 22,
     range_nm: 1900,
@@ -287,6 +307,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "de Havilland",
     model: "DH.104 Dove",
+    aircraft_type: "passenger",
     year: 1946,
     seats: 8,
     range_nm: 850,
@@ -302,6 +323,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "de Havilland",
     model: "DH.114 Heron",
+    aircraft_type: "passenger",
     year: 1950,
     seats: 17,
     range_nm: 870,
@@ -315,6 +337,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "de Havilland",
     model: "Comet 1",
+    aircraft_type: "passenger",
     year: 1952,
     seats: 36,
     range_nm: 1500,
@@ -328,6 +351,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "de Havilland",
     model: "Comet 2",
+    aircraft_type: "passenger",
     year: 1953,
     seats: 44,
     range_nm: 2100,
@@ -341,6 +365,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "de Havilland",
     model: "Comet 3",
+    aircraft_type: "passenger",
     year: 1954,
     seats: 58,
     range_nm: 2600,
@@ -354,6 +379,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "de Havilland",
     model: "Comet 4",
+    aircraft_type: "passenger",
     year: 1958,
     seats: 81,
     range_nm: 3100,
@@ -369,6 +395,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Hawker Siddeley",
     model: "Trident 1C",
+    aircraft_type: "passenger",
     year: 1964,
     seats: 117,
     range_nm: 2000,
@@ -382,6 +409,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Hawker Siddeley",
     model: "Trident 2E",
+    aircraft_type: "passenger",
     year: 1968,
     seats: 128,
     range_nm: 2500,
@@ -397,6 +425,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Hawker Siddeley",
     model: "Trident 3B",
+    aircraft_type: "passenger",
     year: 1971,
     seats: 180,
     range_nm: 1750,
@@ -412,6 +441,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Vickers",
     model: "Viscount 700",
+    aircraft_type: "passenger",
     year: 1953,
     seats: 48,
     range_nm: 1400,
@@ -425,6 +455,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Vickers",
     model: "Viscount 800",
+    aircraft_type: "passenger",
     year: 1957,
     seats: 65,
     range_nm: 1550,
@@ -438,6 +469,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Vickers",
     model: "Viscount 810",
+    aircraft_type: "passenger",
     year: 1959,
     seats: 78,
     range_nm: 1650,
@@ -451,6 +483,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Vickers",
     model: "Vanguard V.953",
+    aircraft_type: "passenger",
     year: 1959,
     seats: 132,
     range_nm: 1800,
@@ -466,6 +499,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Vickers",
     model: "Vanguard V.952 (Cargo Merchantman)",
+    aircraft_type: "cargo",
     year: 1963,
     seats: 0,
     range_nm: 1800,
@@ -482,6 +516,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Bristol",
     model: "Britannia 100",
+    aircraft_type: "passenger",
     year: 1952,
     seats: 90,
     range_nm: 3950,
@@ -495,6 +530,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Bristol",
     model: "Britannia 300",
+    aircraft_type: "passenger",
     year: 1958,
     seats: 139,
     range_nm: 4300,
@@ -508,6 +544,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Handley Page",
     model: "HP.81 Hermes",
+    aircraft_type: "passenger",
     year: 1950,
     seats: 40,
     range_nm: 2300,
@@ -523,6 +560,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Handley Page",
     model: "HP.137 Jetstream",
+    aircraft_type: "passenger",
     year: 1967,
     seats: 18,
     range_nm: 950,
@@ -536,6 +574,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Fokker",
     model: "Fokker F27-500",
+    aircraft_type: "passenger",
     year: 1968,
     seats: 56,
     range_nm: 1400,
@@ -551,6 +590,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Ilyushin",
     model: "Il-18A",
+    aircraft_type: "passenger",
     year: 1958,
     seats: 75,
     range_nm: 2200,
@@ -566,6 +606,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Ilyushin",
     model: "Il-18D",
+    aircraft_type: "passenger",
     year: 1965,
     seats: 120,
     range_nm: 3900,
@@ -581,6 +622,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Douglas",
     model: "DC-1",
+    aircraft_type: "passenger",
     year: 1933,
     seats: 12,
     range_nm: 1000,
@@ -596,6 +638,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Douglas",
     model: "DC-6B",
+    aircraft_type: "passenger",
     year: 1951,
     seats: 68,
     range_nm: 4025,
@@ -609,6 +652,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Douglas",
     model: "DC-7B",
+    aircraft_type: "passenger",
     year: 1954,
     seats: 79,
     range_nm: 4300,
@@ -622,6 +666,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Douglas",
     model: "DC-7C Seven Seas",
+    aircraft_type: "passenger",
     year: 1956,
     seats: 90,
     range_nm: 5150,
@@ -637,6 +682,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "377 Stratocruiser",
+    aircraft_type: "passenger",
     year: 1947,
     seats: 100,
     range_nm: 4350,
@@ -652,6 +698,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "720",
+    aircraft_type: "passenger",
     year: 1960,
     seats: 116,
     range_nm: 2800,
@@ -665,6 +712,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "727-200",
+    aircraft_type: "passenger",
     year: 1967,
     seats: 155,
     range_nm: 2050,
@@ -680,6 +728,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "737-500",
+    aircraft_type: "passenger",
     year: 1990,
     seats: 108,
     range_nm: 2200,
@@ -695,6 +744,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "747-300",
+    aircraft_type: "passenger",
     year: 1983,
     seats: 412,
     range_nm: 6000,
@@ -710,6 +760,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "747SP",
+    aircraft_type: "passenger",
     year: 1976,
     seats: 276,
     range_nm: 6650,
@@ -725,6 +776,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "777-200ER",
+    aircraft_type: "passenger",
     year: 1997,
     seats: 314,
     range_nm: 7250,
@@ -740,6 +792,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "777-200LR",
+    aircraft_type: "passenger",
     year: 2006,
     seats: 317,
     range_nm: 9400,
@@ -753,8 +806,9 @@ const ACS_AIRCRAFT_DB = [
 
   // 1950s
   {
-    manufacturer: "McDonnell Douglas",
+    manufacturer: "Douglas",
     model: "DC-8-20",
+    aircraft_type: "passenger",
     year: 1959,
     seats: 125,
     range_nm: 3100,
@@ -768,8 +822,9 @@ const ACS_AIRCRAFT_DB = [
 
   // 1960s
   {
-    manufacturer: "McDonnell Douglas",
+    manufacturer: "Douglas",
     model: "DC-8-30",
+    aircraft_type: "passenger",
     year: 1960,
     seats: 142,
     range_nm: 3800,
@@ -781,8 +836,9 @@ const ACS_AIRCRAFT_DB = [
     required_runway_m: 3450
   },
   {
-    manufacturer: "McDonnell Douglas",
+    manufacturer: "Douglas",
     model: "DC-8-40",
+    aircraft_type: "passenger",
     year: 1961,
     seats: 146,
     range_nm: 4050,
@@ -794,8 +850,9 @@ const ACS_AIRCRAFT_DB = [
     required_runway_m: 3450
   },
   {
-    manufacturer: "McDonnell Douglas",
+    manufacturer: "Douglas",
     model: "DC-8-61",
+    aircraft_type: "passenger",
     year: 1965,
     seats: 259,
     range_nm: 3300,
@@ -809,6 +866,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "McDonnell Douglas",
     model: "DC-8-62",
+    aircraft_type: "passenger",
     year: 1967,
     seats: 189,
     range_nm: 5100,
@@ -822,6 +880,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "McDonnell Douglas",
     model: "DC-8-63",
+    aircraft_type: "passenger",
     year: 1968,
     seats: 259,
     range_nm: 4600,
@@ -837,6 +896,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "McDonnell Douglas",
     model: "DC-8-71",
+    aircraft_type: "passenger",
     year: 1982,
     seats: 259,
     range_nm: 3800,
@@ -850,6 +910,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "McDonnell Douglas",
     model: "DC-8-72",
+    aircraft_type: "passenger",
     year: 1982,
     seats: 189,
     range_nm: 5200,
@@ -863,6 +924,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "McDonnell Douglas",
     model: "DC-8-73",
+    aircraft_type: "passenger",
     year: 1982,
     seats: 259,
     range_nm: 4600,
@@ -876,8 +938,9 @@ const ACS_AIRCRAFT_DB = [
 
   // 1960s
   {
-    manufacturer: "McDonnell Douglas",
+    manufacturer: "Douglas",
     model: "DC-9-10",
+    aircraft_type: "passenger",
     year: 1965,
     seats: 90,
     range_nm: 1400,
@@ -891,6 +954,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "McDonnell Douglas",
     model: "DC-9-20",
+    aircraft_type: "passenger",
     year: 1969,
     seats: 95,
     range_nm: 1500,
@@ -904,6 +968,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "McDonnell Douglas",
     model: "DC-9-30",
+    aircraft_type: "passenger",
     year: 1967,
     seats: 115,
     range_nm: 1550,
@@ -917,6 +982,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "McDonnell Douglas",
     model: "DC-9-40",
+    aircraft_type: "passenger",
     year: 1968,
     seats: 125,
     range_nm: 1500,
@@ -932,6 +998,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "McDonnell Douglas",
     model: "DC-9-50",
+    aircraft_type: "passenger",
     year: 1975,
     seats: 139,
     range_nm: 1600,
@@ -947,6 +1014,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "McDonnell Douglas",
     model: "MD-81",
+    aircraft_type: "passenger",
     year: 1980,
     seats: 155,
     range_nm: 1500,
@@ -960,6 +1028,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "McDonnell Douglas",
     model: "MD-83",
+    aircraft_type: "passenger",
     year: 1985,
     seats: 155,
     range_nm: 2400,
@@ -973,6 +1042,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "McDonnell Douglas",
     model: "MD-87",
+    aircraft_type: "passenger",
     year: 1987,
     seats: 130,
     range_nm: 2500,
@@ -986,6 +1056,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "McDonnell Douglas",
     model: "MD-88",
+    aircraft_type: "passenger",
     year: 1988,
     seats: 155,
     range_nm: 2200,
@@ -1001,6 +1072,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "McDonnell Douglas",
     model: "MD-90",
+    aircraft_type: "passenger",
     year: 1993,
     seats: 172,
     range_nm: 2100,
@@ -1014,6 +1086,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "717-200",
+    aircraft_type: "passenger",
     year: 1999,
     seats: 117,
     range_nm: 2060,
@@ -1029,6 +1102,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus",
     model: "A300B1",
+    aircraft_type: "passenger",
     year: 1972,
     seats: 259,
     range_nm: 1150,
@@ -1042,6 +1116,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus",
     model: "A300B2-200",
+    aircraft_type: "passenger",
     year: 1976,
     seats: 266,
     range_nm: 1900,
@@ -1055,6 +1130,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus",
     model: "A300B4-200",
+    aircraft_type: "passenger",
     year: 1979,
     seats: 266,
     range_nm: 2600,
@@ -1070,6 +1146,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus",
     model: "A318-100",
+    aircraft_type: "passenger",
     year: 2003,
     seats: 117,
     range_nm: 3100,
@@ -1085,6 +1162,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus",
     model: "A319neo",
+    aircraft_type: "passenger",
     year: 2017,
     seats: 140,
     range_nm: 3500,
@@ -1100,6 +1178,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus",
     model: "A340-200",
+    aircraft_type: "passenger",
     year: 1992,
     seats: 261,
     range_nm: 7400,
@@ -1113,6 +1192,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus",
     model: "A340-300",
+    aircraft_type: "passenger",
     year: 1993,
     seats: 295,
     range_nm: 7000,
@@ -1128,6 +1208,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "De Havilland Canada",
     model: "Dash 8-100",
+    aircraft_type: "passenger",
     year: 1984,
     seats: 37,
     range_nm: 1200,
@@ -1143,6 +1224,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "De Havilland Canada",
     model: "Dash 8-200",
+    aircraft_type: "passenger",
     year: 1995,
     seats: 39,
     range_nm: 1250,
@@ -1158,6 +1240,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "De Havilland Canada",
     model: "Dash 8-300",
+    aircraft_type: "passenger",
     year: 1989,
     seats: 56,
     range_nm: 930,
@@ -1173,6 +1256,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Bombardier",
     model: "CRJ440",
+    aircraft_type: "passenger",
     year: 2001,
     seats: 44,
     range_nm: 1400,
@@ -1188,6 +1272,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Bombardier",
     model: "CRJ1000",
+    aircraft_type: "passenger",
     year: 2010,
     seats: 104,
     range_nm: 1600,
@@ -1203,6 +1288,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Embraer",
     model: "ERJ-140",
+    aircraft_type: "passenger",
     year: 1997,
     seats: 44,
     range_nm: 1650,
@@ -1218,6 +1304,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Embraer",
     model: "E175",
+    aircraft_type: "passenger",
     year: 2003,
     seats: 78,
     range_nm: 1800,
@@ -1231,6 +1318,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Embraer",
     model: "E195",
+    aircraft_type: "passenger",
     year: 2006,
     seats: 122,
     range_nm: 2300,
@@ -1246,6 +1334,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Fokker",
     model: "F50",
+    aircraft_type: "passenger",
     year: 1985,
     seats: 52,
     range_nm: 1480,
@@ -1261,6 +1350,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Hawker Siddeley",
     model: "HS-121 Trident 1C",
+    aircraft_type: "passenger",
     year: 1962,
     seats: 101,
     range_nm: 1500,
@@ -1274,6 +1364,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Hawker Siddeley",
     model: "HS-121 Trident 2E",
+    aircraft_type: "passenger",
     year: 1968,
     seats: 115,
     range_nm: 2050,
@@ -1289,6 +1380,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Hawker Siddeley",
     model: "HS-121 Trident 3B",
+    aircraft_type: "passenger",
     year: 1971,
     seats: 180,
     range_nm: 1750,
@@ -1304,6 +1396,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "BAe",
     model: "BAe 146-100",
+    aircraft_type: "passenger",
     year: 1983,
     seats: 82,
     range_nm: 1050,
@@ -1317,6 +1410,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "BAe",
     model: "BAe 146-200",
+    aircraft_type: "passenger",
     year: 1982,
     seats: 100,
     range_nm: 1600,
@@ -1330,6 +1424,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "BAe",
     model: "BAe 146-300",
+    aircraft_type: "passenger",
     year: 1988,
     seats: 112,
     range_nm: 1600,
@@ -1345,6 +1440,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Avro",
     model: "RJ70",
+    aircraft_type: "passenger",
     year: 1992,
     seats: 70,
     range_nm: 1300,
@@ -1358,6 +1454,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Avro",
     model: "RJ85",
+    aircraft_type: "passenger",
     year: 1993,
     seats: 82,
     range_nm: 1500,
@@ -1371,6 +1468,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Avro",
     model: "RJ100",
+    aircraft_type: "passenger",
     year: 1993,
     seats: 100,
     range_nm: 1600,
@@ -1386,6 +1484,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Ilyushin",
     model: "Il-12",
+    aircraft_type: "passenger",
     year: 1946,
     seats: 32,
     range_nm: 930,
@@ -1401,6 +1500,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Ilyushin",
     model: "Il-14",
+    aircraft_type: "passenger",
     year: 1950,
     seats: 36,
     range_nm: 1350,
@@ -1416,6 +1516,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Ilyushin",
     model: "Il-18B",
+    aircraft_type: "passenger",
     year: 1960,
     seats: 84,
     range_nm: 2500,
@@ -1429,6 +1530,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Ilyushin",
     model: "Il-18V",
+    aircraft_type: "passenger",
     year: 1961,
     seats: 100,
     range_nm: 3100,
@@ -1444,6 +1546,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Tupolev",
     model: "Tu-70",
+    aircraft_type: "passenger",
     year: 1946,
     seats: 48,
     range_nm: 2000,
@@ -1459,6 +1562,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Tupolev",
     model: "Tu-104",
+    aircraft_type: "passenger",
     year: 1956,
     seats: 70,
     range_nm: 1450,
@@ -1472,6 +1576,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Tupolev",
     model: "Tu-114",
+    aircraft_type: "passenger",
     year: 1957,
     seats: 170,
     range_nm: 4350,
@@ -1487,6 +1592,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Tupolev",
     model: "Tu-134",
+    aircraft_type: "passenger",
     year: 1967,
     seats: 80,
     range_nm: 1200,
@@ -1502,6 +1608,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Tupolev",
     model: "Tu-154",
+    aircraft_type: "passenger",
     year: 1972,
     seats: 164,
     range_nm: 2600,
@@ -1517,6 +1624,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Antonov",
     model: "An-10",
+    aircraft_type: "passenger",
     year: 1957,
     seats: 100,
     range_nm: 1100,
@@ -1530,6 +1638,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Antonov",
     model: "An-12",
+    aircraft_type: "cargo",
     year: 1959,
     seats: 0,
     range_nm: 2000,
@@ -1544,6 +1653,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Antonov",
     model: "An-24",
+    aircraft_type: "passenger",
     year: 1959,
     seats: 44,
     range_nm: 1300,
@@ -1559,6 +1669,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Antonov",
     model: "An-26",
+    aircraft_type: "cargo",
     year: 1969,
     seats: 40,
     range_nm: 1000,
@@ -1575,6 +1686,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Antonov",
     model: "An-72",
+    aircraft_type: "passenger",
     year: 1977,
     seats: 52,
     range_nm: 2100,
@@ -1590,6 +1702,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Antonov",
     model: "An-74",
+    aircraft_type: "passenger",
     year: 1983,
     seats: 52,
     range_nm: 2300,
@@ -1605,6 +1718,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Yakovlev",
     model: "Yak-40",
+    aircraft_type: "passenger",
     year: 1968,
     seats: 32,
     range_nm: 810,
@@ -1620,6 +1734,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Yakovlev",
     model: "Yak-42",
+    aircraft_type: "passenger",
     year: 1980,
     seats: 120,
     range_nm: 1400,
@@ -1635,6 +1750,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Convair",
     model: "CV-540",
+    aircraft_type: "passenger",
     year: 1955,
     seats: 48,
     range_nm: 1300,
@@ -1650,6 +1766,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Convair",
     model: "CV-580",
+    aircraft_type: "passenger",
     year: 1965,
     seats: 50,
     range_nm: 1300,
@@ -1663,6 +1780,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Convair",
     model: "CV-600",
+    aircraft_type: "passenger",
     year: 1965,
     seats: 48,
     range_nm: 1100,
@@ -1676,6 +1794,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Convair",
     model: "CV-640",
+    aircraft_type: "passenger",
     year: 1968,
     seats: 52,
     range_nm: 1150,
@@ -1691,6 +1810,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Martin",
     model: "2-0-2",
+    aircraft_type: "passenger",
     year: 1946,
     seats: 40,
     range_nm: 1010,
@@ -1706,6 +1826,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Martin",
     model: "4-0-4",
+    aircraft_type: "passenger",
     year: 1951,
     seats: 44,
     range_nm: 1350,
@@ -1719,6 +1840,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Sud Aviation",
     model: "Caravelle III",
+    aircraft_type: "passenger",
     year: 1959,
     seats: 96,
     range_nm: 1450,
@@ -1734,6 +1856,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Sud Aviation",
     model: "Caravelle 6R",
+    aircraft_type: "passenger",
     year: 1960,
     seats: 98,
     range_nm: 1750,
@@ -1747,6 +1870,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Sud Aviation",
     model: "Caravelle 10B",
+    aircraft_type: "passenger",
     year: 1964,
     seats: 109,
     range_nm: 2000,
@@ -1762,6 +1886,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Sud Aviation",
     model: "Caravelle 12R",
+    aircraft_type: "passenger",
     year: 1970,
     seats: 131,
     range_nm: 2050,
@@ -1777,6 +1902,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Howard",
     model: "500",
+    aircraft_type: "passenger",
     year: 1959,
     seats: 12,
     range_nm: 2450,
@@ -1790,6 +1916,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Aero Commander",
     model: "500B",
+    aircraft_type: "executive",
     year: 1954,
     seats: 6,
     range_nm: 950,
@@ -1803,6 +1930,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Aero Commander",
     model: "680 Super",
+    aircraft_type: "executive",
     year: 1956,
     seats: 8,
     range_nm: 1500,
@@ -1816,6 +1944,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Fairchild",
     model: "F-27",
+    aircraft_type: "passenger",
     year: 1958,
     seats: 44,
     range_nm: 1210,
@@ -1831,6 +1960,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Beechcraft",
     model: "1900D",
+    aircraft_type: "passenger",
     year: 1991,
     seats: 19,
     range_nm: 700,
@@ -1846,6 +1976,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Saab",
     model: "Saab 340B",
+    aircraft_type: "passenger",
     year: 1989,
     seats: 34,
     range_nm: 1050,
@@ -1861,6 +1992,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Saab",
     model: "Saab 2000",
+    aircraft_type: "passenger",
     year: 1994,
     seats: 50,
     range_nm: 1230,
@@ -1876,6 +2008,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Dornier",
     model: "Do 228-200",
+    aircraft_type: "passenger",
     year: 1981,
     seats: 19,
     range_nm: 550,
@@ -1891,6 +2024,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Dornier",
     model: "Do 328-100",
+    aircraft_type: "passenger",
     year: 1993,
     seats: 33,
     range_nm: 1000,
@@ -1904,6 +2038,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Dornier",
     model: "Do 328JET",
+    aircraft_type: "passenger",
     year: 1999,
     seats: 32,
     range_nm: 1050,
@@ -1919,6 +2054,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "British Aerospace",
     model: "ATP",
+    aircraft_type: "passenger",
     year: 1988,
     seats: 64,
     range_nm: 1150,
@@ -1932,6 +2068,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "British Aerospace",
     model: "Jetstream 31",
+    aircraft_type: "passenger",
     year: 1982,
     seats: 19,
     range_nm: 630,
@@ -1945,6 +2082,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "British Aerospace",
     model: "Jetstream 32EP",
+    aircraft_type: "passenger",
     year: 1988,
     seats: 19,
     range_nm: 690,
@@ -1960,6 +2098,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "British Aerospace",
     model: "Jetstream 41",
+    aircraft_type: "passenger",
     year: 1992,
     seats: 29,
     range_nm: 800,
@@ -1975,6 +2114,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "LET",
     model: "L-410 UVP-E20",
+    aircraft_type: "passenger",
     year: 1986,
     seats: 19,
     range_nm: 780,
@@ -1988,6 +2128,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "LET",
     model: "L-610",
+    aircraft_type: "passenger",
     year: 1988,
     seats: 44,
     range_nm: 1100,
@@ -2003,6 +2144,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Shorts",
     model: "Shorts 330",
+    aircraft_type: "passenger",
     year: 1976,
     seats: 30,
     range_nm: 700,
@@ -2018,6 +2160,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Shorts",
     model: "Shorts 360",
+    aircraft_type: "passenger",
     year: 1981,
     seats: 36,
     range_nm: 900,
@@ -2031,6 +2174,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "CASA",
     model: "CN-235",
+    aircraft_type: "passenger",
     year: 1986,
     seats: 48,
     range_nm: 1250,
@@ -2046,6 +2190,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "CASA",
     model: "C-295 (Civil)",
+    aircraft_type: "passenger",
     year: 1999,
     seats: 70,
     range_nm: 1300,
@@ -2059,6 +2204,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Fokker",
     model: "F60",
+    aircraft_type: "military",
     year: 1994,
     seats: 52,
     range_nm: 1300,
@@ -2074,6 +2220,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Embraer",
     model: "EMB 110 Bandeirante",
+    aircraft_type: "passenger",
     year: 1973,
     seats: 15,
     range_nm: 1000,
@@ -2089,6 +2236,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Embraer",
     model: "EMB 120 Brasilia",
+    aircraft_type: "passenger",
     year: 1985,
     seats: 30,
     range_nm: 1050,
@@ -2104,6 +2252,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Fairchild",
     model: "Metro 23",
+    aircraft_type: "passenger",
     year: 1992,
     seats: 19,
     range_nm: 1050,
@@ -2119,6 +2268,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Cessna",
     model: "208 Caravan",
+    aircraft_type: "passenger",
     year: 1984,
     seats: 9,
     range_nm: 920,
@@ -2134,6 +2284,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Cessna",
     model: "208B Grand Caravan",
+    aircraft_type: "passenger",
     year: 1990,
     seats: 14,
     range_nm: 915,
@@ -2149,6 +2300,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Cessna",
     model: "208EX Grand Caravan EX",
+    aircraft_type: "passenger",
     year: 2013,
     seats: 14,
     range_nm: 940,
@@ -2164,6 +2316,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Piper",
     model: "PA-31 Navajo",
+    aircraft_type: "executive",
     year: 1967,
     seats: 6,
     range_nm: 880,
@@ -2179,6 +2332,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Piper",
     model: "PA-31-350 Chieftain",
+    aircraft_type: "executive",
     year: 1973,
     seats: 8,
     range_nm: 930,
@@ -2194,6 +2348,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Beechcraft",
     model: "1900C",
+    aircraft_type: "passenger",
     year: 1982,
     seats: 19,
     range_nm: 1300,
@@ -2209,6 +2364,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "De Havilland Canada",
     model: "DHC-6 Twin Otter Series 300",
+    aircraft_type: "passenger",
     year: 1972,
     seats: 19,
     range_nm: 775,
@@ -2224,6 +2380,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "De Havilland Canada",
     model: "DHC-6 Twin Otter Series 400",
+    aircraft_type: "passenger",
     year: 2010,
     seats: 19,
     range_nm: 770,
@@ -2239,6 +2396,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Mitsubishi",
     model: "MU-2B-60 Marquise",
+    aircraft_type: "executive",
     year: 1971,
     seats: 8,
     range_nm: 1100,
@@ -2254,6 +2412,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Embraer",
     model: "Praetor 600",
+    aircraft_type: "executive",
     year: 2018,
     seats: 12,
     range_nm: 4000,
@@ -2267,6 +2426,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Honda",
     model: "HondaJet HA-420",
+    aircraft_type: "executive",
     year: 2015,
     seats: 6,
     range_nm: 1200,
@@ -2280,6 +2440,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Pilatus",
     model: "PC-24",
+    aircraft_type: "executive",
     year: 2017,
     seats: 11,
     range_nm: 2000,
@@ -2295,6 +2456,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Bell",
     model: "Bell 206B JetRanger",
+    aircraft_type: "helicopter",
     year: 1967,
     seats: 5,
     range_nm: 374,
@@ -2308,6 +2470,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Bell",
     model: "Bell 212",
+    aircraft_type: "helicopter",
     year: 1968,
     seats: 14,
     range_nm: 230,
@@ -2323,6 +2486,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Bell",
     model: "Bell 412EP",
+    aircraft_type: "helicopter",
     year: 1981,
     seats: 15,
     range_nm: 350,
@@ -2338,6 +2502,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus Helicopters",
     model: "H120 (EC120 Colibri)",
+    aircraft_type: "helicopter",
     year: 1997,
     seats: 5,
     range_nm: 383,
@@ -2353,6 +2518,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus Helicopters",
     model: "H125 (AS350 Écureuil)",
+    aircraft_type: "helicopter",
     year: 1975,
     seats: 6,
     range_nm: 345,
@@ -2368,6 +2534,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus Helicopters",
     model: "H135 (EC135)",
+    aircraft_type: "helicopter",
     year: 1996,
     seats: 7,
     range_nm: 330,
@@ -2383,6 +2550,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus Helicopters",
     model: "H145",
+    aircraft_type: "helicopter",
     year: 2014,
     seats: 10,
     range_nm: 351,
@@ -2398,6 +2566,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus Helicopters",
     model: "H155 (EC155)",
+    aircraft_type: "helicopter",
     year: 1999,
     seats: 13,
     range_nm: 423,
@@ -2413,6 +2582,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus Helicopters",
     model: "H225 Super Puma",
+    aircraft_type: "helicopter",
     year: 2004,
     seats: 24,
     range_nm: 452,
@@ -2428,6 +2598,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Leonardo",
     model: "AW109 GrandNew",
+    aircraft_type: "helicopter",
     year: 1996,
     seats: 7,
     range_nm: 432,
@@ -2443,6 +2614,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Leonardo",
     model: "AW139",
+    aircraft_type: "helicopter",
     year: 2003,
     seats: 15,
     range_nm: 573,
@@ -2458,6 +2630,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Leonardo",
     model: "AW169",
+    aircraft_type: "helicopter",
     year: 2015,
     seats: 10,
     range_nm: 410,
@@ -2471,6 +2644,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Leonardo",
     model: "AW189",
+    aircraft_type: "helicopter",
     year: 2013,
     seats: 19,
     range_nm: 520,
@@ -2486,6 +2660,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Sikorsky",
     model: "S-76C++",
+    aircraft_type: "helicopter",
     year: 2005,
     seats: 12,
     range_nm: 411,
@@ -2499,6 +2674,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Sikorsky",
     model: "S-92",
+    aircraft_type: "helicopter",
     year: 2004,
     seats: 19,
     range_nm: 480,
@@ -2514,6 +2690,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Sikorsky",
     model: "S-64 Skycrane",
+    aircraft_type: "helicopter",
     year: 1962,
     seats: 2,
     range_nm: 200,
@@ -2527,6 +2704,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Mil",
     model: "Mi-2",
+    aircraft_type: "helicopter",
     year: 1965,
     seats: 8,
     range_nm: 200,
@@ -2540,6 +2718,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Mil",
     model: "Mi-8/17 Hip",
+    aircraft_type: "helicopter",
     year: 1967,
     seats: 24,
     range_nm: 280,
@@ -2555,6 +2734,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Mil",
     model: "Mi-171A2",
+    aircraft_type: "helicopter",
     year: 2015,
     seats: 24,
     range_nm: 400,
@@ -2570,6 +2750,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Mil",
     model: "Mi-26 Halo",
+    aircraft_type: "helicopter",
     year: 1983,
     seats: 80,
     range_nm: 500,
@@ -2585,6 +2766,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Robinson",
     model: "R22 Beta II",
+    aircraft_type: "helicopter",
     year: 1979,
     seats: 2,
     range_nm: 240,
@@ -2600,6 +2782,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Robinson",
     model: "R44 Raven II",
+    aircraft_type: "helicopter",
     year: 1997,
     seats: 4,
     range_nm: 300,
@@ -2615,6 +2798,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Robinson",
     model: "R66 Turbine",
+    aircraft_type: "helicopter",
     year: 2010,
     seats: 5,
     range_nm: 350,
@@ -2630,6 +2814,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Beechcraft",
     model: "Model 18",
+    aircraft_type: "passenger",
     year: 1937,
     seats: 9,
     range_nm: 1200,
@@ -2645,6 +2830,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Piper",
     model: "PA-32 Cherokee Six",
+    aircraft_type: "executive",
     year: 1965,
     seats: 6,
     range_nm: 600,
@@ -2660,6 +2846,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Piper",
     model: "PA-34 Seneca II",
+    aircraft_type: "executive",
     year: 1975,
     seats: 6,
     range_nm: 820,
@@ -2675,6 +2862,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Beechcraft",
     model: "Baron 58",
+    aircraft_type: "executive",
     year: 1969,
     seats: 6,
     range_nm: 900,
@@ -2690,6 +2878,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Cessna",
     model: "Cessna 310R",
+    aircraft_type: "passenger",
     year: 1954,
     seats: 6,
     range_nm: 650,
@@ -2705,6 +2894,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Pilatus",
     model: "PC-12 NG",
+    aircraft_type: "executive",
     year: 1994,
     seats: 9,
     range_nm: 1800,
@@ -2720,6 +2910,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Pilatus",
     model: "PC-12 NGX",
+    aircraft_type: "executive",
     year: 2020,
     seats: 9,
     range_nm: 1840,
@@ -2735,6 +2926,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Daher",
     model: "TBM 910",
+    aircraft_type: "executive",
     year: 2017,
     seats: 6,
     range_nm: 1730,
@@ -2750,6 +2942,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Daher",
     model: "TBM 960",
+    aircraft_type: "executive",
     year: 2022,
     seats: 6,
     range_nm: 1700,
@@ -2765,6 +2958,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Beechcraft",
     model: "King Air C90GTx",
+    aircraft_type: "executive",
     year: 2009,
     seats: 7,
     range_nm: 1200,
@@ -2780,6 +2974,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Beechcraft",
     model: "King Air 350i",
+    aircraft_type: "executive",
     year: 2010,
     seats: 11,
     range_nm: 1800,
@@ -2795,6 +2990,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "De Havilland Canada",
     model: "DHC-6 Twin Otter Series 100",
+    aircraft_type: "passenger",
     year: 1966,
     seats: 19,
     range_nm: 770,
@@ -2810,6 +3006,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Viking Air",
     model: "Twin Otter Series 400",
+    aircraft_type: "passenger",
     year: 2010,
     seats: 19,
     range_nm: 940,
@@ -2825,6 +3022,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Britten-Norman",
     model: "BN-2A Islander",
+    aircraft_type: "passenger",
     year: 1967,
     seats: 9,
     range_nm: 740,
@@ -2840,6 +3038,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Britten-Norman",
     model: "BN-2B Islander Turbo",
+    aircraft_type: "passenger",
     year: 1978,
     seats: 9,
     range_nm: 700,
@@ -2853,6 +3052,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Britten-Norman",
     model: "BN-2A Trislander",
+    aircraft_type: "passenger",
     year: 1970,
     seats: 17,
     range_nm: 620,
@@ -2866,6 +3066,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "LET Aircraft",
     model: "L-410 UVP-E20",
+    aircraft_type: "passenger",
     year: 1977,
     seats: 19,
     range_nm: 820,
@@ -2881,6 +3082,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "LET Aircraft",
     model: "L-610",
+    aircraft_type: "passenger",
     year: 1988,
     seats: 40,
     range_nm: 900,
@@ -2896,6 +3098,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "CASA",
     model: "C-212 Aviocar",
+    aircraft_type: "passenger",
     year: 1971,
     seats: 26,
     range_nm: 540,
@@ -2909,8 +3112,9 @@ const ACS_AIRCRAFT_DB = [
 
   // 1990s
   {
-    manufacturer: "Airbus Military",
+    manufacturer: "CASA",
     model: "C-295",
+    aircraft_type: "military",
     year: 1999,
     seats: 71,
     range_nm: 2300,
@@ -2926,6 +3130,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Antonov",
     model: "An-140",
+    aircraft_type: "passenger",
     year: 2002,
     seats: 52,
     range_nm: 1300,
@@ -2941,6 +3146,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Fairchild",
     model: "Metro III",
+    aircraft_type: "passenger",
     year: 1981,
     seats: 19,
     range_nm: 600,
@@ -2954,6 +3160,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "BAe",
     model: "Jetstream 31",
+    aircraft_type: "passenger",
     year: 1982,
     seats: 19,
     range_nm: 600,
@@ -2969,6 +3176,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "BAe",
     model: "Jetstream 41",
+    aircraft_type: "passenger",
     year: 1991,
     seats: 29,
     range_nm: 775,
@@ -2982,6 +3190,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Harbin",
     model: "Y-12 IV",
+    aircraft_type: "passenger",
     year: 1990,
     seats: 17,
     range_nm: 650,
@@ -2997,6 +3206,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Harbin",
     model: "Y-12F",
+    aircraft_type: "passenger",
     year: 2012,
     seats: 19,
     range_nm: 820,
@@ -3012,6 +3222,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "AVIC",
     model: "MA60",
+    aircraft_type: "passenger",
     year: 2000,
     seats: 60,
     range_nm: 1000,
@@ -3025,6 +3236,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "AVIC",
     model: "MA600",
+    aircraft_type: "passenger",
     year: 2008,
     seats: 60,
     range_nm: 1150,
@@ -3040,6 +3252,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "AVIC",
     model: "MA700",
+    aircraft_type: "passenger",
     year: 2023,
     seats: 78,
     range_nm: 1250,
@@ -3055,6 +3268,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Embraer",
     model: "Praetor 500",
+    aircraft_type: "executive",
     year: 2019,
     seats: 9,
     range_nm: 3250,
@@ -3070,6 +3284,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Lockheed",
     model: "L-10 Electra",
+    aircraft_type: "passenger",
     year: 1935,
     seats: 10,
     range_nm: 750,
@@ -3083,6 +3298,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Lockheed",
     model: "L-12 Electra Junior",
+    aircraft_type: "passenger",
     year: 1936,
     seats: 6,
     range_nm: 700,
@@ -3096,6 +3312,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Lockheed",
     model: "L-14 Super Electra",
+    aircraft_type: "passenger",
     year: 1937,
     seats: 14,
     range_nm: 1625,
@@ -3111,6 +3328,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Lockheed",
     model: "L-18 Lodestar",
+    aircraft_type: "passenger",
     year: 1940,
     seats: 18,
     range_nm: 1500,
@@ -3126,6 +3344,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Douglas",
     model: "DC-2",
+    aircraft_type: "passenger",
     year: 1934,
     seats: 14,
     range_nm: 1000,
@@ -3139,6 +3358,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Douglas",
     model: "DC-3",
+    aircraft_type: "passenger",
     year: 1935,
     seats: 21,
     range_nm: 1500,
@@ -3154,6 +3374,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Douglas",
     model: "DC-4",
+    aircraft_type: "passenger",
     year: 1942,
     seats: 44,
     range_nm: 2500,
@@ -3169,6 +3390,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Douglas",
     model: "DC-5",
+    aircraft_type: "passenger",
     year: 1939,
     seats: 16,
     range_nm: 1200,
@@ -3184,6 +3406,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Douglas",
     model: "DC-6",
+    aircraft_type: "passenger",
     year: 1946,
     seats: 52,
     range_nm: 4000,
@@ -3197,6 +3420,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Lockheed",
     model: "L-049 Constellation",
+    aircraft_type: "passenger",
     year: 1943,
     seats: 44,
     range_nm: 2600,
@@ -3210,6 +3434,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Lockheed",
     model: "L-649 Constellation",
+    aircraft_type: "passenger",
     year: 1946,
     seats: 52,
     range_nm: 3200,
@@ -3223,6 +3448,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Lockheed",
     model: "L-749 Constellation",
+    aircraft_type: "passenger",
     year: 1947,
     seats: 60,
     range_nm: 4000,
@@ -3238,6 +3464,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "307 Stratoliner",
+    aircraft_type: "passenger",
     year: 1938,
     seats: 33,
     range_nm: 1300,
@@ -3253,6 +3480,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Douglas",
     model: "DC-7",
+    aircraft_type: "passenger",
     year: 1953,
     seats: 69,
     range_nm: 4000,
@@ -3266,6 +3494,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Lockheed",
     model: "L-1049 Super Constellation",
+    aircraft_type: "passenger",
     year: 1951,
     seats: 95,
     range_nm: 3400,
@@ -3279,6 +3508,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Lockheed",
     model: "L-1649 Starliner",
+    aircraft_type: "passenger",
     year: 1956,
     seats: 99,
     range_nm: 4500,
@@ -3292,6 +3522,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "707-120",
+    aircraft_type: "passenger",
     year: 1958,
     seats: 110,
     range_nm: 3200,
@@ -3305,6 +3536,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "707-320",
+    aircraft_type: "passenger",
     year: 1959,
     seats: 147,
     range_nm: 3900,
@@ -3318,6 +3550,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Douglas",
     model: "DC-8-10",
+    aircraft_type: "passenger",
     year: 1959,
     seats: 125,
     range_nm: 3500,
@@ -3333,6 +3566,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Douglas",
     model: "DC-8-50",
+    aircraft_type: "passenger",
     year: 1961,
     seats: 146,
     range_nm: 4150,
@@ -3348,6 +3582,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Sud Aviation",
     model: "Caravelle",
+    aircraft_type: "passenger",
     year: 1959,
     seats: 90,
     range_nm: 1500,
@@ -3363,6 +3598,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "BAC",
     model: "One-Eleven",
+    aircraft_type: "passenger",
     year: 1963,
     seats: 89,
     range_nm: 1300,
@@ -3378,6 +3614,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Fokker",
     model: "F27",
+    aircraft_type: "passenger",
     year: 1958,
     seats: 48,
     range_nm: 1350,
@@ -3393,6 +3630,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Hawker Siddeley",
     model: "HS-748",
+    aircraft_type: "passenger",
     year: 1960,
     seats: 52,
     range_nm: 1550,
@@ -3406,6 +3644,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "727-100",
+    aircraft_type: "passenger",
     year: 1963,
     seats: 106,
     range_nm: 1850,
@@ -3419,6 +3658,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "737-100",
+    aircraft_type: "passenger",
     year: 1967,
     seats: 85,
     range_nm: 1200,
@@ -3432,6 +3672,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "737-200",
+    aircraft_type: "passenger",
     year: 1968,
     seats: 98,
     range_nm: 1500,
@@ -3447,6 +3688,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "747-100",
+    aircraft_type: "passenger",
     year: 1970,
     seats: 366,
     range_nm: 4800,
@@ -3460,6 +3702,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "747-200",
+    aircraft_type: "passenger",
     year: 1971,
     seats: 370,
     range_nm: 5200,
@@ -3471,8 +3714,9 @@ const ACS_AIRCRAFT_DB = [
     required_runway_m: 3550
   },
   {
-    manufacturer: "Douglas",
+    manufacturer: "McDonnell Douglas",
     model: "DC-10-10",
+    aircraft_type: "passenger",
     year: 1971,
     seats: 250,
     range_nm: 3200,
@@ -3486,6 +3730,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Lockheed",
     model: "L-1011 TriStar",
+    aircraft_type: "passenger",
     year: 1972,
     seats: 256,
     range_nm: 3200,
@@ -3499,6 +3744,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus",
     model: "A300B2",
+    aircraft_type: "passenger",
     year: 1974,
     seats: 266,
     range_nm: 2250,
@@ -3512,6 +3758,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus",
     model: "A300B4",
+    aircraft_type: "passenger",
     year: 1979,
     seats: 266,
     range_nm: 2600,
@@ -3527,6 +3774,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus",
     model: "A310-300",
+    aircraft_type: "passenger",
     year: 1985,
     seats: 247,
     range_nm: 4250,
@@ -3540,6 +3788,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "McDonnell Douglas",
     model: "MD-80",
+    aircraft_type: "passenger",
     year: 1980,
     seats: 140,
     range_nm: 1800,
@@ -3553,6 +3802,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "McDonnell Douglas",
     model: "MD-82",
+    aircraft_type: "passenger",
     year: 1981,
     seats: 155,
     range_nm: 1850,
@@ -3566,6 +3816,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "737-300",
+    aircraft_type: "passenger",
     year: 1984,
     seats: 149,
     range_nm: 1950,
@@ -3579,6 +3830,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "737-400",
+    aircraft_type: "passenger",
     year: 1988,
     seats: 168,
     range_nm: 1850,
@@ -3592,6 +3844,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "757-200",
+    aircraft_type: "passenger",
     year: 1983,
     seats: 200,
     range_nm: 3900,
@@ -3605,6 +3858,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "767-200",
+    aircraft_type: "passenger",
     year: 1982,
     seats: 216,
     range_nm: 3300,
@@ -3618,6 +3872,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "767-300",
+    aircraft_type: "passenger",
     year: 1986,
     seats: 269,
     range_nm: 3600,
@@ -3633,6 +3888,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Fokker",
     model: "F28 Fellowship",
+    aircraft_type: "passenger",
     year: 1969,
     seats: 65,
     range_nm: 1100,
@@ -3648,6 +3904,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Fokker",
     model: "F70",
+    aircraft_type: "passenger",
     year: 1987,
     seats: 80,
     range_nm: 1500,
@@ -3661,6 +3918,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Fokker",
     model: "F100",
+    aircraft_type: "passenger",
     year: 1988,
     seats: 107,
     range_nm: 1400,
@@ -3676,6 +3934,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "737-600",
+    aircraft_type: "passenger",
     year: 1998,
     seats: 110,
     range_nm: 3050,
@@ -3689,6 +3948,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "737-700",
+    aircraft_type: "passenger",
     year: 1998,
     seats: 132,
     range_nm: 3200,
@@ -3702,6 +3962,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "737-800",
+    aircraft_type: "passenger",
     year: 1998,
     seats: 162,
     range_nm: 2935,
@@ -3717,6 +3978,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "737-900ER",
+    aircraft_type: "passenger",
     year: 2007,
     seats: 180,
     range_nm: 2950,
@@ -3732,6 +3994,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "747-400",
+    aircraft_type: "passenger",
     year: 1989,
     seats: 416,
     range_nm: 7250,
@@ -3747,6 +4010,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "757-300",
+    aircraft_type: "passenger",
     year: 1999,
     seats: 243,
     range_nm: 3400,
@@ -3762,6 +4026,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "767-400ER",
+    aircraft_type: "passenger",
     year: 2000,
     seats: 304,
     range_nm: 5625,
@@ -3777,6 +4042,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "777-200",
+    aircraft_type: "passenger",
     year: 1995,
     seats: 314,
     range_nm: 5100,
@@ -3790,6 +4056,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "777-300",
+    aircraft_type: "passenger",
     year: 1998,
     seats: 396,
     range_nm: 5000,
@@ -3805,6 +4072,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus",
     model: "A318",
+    aircraft_type: "passenger",
     year: 2003,
     seats: 110,
     range_nm: 3100,
@@ -3820,6 +4088,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus",
     model: "A319",
+    aircraft_type: "passenger",
     year: 1996,
     seats: 124,
     range_nm: 3750,
@@ -3835,6 +4104,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus",
     model: "A320",
+    aircraft_type: "passenger",
     year: 1988,
     seats: 150,
     range_nm: 3300,
@@ -3850,6 +4120,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus",
     model: "A321",
+    aircraft_type: "passenger",
     year: 1994,
     seats: 185,
     range_nm: 3200,
@@ -3863,6 +4134,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus",
     model: "A330-200",
+    aircraft_type: "passenger",
     year: 1998,
     seats: 246,
     range_nm: 6750,
@@ -3876,6 +4148,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus",
     model: "A330-300",
+    aircraft_type: "passenger",
     year: 1993,
     seats: 295,
     range_nm: 6350,
@@ -3889,6 +4162,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "McDonnell Douglas",
     model: "MD-11",
+    aircraft_type: "passenger",
     year: 1990,
     seats: 285,
     range_nm: 6400,
@@ -3902,6 +4176,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Bombardier",
     model: "CRJ100",
+    aircraft_type: "passenger",
     year: 1992,
     seats: 50,
     range_nm: 1500,
@@ -3915,6 +4190,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Bombardier",
     model: "CRJ200",
+    aircraft_type: "passenger",
     year: 1996,
     seats: 50,
     range_nm: 1600,
@@ -3928,6 +4204,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Bombardier",
     model: "CRJ700",
+    aircraft_type: "passenger",
     year: 1999,
     seats: 70,
     range_nm: 1700,
@@ -3943,6 +4220,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Bombardier",
     model: "CRJ900",
+    aircraft_type: "passenger",
     year: 2001,
     seats: 90,
     range_nm: 1550,
@@ -3956,6 +4234,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Bombardier",
     model: "Dash 8 Q400",
+    aircraft_type: "passenger",
     year: 2000,
     seats: 78,
     range_nm: 1100,
@@ -3971,6 +4250,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "ATR",
     model: "ATR 42-500",
+    aircraft_type: "passenger",
     year: 1995,
     seats: 48,
     range_nm: 800,
@@ -3984,6 +4264,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "ATR",
     model: "ATR 72-500",
+    aircraft_type: "passenger",
     year: 1997,
     seats: 70,
     range_nm: 900,
@@ -3997,6 +4278,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Embraer",
     model: "ERJ-135",
+    aircraft_type: "passenger",
     year: 1999,
     seats: 37,
     range_nm: 1550,
@@ -4010,6 +4292,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Embraer",
     model: "ERJ-145",
+    aircraft_type: "passenger",
     year: 1996,
     seats: 50,
     range_nm: 1550,
@@ -4025,6 +4308,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Embraer",
     model: "E170",
+    aircraft_type: "passenger",
     year: 2004,
     seats: 78,
     range_nm: 2100,
@@ -4038,6 +4322,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Embraer",
     model: "E190",
+    aircraft_type: "passenger",
     year: 2005,
     seats: 98,
     range_nm: 2400,
@@ -4053,6 +4338,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Tupolev",
     model: "Tu-204",
+    aircraft_type: "passenger",
     year: 1989,
     seats: 164,
     range_nm: 2100,
@@ -4068,6 +4354,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Ilyushin",
     model: "Il-96-300",
+    aircraft_type: "passenger",
     year: 1993,
     seats: 262,
     range_nm: 5100,
@@ -4083,6 +4370,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus",
     model: "A320neo",
+    aircraft_type: "passenger",
     year: 2016,
     seats: 150,
     range_nm: 3500,
@@ -4096,6 +4384,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus",
     model: "A321neo",
+    aircraft_type: "passenger",
     year: 2017,
     seats: 185,
     range_nm: 3500,
@@ -4109,6 +4398,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus",
     model: "A321LR",
+    aircraft_type: "passenger",
     year: 2018,
     seats: 180,
     range_nm: 4000,
@@ -4124,6 +4414,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus",
     model: "A321XLR",
+    aircraft_type: "passenger",
     year: 2023,
     seats: 180,
     range_nm: 4700,
@@ -4139,6 +4430,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus",
     model: "A350-900",
+    aircraft_type: "passenger",
     year: 2015,
     seats: 325,
     range_nm: 8100,
@@ -4152,6 +4444,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus",
     model: "A350-900 ULR",
+    aircraft_type: "passenger",
     year: 2018,
     seats: 170,
     range_nm: 9700,
@@ -4165,6 +4458,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus",
     model: "A350-1000",
+    aircraft_type: "passenger",
     year: 2018,
     seats: 366,
     range_nm: 8000,
@@ -4180,6 +4474,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus",
     model: "A330-800neo",
+    aircraft_type: "passenger",
     year: 2020,
     seats: 257,
     range_nm: 7500,
@@ -4195,6 +4490,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus",
     model: "A330-900neo",
+    aircraft_type: "passenger",
     year: 2018,
     seats: 287,
     range_nm: 6550,
@@ -4208,6 +4504,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus",
     model: "A220-100",
+    aircraft_type: "passenger",
     year: 2016,
     seats: 110,
     range_nm: 3100,
@@ -4221,6 +4518,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus",
     model: "A220-300",
+    aircraft_type: "passenger",
     year: 2017,
     seats: 145,
     range_nm: 3300,
@@ -4236,6 +4534,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Airbus",
     model: "A220-500",
+    aircraft_type: "passenger",
     year: 2026,
     seats: 175,
     range_nm: 3100,
@@ -4251,6 +4550,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "737 MAX 7",
+    aircraft_type: "passenger",
     year: 2017,
     seats: 138,
     range_nm: 3850,
@@ -4264,6 +4564,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "737 MAX 8",
+    aircraft_type: "passenger",
     year: 2017,
     seats: 162,
     range_nm: 3550,
@@ -4277,6 +4578,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "737 MAX 9",
+    aircraft_type: "passenger",
     year: 2018,
     seats: 180,
     range_nm: 3500,
@@ -4292,6 +4594,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "737 MAX 10",
+    aircraft_type: "passenger",
     year: 2023,
     seats: 204,
     range_nm: 3300,
@@ -4307,6 +4610,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "787-8 Dreamliner",
+    aircraft_type: "passenger",
     year: 2012,
     seats: 248,
     range_nm: 7635,
@@ -4320,6 +4624,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "787-9 Dreamliner",
+    aircraft_type: "passenger",
     year: 2014,
     seats: 296,
     range_nm: 7635,
@@ -4333,6 +4638,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "787-10 Dreamliner",
+    aircraft_type: "passenger",
     year: 2018,
     seats: 336,
     range_nm: 6430,
@@ -4348,6 +4654,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Boeing",
     model: "787-9 (2025 Update)",
+    aircraft_type: "passenger",
     year: 2025,
     seats: 296,
     range_nm: 7635,
@@ -4363,6 +4670,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Embraer",
     model: "E190-E2",
+    aircraft_type: "passenger",
     year: 2018,
     seats: 110,
     range_nm: 2850,
@@ -4376,6 +4684,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Embraer",
     model: "E195-E2",
+    aircraft_type: "passenger",
     year: 2019,
     seats: 132,
     range_nm: 2600,
@@ -4391,6 +4700,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Embraer",
     model: "E175-E2",
+    aircraft_type: "passenger",
     year: 2020,
     seats: 88,
     range_nm: 2200,
@@ -4406,6 +4716,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Bombardier",
     model: "Q400 (Dash 8-400)",
+    aircraft_type: "passenger",
     year: 2000,
     seats: 78,
     range_nm: 1100,
@@ -4421,6 +4732,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "ATR",
     model: "ATR 72-600",
+    aircraft_type: "passenger",
     year: 2010,
     seats: 72,
     range_nm: 825,
@@ -4436,6 +4748,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "ATR",
     model: "ATR 72-600 EVO",
+    aircraft_type: "passenger",
     year: 2024,
     seats: 74,
     range_nm: 850,
@@ -4449,6 +4762,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "ATR",
     model: "ATR 42-600S (STOL)",
+    aircraft_type: "passenger",
     year: 2025,
     seats: 48,
     range_nm: 750,
@@ -4462,6 +4776,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Sukhoi",
     model: "SSJ100-NEW",
+    aircraft_type: "passenger",
     year: 2021,
     seats: 98,
     range_nm: 2100,
@@ -4475,6 +4790,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Yakovlev",
     model: "MC-21-300",
+    aircraft_type: "passenger",
     year: 2024,
     seats: 163,
     range_nm: 3000,
@@ -4488,6 +4804,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "Yakovlev",
     model: "MC-21-200",
+    aircraft_type: "passenger",
     year: 2025,
     seats: 132,
     range_nm: 3300,
@@ -4503,6 +4820,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "COMAC",
     model: "ARJ21-700",
+    aircraft_type: "passenger",
     year: 2016,
     seats: 95,
     range_nm: 1200,
@@ -4518,6 +4836,7 @@ const ACS_AIRCRAFT_DB = [
   {
     manufacturer: "COMAC",
     model: "C919",
+    aircraft_type: "passenger",
     year: 2021,
     seats: 158,
     range_nm: 2550,
