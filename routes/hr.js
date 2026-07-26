@@ -267,8 +267,28 @@ async function ensureHRInitialized(airlineId) {
       [normalizedAirlineId]
     );
 
+        const existingDepartmentsResult = await client.query(
+      `
+      SELECT dept_id
+      FROM public.hr_departments
+      WHERE airline_id = $1
+      `,
+      [normalizedAirlineId]
+    );
+
+    const existingDepartmentIds = new Set(
+      existingDepartmentsResult.rows.map(
+        row => String(row.dept_id)
+      )
+    );
+     
     for (const department of HR_DEFAULT) {
-      const historical = getHRHistoricalBaseSalary(
+       
+      if (existingDepartmentIds.has(department.id)) {
+        continue;
+      }
+       
+       const historical = getHRHistoricalBaseSalary(
         department.id,
         1940
       );
@@ -468,19 +488,31 @@ GREATEST(0, CEIL(COUNT(*) / 3.0))::int AS security
     cabin: Number(r.cabin || 0)
   };
 
-  for (const [deptId, requiredStaff] of Object.entries(required)) {
-    await pool.query(
-      `
-      UPDATE public.hr_departments
-      SET
-        required = $3,
-        updated_at = NOW()
-      WHERE airline_id = $1
-        AND dept_id = $2
-      `,
-      [airlineId, deptId, requiredStaff]
-    );
-  }
+    const requiredRows = Object.entries(required).map(
+    ([deptId, requiredStaff]) => ({
+      dept_id: deptId,
+      required: requiredStaff
+    })
+  );
+
+  await pool.query(
+    `
+    UPDATE public.hr_departments AS department
+    SET
+      required = incoming.required,
+      updated_at = NOW()
+    FROM jsonb_to_recordset($2::jsonb) AS incoming(
+      dept_id TEXT,
+      required INTEGER
+    )
+    WHERE department.airline_id = $1
+      AND department.dept_id = incoming.dept_id
+    `,
+    [
+      airlineId,
+      JSON.stringify(requiredRows)
+    ]
+  );
 
   return required;
 }
@@ -1548,12 +1580,12 @@ router.patch(
 
         const updateResult = await client.query(
           `
-          UPDATE public.hr_departments
+         UPDATE public.hr_departments
           SET
-            staff = $3,
-            morale = $4,
+            staff = $3::INTEGER,
+            morale = $4::NUMERIC,
             payroll = ROUND(
-              $3::NUMERIC *
+              ($3::INTEGER)::NUMERIC *
               salary::NUMERIC
             )::BIGINT,
             updated_at = NOW()
@@ -1768,16 +1800,16 @@ router.patch(
 
         const updateResult = await client.query(
           `
-          UPDATE public.hr_departments
+         UPDATE public.hr_departments
           SET
-            salary = $3,
+            salary = $3::NUMERIC,
             payroll = ROUND(
               staff::NUMERIC *
               $3::NUMERIC
             )::BIGINT,
-            morale = $4,
-            salary_percent = $5,
-            salary_decade = $6,
+            morale = $4::NUMERIC,
+            salary_percent = $5::NUMERIC,
+            salary_decade = $6::INTEGER,
             updated_at = NOW()
           WHERE airline_id = $1
             AND dept_id = $2
