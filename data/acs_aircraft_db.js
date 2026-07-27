@@ -753,7 +753,7 @@ const ACS_AIRCRAFT_DB = [
 
   // 1950s
   {
-    manufacturer: "McDonnell Douglas",
+    manufacturer: "Douglas",
     model: "DC-8-20",
     year: 1959,
     seats: 125,
@@ -768,7 +768,7 @@ const ACS_AIRCRAFT_DB = [
 
   // 1960s
   {
-    manufacturer: "McDonnell Douglas",
+    manufacturer: "Douglas",
     model: "DC-8-30",
     year: 1960,
     seats: 142,
@@ -781,7 +781,7 @@ const ACS_AIRCRAFT_DB = [
     required_runway_m: 3450
   },
   {
-    manufacturer: "McDonnell Douglas",
+    manufacturer: "Douglas",
     model: "DC-8-40",
     year: 1961,
     seats: 146,
@@ -794,7 +794,7 @@ const ACS_AIRCRAFT_DB = [
     required_runway_m: 3450
   },
   {
-    manufacturer: "McDonnell Douglas",
+    manufacturer: "Douglas",
     model: "DC-8-61",
     year: 1965,
     seats: 259,
@@ -876,7 +876,7 @@ const ACS_AIRCRAFT_DB = [
 
   // 1960s
   {
-    manufacturer: "McDonnell Douglas",
+    manufacturer: "Douglas",
     model: "DC-9-10",
     year: 1965,
     seats: 90,
