@@ -17,7 +17,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 95,
     mtow_kg: 1950,
     fuel_burn_kgph: 90,
-    price_acs_usd: 60000,
+    price_acs_usd: 25000,
     engines: "BMW IIIa",
     required_runway_m: 700
   },
@@ -30,7 +30,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 105,
     mtow_kg: 5200,
     fuel_burn_kgph: 220,
-    price_acs_usd: 120000,
+    price_acs_usd: 45000,
     engines: "Wright J-4 / J-5",
     required_runway_m: 900
   },
@@ -43,7 +43,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 105,
     mtow_kg: 6350,
     fuel_burn_kgph: 260,
-    price_acs_usd: 150000,
+    price_acs_usd: 42000,
     engines: "PW Wasp",
     required_runway_m: 950
   },
@@ -56,7 +56,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 140,
     mtow_kg: 2500,
     fuel_burn_kgph: 200,
-    price_acs_usd: 95000,
+    price_acs_usd: 17000,
     engines: "PW Wasp",
     required_runway_m: 750
   },
@@ -71,7 +71,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 160,
     mtow_kg: 3800,
     fuel_burn_kgph: 230,
-    price_acs_usd: 140000,
+    price_acs_usd: 25000,
     engines: "PW Wasp",
     required_runway_m: 850
   },
@@ -84,7 +84,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 105,
     mtow_kg: 2000,
     fuel_burn_kgph: 150,
-    price_acs_usd: 80000,
+    price_acs_usd: 14500,
     engines: "DH Gipsy Major",
     required_runway_m: 700
   },
@@ -97,7 +97,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 160,
     mtow_kg: 8800,
     fuel_burn_kgph: 360,
-    price_acs_usd: 280000,
+    price_acs_usd: 65000,
     engines: "PW R-1340",
     required_runway_m: 1050
   },
@@ -110,7 +110,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 115,
     mtow_kg: 2700,
     fuel_burn_kgph: 160,
-    price_acs_usd: 90000,
+    price_acs_usd: 20000,
     engines: "DH Gipsy Six",
     required_runway_m: 750
   },
@@ -125,7 +125,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 255,
     mtow_kg: 16500,
     fuel_burn_kgph: 750,
-    price_acs_usd: 1200000,
+    price_acs_usd: 320000,
     engines: "PW R-2800",
     required_runway_m: 1250
   },
@@ -140,7 +140,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 270,
     mtow_kg: 20000,
     fuel_burn_kgph: 850,
-    price_acs_usd: 1500000,
+    price_acs_usd: 475000,
     engines: "PW R-2800",
     required_runway_m: 1350
   },
@@ -153,7 +153,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 280,
     mtow_kg: 20700,
     fuel_burn_kgph: 900,
-    price_acs_usd: 1800000,
+    price_acs_usd: 550000,
     engines: "PW R-2800",
     required_runway_m: 1350
   },
@@ -168,7 +168,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 220,
     mtow_kg: 18500,
     fuel_burn_kgph: 650,
-    price_acs_usd: 950000,
+    price_acs_usd: 285000,
     engines: "Bristol Hercules",
     required_runway_m: 1300
   },
@@ -183,7 +183,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 190,
     mtow_kg: 6400,
     fuel_burn_kgph: 380,
-    price_acs_usd: 600000,
+    price_acs_usd: 82000,
     engines: "Bristol Perseus",
     required_runway_m: 950
   },
@@ -198,7 +198,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 280,
     mtow_kg: 33000,
     fuel_burn_kgph: 1600,
-    price_acs_usd: 1800000,
+    price_acs_usd: 540000,
     engines: "RR Merlin",
     required_runway_m: 1600
   },
@@ -211,7 +211,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 310,
     mtow_kg: 66000,
     fuel_burn_kgph: 2600,
-    price_acs_usd: 3500000,
+    price_acs_usd: 1050000,
     engines: "PW R-4360",
     required_runway_m: 2050
   },
@@ -224,7 +224,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 245,
     mtow_kg: 8200,
     fuel_burn_kgph: 580,
-    price_acs_usd: 700000,
+    price_acs_usd: 130000,
     engines: "PW R-1830",
     required_runway_m: 1000
   },
@@ -237,7 +237,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 240,
     mtow_kg: 31000,
     fuel_burn_kgph: 1400,
-    price_acs_usd: 1300000,
+    price_acs_usd: 390000,
     engines: "Bristol Hercules",
     required_runway_m: 1600
   },
@@ -250,7 +250,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 270,
     mtow_kg: 20400,
     fuel_burn_kgph: 1200,
-    price_acs_usd: 1700000,
+    price_acs_usd: 225000,
     engines: "Wright R-2800",
     required_runway_m: 1350
   },
@@ -265,7 +265,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 140,
     mtow_kg: 3900,
     fuel_burn_kgph: 240,
-    price_acs_usd: 110000,
+    price_acs_usd: 65000,
     engines: "DH Gipsy Six (x4)",
     required_runway_m: 850
   },
@@ -278,7 +278,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 210,
     mtow_kg: 15500,
     fuel_burn_kgph: 850,
-    price_acs_usd: 600000,
+    price_acs_usd: 130000,
     engines: "RR Gipsy Twelve",
     required_runway_m: 1250
   },
@@ -293,7 +293,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 210,
     mtow_kg: 3650,
     fuel_burn_kgph: 300,
-    price_acs_usd: 450000,
+    price_acs_usd: 83500,
     engines: "Gipsy Queen 70-3",
     required_runway_m: 850
   },
@@ -308,7 +308,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 175,
     mtow_kg: 6350,
     fuel_burn_kgph: 360,
-    price_acs_usd: 850000,
+    price_acs_usd: 160000,
     engines: "Gipsy Queen 30 (x4)",
     required_runway_m: 950
   },
@@ -321,7 +321,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 430,
     mtow_kg: 48000,
     fuel_burn_kgph: 5000,
-    price_acs_usd: 5000000,
+    price_acs_usd: 850000,
     engines: "Ghost 50 Mk1",
     required_runway_m: 2400
   },
@@ -334,7 +334,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 440,
     mtow_kg: 54000,
     fuel_burn_kgph: 5200,
-    price_acs_usd: 6200000,
+    price_acs_usd: 1100000,
     engines: "Ghost 50 Mk2",
     required_runway_m: 2450
   },
@@ -347,7 +347,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 455,
     mtow_kg: 72000,
     fuel_burn_kgph: 5600,
-    price_acs_usd: 7000000,
+    price_acs_usd: 1500000,
     engines: "Ghost 50 Mk4",
     required_runway_m: 2750
   },
@@ -360,7 +360,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 455,
     mtow_kg: 73000,
     fuel_burn_kgph: 5800,
-    price_acs_usd: 9500000,
+    price_acs_usd: 2200000,
     engines: "Ghost 50 Mk4B",
     required_runway_m: 2750
   },
@@ -375,7 +375,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 530,
     mtow_kg: 60000,
     fuel_burn_kgph: 5900,
-    price_acs_usd: 12000000,
+    price_acs_usd: 4100000,
     engines: "RR Spey 505",
     required_runway_m: 2000
   },
@@ -388,7 +388,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 530,
     mtow_kg: 66000,
     fuel_burn_kgph: 6200,
-    price_acs_usd: 13500000,
+    price_acs_usd: 4600000,
     engines: "RR Spey 512",
     required_runway_m: 2050
   },
@@ -403,7 +403,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 530,
     mtow_kg: 70000,
     fuel_burn_kgph: 6500,
-    price_acs_usd: 15000000,
+    price_acs_usd: 10000000,
     engines: "RR Spey 555-15",
     required_runway_m: 2100
   },
@@ -418,7 +418,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 280,
     mtow_kg: 31000,
     fuel_burn_kgph: 1450,
-    price_acs_usd: 4200000,
+    price_acs_usd: 1200000,
     engines: "RR Dart",
     required_runway_m: 1350
   },
@@ -431,7 +431,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 295,
     mtow_kg: 35000,
     fuel_burn_kgph: 1550,
-    price_acs_usd: 5400000,
+    price_acs_usd: 1600000,
     engines: "RR Dart",
     required_runway_m: 1400
   },
@@ -444,7 +444,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 300,
     mtow_kg: 39000,
     fuel_burn_kgph: 1650,
-    price_acs_usd: 6800000,
+    price_acs_usd: 1900000,
     engines: "RR Dart",
     required_runway_m: 1450
   },
@@ -457,7 +457,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 330,
     mtow_kg: 60000,
     fuel_burn_kgph: 3000,
-    price_acs_usd: 15000000,
+    price_acs_usd: 4500000,
     engines: "RR Tyne",
     required_runway_m: 1650
   },
@@ -472,7 +472,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 330,
     mtow_kg: 60000,
     fuel_burn_kgph: 3100,
-    price_acs_usd: 17000000,
+    price_acs_usd: 5800000,
     engines: "RR Tyne",
     status: "cargo",
     required_runway_m: 1650
@@ -488,7 +488,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 330,
     mtow_kg: 57000,
     fuel_burn_kgph: 3000,
-    price_acs_usd: 16000000,
+    price_acs_usd: 4800000,
     engines: "Proteus 625",
     required_runway_m: 1650
   },
@@ -501,7 +501,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 350,
     mtow_kg: 74000,
     fuel_burn_kgph: 3400,
-    price_acs_usd: 21000000,
+    price_acs_usd: 6300000,
     engines: "Proteus 755",
     required_runway_m: 1800
   },
@@ -514,7 +514,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 240,
     mtow_kg: 30000,
     fuel_burn_kgph: 1600,
-    price_acs_usd: 5500000,
+    price_acs_usd: 1650000,
     engines: "Bristol Hercules",
     required_runway_m: 1500
   },
@@ -529,7 +529,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 265,
     mtow_kg: 5700,
     fuel_burn_kgph: 450,
-    price_acs_usd: 3000000,
+    price_acs_usd: 630000,
     engines: "Astazou XIV",
     required_runway_m: 900
   },
@@ -542,7 +542,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 265,
     mtow_kg: 20000,
     fuel_burn_kgph: 950,
-    price_acs_usd: 4900000,
+    price_acs_usd: 1650000,
     engines: "RR Dart",
     required_runway_m: 1150
   },
@@ -557,7 +557,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 335,
     mtow_kg: 64000,
     fuel_burn_kgph: 3200,
-    price_acs_usd: 12000000,
+    price_acs_usd: 3600000,
     engines: "Ivchenko AI-20",
     required_runway_m: 1700
   },
@@ -572,7 +572,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 350,
     mtow_kg: 64000,
     fuel_burn_kgph: 3400,
-    price_acs_usd: 14500000,
+    price_acs_usd: 4950000,
     engines: "Ivchenko AI-20M",
     required_runway_m: 1700
   },
@@ -587,7 +587,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 190,
     mtow_kg: 7050,
     fuel_burn_kgph: 420,
-    price_acs_usd: 480000,
+    price_acs_usd: 125000,
     engines: "PW R-1690",
     required_runway_m: 1000
   },
@@ -602,7 +602,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 310,
     mtow_kg: 49250,
     fuel_burn_kgph: 2400,
-    price_acs_usd: 3650000,
+    price_acs_usd: 1200000,
     engines: "PW R-2800",
     required_runway_m: 1800
   },
@@ -615,7 +615,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 335,
     mtow_kg: 65000,
     fuel_burn_kgph: 3100,
-    price_acs_usd: 5200000,
+    price_acs_usd: 1550000,
     engines: "Wright R-3350",
     required_runway_m: 2050
   },
@@ -628,7 +628,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 350,
     mtow_kg: 68000,
     fuel_burn_kgph: 3300,
-    price_acs_usd: 5900000,
+    price_acs_usd: 1750000,
     engines: "Wright R-3350",
     required_runway_m: 2100
   },
@@ -643,7 +643,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 300,
     mtow_kg: 61000,
     fuel_burn_kgph: 2350,
-    price_acs_usd: 4300000,
+    price_acs_usd: 1500000,
     engines: "PW R-4360",
     required_runway_m: 2000
   },
@@ -658,7 +658,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 540,
     mtow_kg: 104000,
     fuel_burn_kgph: 6100,
-    price_acs_usd: 13500000,
+    price_acs_usd: 4200000,
     engines: "JT3C / JT3D",
     required_runway_m: 3050
   },
@@ -671,7 +671,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 540,
     mtow_kg: 86000,
     fuel_burn_kgph: 5500,
-    price_acs_usd: 16000000,
+    price_acs_usd: 5500000,
     engines: "JT8D-15",
     required_runway_m: 2250
   },
@@ -686,7 +686,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 495,
     mtow_kg: 60500,
     fuel_burn_kgph: 3000,
-    price_acs_usd: 23000000,
+    price_acs_usd: 31000000,
     engines: "CFM56-3C1",
     required_runway_m: 1750
   },
@@ -701,7 +701,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 560,
     mtow_kg: 351000,
     fuel_burn_kgph: 24000,
-    price_acs_usd: 165000000,
+    price_acs_usd: 83000000,
     engines: "JT9D-7R4G2",
     required_runway_m: 3550
   },
@@ -716,7 +716,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 560,
     mtow_kg: 314000,
     fuel_burn_kgph: 22000,
-    price_acs_usd: 155000000,
+    price_acs_usd: 25000000,
     engines: "JT9D-7A",
     required_runway_m: 3350
   },
@@ -731,7 +731,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 560,
     mtow_kg: 297500,
     fuel_burn_kgph: 9000,
-    price_acs_usd: 208000000,
+    price_acs_usd: 145000000,
     engines: "GE90-94B",
     required_runway_m: 3100
   },
@@ -761,7 +761,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 540,
     mtow_kg: 124000,
     fuel_burn_kgph: 7200,
-    price_acs_usd: 16000000,
+    price_acs_usd: 5600000,
     engines: "JT4A",
     required_runway_m: 3250
   },
@@ -776,7 +776,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 545,
     mtow_kg: 143000,
     fuel_burn_kgph: 7500,
-    price_acs_usd: 17500000,
+    price_acs_usd: 5950000,
     engines: "JT4A",
     required_runway_m: 3450
   },
@@ -789,7 +789,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 550,
     mtow_kg: 147000,
     fuel_burn_kgph: 7000,
-    price_acs_usd: 18000000,
+    price_acs_usd: 6100000,
     engines: "RR Conway 509",
     required_runway_m: 3450
   },
@@ -802,7 +802,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 550,
     mtow_kg: 162000,
     fuel_burn_kgph: 8500,
-    price_acs_usd: 19500000,
+    price_acs_usd: 6650000,
     engines: "JT3D",
     required_runway_m: 3550
   },
@@ -815,7 +815,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 550,
     mtow_kg: 158000,
     fuel_burn_kgph: 8200,
-    price_acs_usd: 20500000,
+    price_acs_usd: 6950000,
     engines: "JT3D",
     required_runway_m: 3550
   },
@@ -828,7 +828,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 550,
     mtow_kg: 162000,
     fuel_burn_kgph: 8500,
-    price_acs_usd: 21000000,
+    price_acs_usd: 7150000,
     engines: "JT3D",
     required_runway_m: 3550
   },
@@ -843,7 +843,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 550,
     mtow_kg: 165000,
     fuel_burn_kgph: 6500,
-    price_acs_usd: 23000000,
+    price_acs_usd: 19000000,
     engines: "CFM56-2",
     required_runway_m: 2600
   },
@@ -856,7 +856,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 550,
     mtow_kg: 165000,
     fuel_burn_kgph: 6400,
-    price_acs_usd: 24000000,
+    price_acs_usd: 19500000,
     engines: "CFM56-2",
     required_runway_m: 2600
   },
@@ -869,7 +869,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 550,
     mtow_kg: 165000,
     fuel_burn_kgph: 6450,
-    price_acs_usd: 24500000,
+    price_acs_usd: 20000000,
     engines: "CFM56-2",
     required_runway_m: 2600
   },
@@ -884,7 +884,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 485,
     mtow_kg: 38000,
     fuel_burn_kgph: 2600,
-    price_acs_usd: 12000000,
+    price_acs_usd: 3200000,
     engines: "JT8D-1",
     required_runway_m: 1700
   },
@@ -897,7 +897,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 485,
     mtow_kg: 39500,
     fuel_burn_kgph: 2700,
-    price_acs_usd: 13000000,
+    price_acs_usd: 3600000,
     engines: "JT8D-11",
     required_runway_m: 1700
   },
@@ -910,7 +910,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 490,
     mtow_kg: 47000,
     fuel_burn_kgph: 2900,
-    price_acs_usd: 14000000,
+    price_acs_usd: 4000000,
     engines: "JT8D-7",
     required_runway_m: 1800
   },
@@ -923,7 +923,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 490,
     mtow_kg: 49500,
     fuel_burn_kgph: 3000,
-    price_acs_usd: 15000000,
+    price_acs_usd: 4500000,
     engines: "JT8D-9",
     required_runway_m: 1850
   },
@@ -938,7 +938,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 490,
     mtow_kg: 54000,
     fuel_burn_kgph: 3150,
-    price_acs_usd: 16500000,
+    price_acs_usd: 11000000,
     engines: "JT8D-17",
     required_runway_m: 1700
   },
@@ -953,7 +953,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 475,
     mtow_kg: 63500,
     fuel_burn_kgph: 3500,
-    price_acs_usd: 21000000,
+    price_acs_usd: 19000000,
     engines: "JT8D-209",
     required_runway_m: 2300
   },
@@ -966,7 +966,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 475,
     mtow_kg: 70800,
     fuel_burn_kgph: 3600,
-    price_acs_usd: 22500000,
+    price_acs_usd: 23000000,
     engines: "JT8D-219",
     required_runway_m: 1850
   },
@@ -979,7 +979,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 475,
     mtow_kg: 62500,
     fuel_burn_kgph: 3300,
-    price_acs_usd: 23000000,
+    price_acs_usd: 24000000,
     engines: "JT8D-217",
     required_runway_m: 1800
   },
@@ -992,7 +992,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 475,
     mtow_kg: 67500,
     fuel_burn_kgph: 3500,
-    price_acs_usd: 24000000,
+    price_acs_usd: 26000000,
     engines: "JT8D-219",
     required_runway_m: 1850
   },
@@ -1007,7 +1007,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 475,
     mtow_kg: 76000,
     fuel_burn_kgph: 3100,
-    price_acs_usd: 26000000,
+    price_acs_usd: 20500000,
     engines: "IAE V2500",
     required_runway_m: 1900
   },
@@ -1020,7 +1020,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 470,
     mtow_kg: 55000,
     fuel_burn_kgph: 2600,
-    price_acs_usd: 30000000,
+    price_acs_usd: 23500000,
     engines: "RR BR715",
     required_runway_m: 1700
   },
@@ -1035,7 +1035,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 495,
     mtow_kg: 132000,
     fuel_burn_kgph: 5200,
-    price_acs_usd: 42000000,
+    price_acs_usd: 17500000,
     engines: "GE CF6-50A",
     required_runway_m: 2650
   },
@@ -1048,7 +1048,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 495,
     mtow_kg: 142000,
     fuel_burn_kgph: 5400,
-    price_acs_usd: 54000000,
+    price_acs_usd: 23000000,
     engines: "GE CF6-50C",
     required_runway_m: 2500
   },
@@ -1061,7 +1061,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 495,
     mtow_kg: 157000,
     fuel_burn_kgph: 5600,
-    price_acs_usd: 62000000,
+    price_acs_usd: 32000000,
     engines: "GE CF6-50C2",
     required_runway_m: 2550
   },
@@ -1076,7 +1076,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 470,
     mtow_kg: 68000,
     fuel_burn_kgph: 2500,
-    price_acs_usd: 72000000,
+    price_acs_usd: 56000000,
     engines: "CFM56-5B8",
     required_runway_m: 1850
   },
@@ -1106,7 +1106,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 490,
     mtow_kg: 253000,
     fuel_burn_kgph: 7400,
-    price_acs_usd: 170000000,
+    price_acs_usd: 105000000,
     engines: "CFM56-5C",
     required_runway_m: 3350
   },
@@ -1119,7 +1119,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 490,
     mtow_kg: 257000,
     fuel_burn_kgph: 7800,
-    price_acs_usd: 180000000,
+    price_acs_usd: 115000000,
     engines: "CFM56-5C",
     required_runway_m: 3350
   },
@@ -1134,7 +1134,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 285,
     mtow_kg: 15600,
     fuel_burn_kgph: 700,
-    price_acs_usd: 12500000,
+    price_acs_usd: 10500000,
     engines: "PW120A",
     required_runway_m: 1100
   },
@@ -1149,7 +1149,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 285,
     mtow_kg: 17000,
     fuel_burn_kgph: 750,
-    price_acs_usd: 14500000,
+    price_acs_usd: 11500000,
     engines: "PW123C",
     required_runway_m: 1100
   },
@@ -1164,7 +1164,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 285,
     mtow_kg: 19000,
     fuel_burn_kgph: 900,
-    price_acs_usd: 18500000,
+    price_acs_usd: 15000000,
     engines: "PW123",
     required_runway_m: 1150
   },
@@ -1209,7 +1209,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 430,
     mtow_kg: 20900,
     fuel_burn_kgph: 1550,
-    price_acs_usd: 22500000,
+    price_acs_usd: 17500000,
     engines: "RR AE3007A1",
     required_runway_m: 1250
   },
@@ -1252,7 +1252,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 285,
     mtow_kg: 20500,
     fuel_burn_kgph: 950,
-    price_acs_usd: 8000000,
+    price_acs_usd: 6550000,
     engines: "PW125B",
     required_runway_m: 1150
   },
@@ -1267,7 +1267,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 525,
     mtow_kg: 52800,
     fuel_burn_kgph: 4800,
-    price_acs_usd: 9000000,
+    price_acs_usd: 3050000,
     engines: "RR Spey",
     required_runway_m: 1850
   },
@@ -1280,7 +1280,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 525,
     mtow_kg: 56500,
     fuel_burn_kgph: 5100,
-    price_acs_usd: 10500000,
+    price_acs_usd: 3550000,
     engines: "RR Spey",
     required_runway_m: 1900
   },
@@ -1295,7 +1295,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 525,
     mtow_kg: 64000,
     fuel_burn_kgph: 5400,
-    price_acs_usd: 12000000,
+    price_acs_usd: 8150000,
     engines: "RR Spey + Booster",
     required_runway_m: 2050
   },
@@ -1310,7 +1310,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 430,
     mtow_kg: 38100,
     fuel_burn_kgph: 3000,
-    price_acs_usd: 24000000,
+    price_acs_usd: 19500000,
     engines: "Lycoming ALF 502R-5",
     required_runway_m: 1500
   },
@@ -1323,7 +1323,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 430,
     mtow_kg: 42100,
     fuel_burn_kgph: 3200,
-    price_acs_usd: 26000000,
+    price_acs_usd: 21500000,
     engines: "Lycoming ALF 502R-5",
     required_runway_m: 1600
   },
@@ -1336,7 +1336,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 430,
     mtow_kg: 43800,
     fuel_burn_kgph: 3400,
-    price_acs_usd: 28000000,
+    price_acs_usd: 23000000,
     engines: "Lycoming ALF 502R-5",
     required_runway_m: 1600
   },
@@ -1351,7 +1351,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 450,
     mtow_kg: 42500,
     fuel_burn_kgph: 3100,
-    price_acs_usd: 31000000,
+    price_acs_usd: 24000000,
     engines: "Honeywell LF 507",
     required_runway_m: 1600
   },
@@ -1364,7 +1364,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 450,
     mtow_kg: 44000,
     fuel_burn_kgph: 3300,
-    price_acs_usd: 33000000,
+    price_acs_usd: 25500000,
     engines: "Honeywell LF 507",
     required_runway_m: 1600
   },
@@ -1377,7 +1377,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 450,
     mtow_kg: 46000,
     fuel_burn_kgph: 3500,
-    price_acs_usd: 36000000,
+    price_acs_usd: 28000000,
     engines: "Honeywell LF 507",
     required_runway_m: 1650
   },
@@ -1392,7 +1392,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 190,
     mtow_kg: 18000,
     fuel_burn_kgph: 900,
-    price_acs_usd: 1400000,
+    price_acs_usd: 420000,
     engines: "Shvetsov ASh-82",
     required_runway_m: 1300
   },
@@ -1407,7 +1407,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 215,
     mtow_kg: 21000,
     fuel_burn_kgph: 1000,
-    price_acs_usd: 1800000,
+    price_acs_usd: 540000,
     engines: "Shvetsov ASh-82T",
     required_runway_m: 1350
   },
@@ -1422,7 +1422,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 345,
     mtow_kg: 64000,
     fuel_burn_kgph: 3300,
-    price_acs_usd: 13500000,
+    price_acs_usd: 4600000,
     engines: "Ivchenko AI-20",
     required_runway_m: 1700
   },
@@ -1435,7 +1435,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 350,
     mtow_kg: 64000,
     fuel_burn_kgph: 3400,
-    price_acs_usd: 15000000,
+    price_acs_usd: 5100000,
     engines: "Ivchenko AI-20M",
     required_runway_m: 1700
   },
@@ -1450,7 +1450,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 265,
     mtow_kg: 34000,
     fuel_burn_kgph: 1700,
-    price_acs_usd: 3500000,
+    price_acs_usd: 1050000,
     engines: "Shvetsov ASh-73",
     required_runway_m: 1600
   },
@@ -1465,7 +1465,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 480,
     mtow_kg: 62000,
     fuel_burn_kgph: 6200,
-    price_acs_usd: 12000000,
+    price_acs_usd: 3600000,
     engines: "Mikulin AM-3",
     required_runway_m: 2550
   },
@@ -1478,7 +1478,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 400,
     mtow_kg: 164000,
     fuel_burn_kgph: 6800,
-    price_acs_usd: 30000000,
+    price_acs_usd: 9000000,
     engines: "NK-12 (turboprop)",
     required_runway_m: 2400
   },
@@ -1493,7 +1493,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 510,
     mtow_kg: 47500,
     fuel_burn_kgph: 5200,
-    price_acs_usd: 16000000,
+    price_acs_usd: 5450000,
     engines: "Soloviev D-30",
     required_runway_m: 1800
   },
@@ -1508,7 +1508,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 530,
     mtow_kg: 98000,
     fuel_burn_kgph: 9200,
-    price_acs_usd: 28000000,
+    price_acs_usd: 19000000,
     engines: "Soloviev D-30KU-154",
     required_runway_m: 2750
   },
@@ -1523,7 +1523,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 345,
     mtow_kg: 56000,
     fuel_burn_kgph: 3400,
-    price_acs_usd: 12000000,
+    price_acs_usd: 3600000,
     engines: "Ivchenko AI-20",
     required_runway_m: 1650
   },
@@ -1536,7 +1536,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 330,
     mtow_kg: 61000,
     fuel_burn_kgph: 3500,
-    price_acs_usd: 16000000,
+    price_acs_usd: 4800000,
     engines: "Ivchenko AI-20M",
     status: "cargo",
     required_runway_m: 1700
@@ -1550,7 +1550,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 240,
     mtow_kg: 21000,
     fuel_burn_kgph: 850,
-    price_acs_usd: 6000000,
+    price_acs_usd: 1800000,
     engines: "Ivchenko AI-24",
     required_runway_m: 1150
   },
@@ -1565,7 +1565,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 230,
     mtow_kg: 24000,
     fuel_burn_kgph: 900,
-    price_acs_usd: 7000000,
+    price_acs_usd: 2400000,
     engines: "Ivchenko AI-24VT",
     status: "cargo/passenger",
     required_runway_m: 1250
@@ -1581,7 +1581,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 360,
     mtow_kg: 34000,
     fuel_burn_kgph: 3200,
-    price_acs_usd: 17000000,
+    price_acs_usd: 11500000,
     engines: "Lotarev D-36",
     required_runway_m: 1450
   },
@@ -1596,7 +1596,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 370,
     mtow_kg: 36000,
     fuel_burn_kgph: 3300,
-    price_acs_usd: 19000000,
+    price_acs_usd: 15500000,
     engines: "Lotarev D-36",
     required_runway_m: 1450
   },
@@ -1611,7 +1611,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 245,
     mtow_kg: 16500,
     fuel_burn_kgph: 1100,
-    price_acs_usd: 9000000,
+    price_acs_usd: 3050000,
     engines: "Ivchenko AI-25",
     required_runway_m: 1300
   },
@@ -1626,7 +1626,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 405,
     mtow_kg: 57000,
     fuel_burn_kgph: 6800,
-    price_acs_usd: 24000000,
+    price_acs_usd: 19500000,
     engines: "Lotarev D-36",
     required_runway_m: 1750
   },
@@ -1641,7 +1641,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 285,
     mtow_kg: 20000,
     fuel_burn_kgph: 1100,
-    price_acs_usd: 4500000,
+    price_acs_usd: 1350000,
     engines: "Napier Eland",
     required_runway_m: 1150
   },
@@ -1656,7 +1656,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 300,
     mtow_kg: 20500,
     fuel_burn_kgph: 1200,
-    price_acs_usd: 5200000,
+    price_acs_usd: 1750000,
     engines: "Allison 501-D13",
     required_runway_m: 1150
   },
@@ -1669,7 +1669,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 275,
     mtow_kg: 19000,
     fuel_burn_kgph: 1000,
-    price_acs_usd: 4800000,
+    price_acs_usd: 1650000,
     engines: "RR Dart 510",
     required_runway_m: 1150
   },
@@ -1682,7 +1682,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 285,
     mtow_kg: 20000,
     fuel_burn_kgph: 1100,
-    price_acs_usd: 5000000,
+    price_acs_usd: 1700000,
     engines: "RR Dart 510",
     required_runway_m: 1150
   },
@@ -1697,7 +1697,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 235,
     mtow_kg: 15500,
     fuel_burn_kgph: 780,
-    price_acs_usd: 2900000,
+    price_acs_usd: 870000,
     engines: "PW R-2800",
     required_runway_m: 1250
   },
@@ -1712,7 +1712,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 250,
     mtow_kg: 19000,
     fuel_burn_kgph: 900,
-    price_acs_usd: 3400000,
+    price_acs_usd: 1000000,
     engines: "PW R-2800",
     required_runway_m: 1300
   },
@@ -1725,7 +1725,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 505,
     mtow_kg: 52000,
     fuel_burn_kgph: 4600,
-    price_acs_usd: 11500000,
+    price_acs_usd: 3450000,
     engines: "RR Avon",
     required_runway_m: 2450
   },
@@ -1740,7 +1740,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 510,
     mtow_kg: 53500,
     fuel_burn_kgph: 4900,
-    price_acs_usd: 12500000,
+    price_acs_usd: 4250000,
     engines: "RR Avon RA.29",
     required_runway_m: 2450
   },
@@ -1753,7 +1753,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 515,
     mtow_kg: 55000,
     fuel_burn_kgph: 5100,
-    price_acs_usd: 14500000,
+    price_acs_usd: 4950000,
     engines: "GE CJ805-23",
     required_runway_m: 1900
   },
@@ -1768,7 +1768,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 520,
     mtow_kg: 57500,
     fuel_burn_kgph: 5200,
-    price_acs_usd: 16500000,
+    price_acs_usd: 11000000,
     engines: "GE CJ805-23",
     required_runway_m: 1900
   },
@@ -1783,7 +1783,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 350,
     mtow_kg: 6800,
     fuel_burn_kgph: 640,
-    price_acs_usd: 4500000,
+    price_acs_usd: 835000,
     engines: "PW R-2800",
     required_runway_m: 950
   },
@@ -1796,7 +1796,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 210,
     mtow_kg: 4100,
     fuel_burn_kgph: 300,
-    price_acs_usd: 1200000,
+    price_acs_usd: 225000,
     engines: "Lycoming GO-480",
     required_runway_m: 850
   },
@@ -1809,7 +1809,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 245,
     mtow_kg: 5200,
     fuel_burn_kgph: 350,
-    price_acs_usd: 1800000,
+    price_acs_usd: 335000,
     engines: "Continental GTSIO-520",
     required_runway_m: 900
   },
@@ -1822,7 +1822,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 260,
     mtow_kg: 20000,
     fuel_burn_kgph: 900,
-    price_acs_usd: 3800000,
+    price_acs_usd: 1150000,
     engines: "RR Dart 6",
     required_runway_m: 1150
   },
@@ -1837,7 +1837,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 280,
     mtow_kg: 7700,
     fuel_burn_kgph: 370,
-    price_acs_usd: 4200000,
+    price_acs_usd: 3300000,
     engines: "PT6A-67D",
     required_runway_m: 950
   },
@@ -1852,7 +1852,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 280,
     mtow_kg: 12900,
     fuel_burn_kgph: 650,
-    price_acs_usd: 9500000,
+    price_acs_usd: 7800000,
     engines: "GE CT7-9B",
     required_runway_m: 1050
   },
@@ -1867,7 +1867,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 360,
     mtow_kg: 22800,
     fuel_burn_kgph: 900,
-    price_acs_usd: 17000000,
+    price_acs_usd: 13500000,
     engines: "RR AE2100A",
     required_runway_m: 1250
   },
@@ -1882,7 +1882,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 210,
     mtow_kg: 6400,
     fuel_burn_kgph: 300,
-    price_acs_usd: 5200000,
+    price_acs_usd: 2650000,
     engines: "Garrett TPE331",
     required_runway_m: 650
   },
@@ -1897,7 +1897,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 335,
     mtow_kg: 13000,
     fuel_burn_kgph: 620,
-    price_acs_usd: 12500000,
+    price_acs_usd: 9750000,
     engines: "PW119B",
     required_runway_m: 1050
   },
@@ -1910,7 +1910,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 375,
     mtow_kg: 14500,
     fuel_burn_kgph: 950,
-    price_acs_usd: 16500000,
+    price_acs_usd: 13000000,
     engines: "PW306B",
     required_runway_m: 1100
   },
@@ -1925,7 +1925,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 285,
     mtow_kg: 22700,
     fuel_burn_kgph: 950,
-    price_acs_usd: 14000000,
+    price_acs_usd: 11500000,
     engines: "PW126",
     required_runway_m: 1250
   },
@@ -1938,7 +1938,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 240,
     mtow_kg: 6400,
     fuel_burn_kgph: 330,
-    price_acs_usd: 3500000,
+    price_acs_usd: 1800000,
     engines: "Garrett TPE331",
     required_runway_m: 900
   },
@@ -1951,7 +1951,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 250,
     mtow_kg: 6800,
     fuel_burn_kgph: 360,
-    price_acs_usd: 3900000,
+    price_acs_usd: 2000000,
     engines: "Garrett TPE331-12UHR",
     required_runway_m: 900
   },
@@ -1966,7 +1966,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 265,
     mtow_kg: 10900,
     fuel_burn_kgph: 520,
-    price_acs_usd: 8500000,
+    price_acs_usd: 6650000,
     engines: "Allison 501-D22",
     required_runway_m: 1000
   },
@@ -1981,7 +1981,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 195,
     mtow_kg: 6600,
     fuel_burn_kgph: 340,
-    price_acs_usd: 4800000,
+    price_acs_usd: 2450000,
     engines: "Walter M601F",
     required_runway_m: 650
   },
@@ -1994,7 +1994,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 260,
     mtow_kg: 16500,
     fuel_burn_kgph: 900,
-    price_acs_usd: 12000000,
+    price_acs_usd: 9850000,
     engines: "Walter M602",
     required_runway_m: 1100
   },
@@ -2009,7 +2009,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 180,
     mtow_kg: 10000,
     fuel_burn_kgph: 420,
-    price_acs_usd: 4500000,
+    price_acs_usd: 3050000,
     engines: "PT6A-45",
     required_runway_m: 700
   },
@@ -2024,7 +2024,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 185,
     mtow_kg: 12000,
     fuel_burn_kgph: 460,
-    price_acs_usd: 5200000,
+    price_acs_usd: 4250000,
     engines: "PT6A-65",
     required_runway_m: 700
   },
@@ -2037,7 +2037,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 235,
     mtow_kg: 15500,
     fuel_burn_kgph: 800,
-    price_acs_usd: 18000000,
+    price_acs_usd: 15000000,
     engines: "GE CT7-9C",
     required_runway_m: 1100
   },
@@ -2052,7 +2052,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 260,
     mtow_kg: 23000,
     fuel_burn_kgph: 900,
-    price_acs_usd: 28000000,
+    price_acs_usd: 22000000,
     engines: "PW127G",
     required_runway_m: 1250
   },
@@ -2065,7 +2065,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 275,
     mtow_kg: 23000,
     fuel_burn_kgph: 850,
-    price_acs_usd: 17500000,
+    price_acs_usd: 13500000,
     engines: "PW127B",
     required_runway_m: 1250
   },
@@ -2080,7 +2080,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 235,
     mtow_kg: 5700,
     fuel_burn_kgph: 350,
-    price_acs_usd: 3800000,
+    price_acs_usd: 1600000,
     engines: "PT6A-34",
     required_runway_m: 900
   },
@@ -2095,7 +2095,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 295,
     mtow_kg: 11900,
     fuel_burn_kgph: 700,
-    price_acs_usd: 7800000,
+    price_acs_usd: 6400000,
     engines: "PW118",
     required_runway_m: 1050
   },
@@ -2110,7 +2110,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 300,
     mtow_kg: 6650,
     fuel_burn_kgph: 400,
-    price_acs_usd: 4900000,
+    price_acs_usd: 3800000,
     engines: "Garrett TPE331-12UHR",
     required_runway_m: 900
   },
@@ -2125,7 +2125,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 185,
     mtow_kg: 3629,
     fuel_burn_kgph: 240,
-    price_acs_usd: 2900000,
+    price_acs_usd: 1450000,
     engines: "PT6A-114A",
     required_runway_m: 850
   },
@@ -2140,7 +2140,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 186,
     mtow_kg: 3970,
     fuel_burn_kgph: 250,
-    price_acs_usd: 3400000,
+    price_acs_usd: 2650000,
     engines: "PT6A-114A",
     required_runway_m: 850
   },
@@ -2170,7 +2170,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 220,
     mtow_kg: 2948,
     fuel_burn_kgph: 220,
-    price_acs_usd: 1500000,
+    price_acs_usd: 315000,
     engines: "Lycoming TIO-540",
     required_runway_m: 750
   },
@@ -2185,7 +2185,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 225,
     mtow_kg: 3175,
     fuel_burn_kgph: 240,
-    price_acs_usd: 1750000,
+    price_acs_usd: 740000,
     engines: "Lycoming TIO-540-J2BD",
     required_runway_m: 850
   },
@@ -2200,7 +2200,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 270,
     mtow_kg: 7170,
     fuel_burn_kgph: 500,
-    price_acs_usd: 5800000,
+    price_acs_usd: 2950000,
     engines: "PT6A-65B",
     required_runway_m: 950
   },
@@ -2215,7 +2215,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 180,
     mtow_kg: 5700,
     fuel_burn_kgph: 300,
-    price_acs_usd: 5500000,
+    price_acs_usd: 2300000,
     engines: "PT6A-27",
     required_runway_m: 600
   },
@@ -2245,7 +2245,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 290,
     mtow_kg: 4800,
     fuel_burn_kgph: 350,
-    price_acs_usd: 1900000,
+    price_acs_usd: 800000,
     engines: "Garrett TPE331-10",
     required_runway_m: 850
   },
@@ -2301,7 +2301,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 110,
     mtow_kg: 1450,
     fuel_burn_kgph: 105,
-    price_acs_usd: 900000,
+    price_acs_usd: 190000,
     engines: "Allison 250-C20",
     required_runway_m: 0
   },
@@ -2314,7 +2314,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 120,
     mtow_kg: 5080,
     fuel_burn_kgph: 380,
-    price_acs_usd: 5500000,
+    price_acs_usd: 1150000,
     engines: "PT6T-3 Twin-Pac",
     required_runway_m: 900
   },
@@ -2329,7 +2329,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 122,
     mtow_kg: 5400,
     fuel_burn_kgph: 440,
-    price_acs_usd: 9000000,
+    price_acs_usd: 4600000,
     engines: "PT6T-9 Twin-Pac",
     required_runway_m: 900
   },
@@ -2344,7 +2344,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 122,
     mtow_kg: 1715,
     fuel_burn_kgph: 115,
-    price_acs_usd: 2300000,
+    price_acs_usd: 1800000,
     engines: "Turbomeca Arrius 2F",
     required_runway_m: 0
   },
@@ -2359,7 +2359,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 133,
     mtow_kg: 2250,
     fuel_burn_kgph: 165,
-    price_acs_usd: 3100000,
+    price_acs_usd: 1300000,
     engines: "Safran Arriel 2D",
     required_runway_m: 0
   },
@@ -2374,7 +2374,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 137,
     mtow_kg: 2980,
     fuel_burn_kgph: 280,
-    price_acs_usd: 6500000,
+    price_acs_usd: 5050000,
     engines: "PW206B",
     required_runway_m: 0
   },
@@ -2404,7 +2404,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 150,
     mtow_kg: 4800,
     fuel_burn_kgph: 520,
-    price_acs_usd: 11000000,
+    price_acs_usd: 8600000,
     engines: "Arriel 2C2",
     required_runway_m: 0
   },
@@ -2434,7 +2434,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 154,
     mtow_kg: 3175,
     fuel_burn_kgph: 260,
-    price_acs_usd: 6500000,
+    price_acs_usd: 5050000,
     engines: "PW207C",
     required_runway_m: 0
   },
@@ -2520,7 +2520,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 100,
     mtow_kg: 19000,
     fuel_burn_kgph: 1100,
-    price_acs_usd: 24000000,
+    price_acs_usd: 8150000,
     engines: "Pratt & Whitney JFTD12A",
     required_runway_m: 0
   },
@@ -2533,7 +2533,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 105,
     mtow_kg: 3550,
     fuel_burn_kgph: 420,
-    price_acs_usd: 1500000,
+    price_acs_usd: 315000,
     engines: "GTXD-350",
     required_runway_m: 0
   },
@@ -2546,7 +2546,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 135,
     mtow_kg: 13000,
     fuel_burn_kgph: 900,
-    price_acs_usd: 8000000,
+    price_acs_usd: 2700000,
     engines: "TV2-117",
     required_runway_m: 0
   },
@@ -2576,7 +2576,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 159,
     mtow_kg: 56000,
     fuel_burn_kgph: 3500,
-    price_acs_usd: 36000000,
+    price_acs_usd: 29500000,
     engines: "D-136",
     required_runway_m: 0
   },
@@ -2591,7 +2591,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 96,
     mtow_kg: 622,
     fuel_burn_kgph: 55,
-    price_acs_usd: 350000,
+    price_acs_usd: 150000,
     engines: "Lycoming O-360",
     required_runway_m: 600
   },
@@ -2606,7 +2606,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 110,
     mtow_kg: 1130,
     fuel_burn_kgph: 75,
-    price_acs_usd: 550000,
+    price_acs_usd: 430000,
     engines: "Lycoming IO-540",
     required_runway_m: 650
   },
@@ -2636,7 +2636,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 200,
     mtow_kg: 3800,
     fuel_burn_kgph: 240,
-    price_acs_usd: 650000,
+    price_acs_usd: 37500,
     engines: "PW R-985",
     required_runway_m: 850
   },
@@ -2651,7 +2651,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 140,
     mtow_kg: 1580,
     fuel_burn_kgph: 55,
-    price_acs_usd: 650000,
+    price_acs_usd: 135000,
     engines: "Lycoming IO-540",
     required_runway_m: 700
   },
@@ -2666,7 +2666,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 180,
     mtow_kg: 2150,
     fuel_burn_kgph: 95,
-    price_acs_usd: 1100000,
+    price_acs_usd: 465000,
     engines: "Continental TSIO-360",
     required_runway_m: 750
   },
@@ -2681,7 +2681,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 200,
     mtow_kg: 2490,
     fuel_burn_kgph: 110,
-    price_acs_usd: 1600000,
+    price_acs_usd: 335000,
     engines: "Continental IO-550",
     required_runway_m: 750
   },
@@ -2696,7 +2696,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 190,
     mtow_kg: 2490,
     fuel_burn_kgph: 105,
-    price_acs_usd: 900000,
+    price_acs_usd: 165000,
     engines: "Continental IO-470",
     required_runway_m: 750
   },
@@ -2711,7 +2711,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 270,
     mtow_kg: 4740,
     fuel_burn_kgph: 270,
-    price_acs_usd: 5200000,
+    price_acs_usd: 4050000,
     engines: "PT6A-67P",
     required_runway_m: 850
   },
@@ -2801,7 +2801,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 155,
     mtow_kg: 5670,
     fuel_burn_kgph: 320,
-    price_acs_usd: 2100000,
+    price_acs_usd: 445000,
     engines: "PT6A-20",
     required_runway_m: 600
   },
@@ -2831,7 +2831,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 135,
     mtow_kg: 2990,
     fuel_burn_kgph: 115,
-    price_acs_usd: 850000,
+    price_acs_usd: 180000,
     engines: "Lycoming O-540",
     required_runway_m: 550
   },
@@ -2846,7 +2846,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 155,
     mtow_kg: 3100,
     fuel_burn_kgph: 160,
-    price_acs_usd: 1800000,
+    price_acs_usd: 760000,
     engines: "Allison 250-B17C",
     required_runway_m: 0
   },
@@ -2859,7 +2859,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 150,
     mtow_kg: 4800,
     fuel_burn_kgph: 210,
-    price_acs_usd: 2200000,
+    price_acs_usd: 930000,
     engines: "Lycoming IO-540 (x3)",
     required_runway_m: 600
   },
@@ -2872,7 +2872,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 165,
     mtow_kg: 6400,
     fuel_burn_kgph: 350,
-    price_acs_usd: 4900000,
+    price_acs_usd: 2050000,
     engines: "Walter M601",
     required_runway_m: 650
   },
@@ -2887,7 +2887,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 210,
     mtow_kg: 14000,
     fuel_burn_kgph: 700,
-    price_acs_usd: 11000000,
+    price_acs_usd: 9000000,
     engines: "Walter M602",
     required_runway_m: 1050
   },
@@ -2902,7 +2902,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 180,
     mtow_kg: 7800,
     fuel_burn_kgph: 330,
-    price_acs_usd: 3500000,
+    price_acs_usd: 1500000,
     engines: "Garrett TPE331",
     required_runway_m: 650
   },
@@ -2917,7 +2917,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 260,
     mtow_kg: 23000,
     fuel_burn_kgph: 840,
-    price_acs_usd: 38000000,
+    price_acs_usd: 29500000,
     engines: "PW127G",
     required_runway_m: 1250
   },
@@ -2947,7 +2947,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 265,
     mtow_kg: 6400,
     fuel_burn_kgph: 420,
-    price_acs_usd: 3500000,
+    price_acs_usd: 1800000,
     engines: "Garrett TPE331-11U",
     required_runway_m: 900
   },
@@ -2960,7 +2960,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 235,
     mtow_kg: 7100,
     fuel_burn_kgph: 400,
-    price_acs_usd: 4200000,
+    price_acs_usd: 2150000,
     engines: "Garrett TPE331-10",
     required_runway_m: 950
   },
@@ -2975,7 +2975,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 310,
     mtow_kg: 10400,
     fuel_burn_kgph: 650,
-    price_acs_usd: 9000000,
+    price_acs_usd: 7000000,
     engines: "Allison 2500",
     required_runway_m: 1000
   },
@@ -2988,7 +2988,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 180,
     mtow_kg: 5700,
     fuel_burn_kgph: 350,
-    price_acs_usd: 3500000,
+    price_acs_usd: 2750000,
     engines: "PT6A-34",
     required_runway_m: 900
   },
@@ -3076,7 +3076,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 165,
     mtow_kg: 4500,
     fuel_burn_kgph: 320,
-    price_acs_usd: 350000,
+    price_acs_usd: 40000,
     engines: "PW R-985",
     required_runway_m: 900
   },
@@ -3089,7 +3089,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 175,
     mtow_kg: 3500,
     fuel_burn_kgph: 280,
-    price_acs_usd: 300000,
+    price_acs_usd: 40000,
     engines: "PW R-985",
     required_runway_m: 850
   },
@@ -3102,7 +3102,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 230,
     mtow_kg: 8250,
     fuel_burn_kgph: 520,
-    price_acs_usd: 520000,
+    price_acs_usd: 60000,
     engines: "PW R-1690",
     required_runway_m: 1000
   },
@@ -3117,7 +3117,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 250,
     mtow_kg: 8350,
     fuel_burn_kgph: 580,
-    price_acs_usd: 650000,
+    price_acs_usd: 120000,
     engines: "PW R-1820",
     required_runway_m: 1000
   },
@@ -3132,7 +3132,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 200,
     mtow_kg: 8100,
     fuel_burn_kgph: 480,
-    price_acs_usd: 600000,
+    price_acs_usd: 65000,
     engines: "PW R-1690",
     required_runway_m: 1000
   },
@@ -3145,7 +3145,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 180,
     mtow_kg: 11793,
     fuel_burn_kgph: 450,
-    price_acs_usd: 700000,
+    price_acs_usd: 79500,
     engines: "PW R-1830",
     required_runway_m: 1100
   },
@@ -3160,7 +3160,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 215,
     mtow_kg: 29700,
     fuel_burn_kgph: 1350,
-    price_acs_usd: 2200000,
+    price_acs_usd: 600000,
     engines: "PW R-2000",
     required_runway_m: 1500
   },
@@ -3175,7 +3175,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 190,
     mtow_kg: 7600,
     fuel_burn_kgph: 420,
-    price_acs_usd: 550000,
+    price_acs_usd: 85000,
     engines: "PW R-1820",
     required_runway_m: 1000
   },
@@ -3190,7 +3190,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 245,
     mtow_kg: 48800,
     fuel_burn_kgph: 2200,
-    price_acs_usd: 3200000,
+    price_acs_usd: 1000000,
     engines: "PW R-2800",
     required_runway_m: 1800
   },
@@ -3203,7 +3203,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 280,
     mtow_kg: 43700,
     fuel_burn_kgph: 2000,
-    price_acs_usd: 3500000,
+    price_acs_usd: 1000000,
     engines: "Wright R-3350",
     required_runway_m: 1750
   },
@@ -3216,7 +3216,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 300,
     mtow_kg: 49300,
     fuel_burn_kgph: 2400,
-    price_acs_usd: 3800000,
+    price_acs_usd: 1200000,
     engines: "Wright R-3350",
     required_runway_m: 1800
   },
@@ -3229,7 +3229,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 305,
     mtow_kg: 51300,
     fuel_burn_kgph: 2550,
-    price_acs_usd: 4200000,
+    price_acs_usd: 1400000,
     engines: "Wright R-3350",
     required_runway_m: 1850
   },
@@ -3244,7 +3244,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 200,
     mtow_kg: 15500,
     fuel_burn_kgph: 900,
-    price_acs_usd: 900000,
+    price_acs_usd: 315000,
     engines: "Wright R-1820",
     required_runway_m: 1250
   },
@@ -3259,7 +3259,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 315,
     mtow_kg: 63200,
     fuel_burn_kgph: 3000,
-    price_acs_usd: 4800000,
+    price_acs_usd: 1450000,
     engines: "Wright R-3350",
     required_runway_m: 2050
   },
@@ -3272,7 +3272,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 310,
     mtow_kg: 70000,
     fuel_burn_kgph: 3200,
-    price_acs_usd: 5200000,
+    price_acs_usd: 1550000,
     engines: "Wright R-3350",
     required_runway_m: 2100
   },
@@ -3285,7 +3285,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 335,
     mtow_kg: 74000,
     fuel_burn_kgph: 3400,
-    price_acs_usd: 5800000,
+    price_acs_usd: 1750000,
     engines: "Wright R-3350",
     required_runway_m: 2150
   },
@@ -3298,7 +3298,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 540,
     mtow_kg: 123000,
     fuel_burn_kgph: 6500,
-    price_acs_usd: 16000000,
+    price_acs_usd: 4300000,
     engines: "JT3C",
     required_runway_m: 3450
   },
@@ -3311,7 +3311,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 560,
     mtow_kg: 151000,
     fuel_burn_kgph: 7200,
-    price_acs_usd: 18500000,
+    price_acs_usd: 5500000,
     engines: "JT4A",
     required_runway_m: 3450
   },
@@ -3324,7 +3324,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 545,
     mtow_kg: 120000,
     fuel_burn_kgph: 6800,
-    price_acs_usd: 15500000,
+    price_acs_usd: 5200000,
     engines: "JT3C",
     required_runway_m: 3250
   },
@@ -3339,7 +3339,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 565,
     mtow_kg: 147000,
     fuel_burn_kgph: 6900,
-    price_acs_usd: 17500000,
+    price_acs_usd: 5950000,
     engines: "JT3D",
     required_runway_m: 3350
   },
@@ -3354,7 +3354,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 510,
     mtow_kg: 51000,
     fuel_burn_kgph: 4700,
-    price_acs_usd: 11000000,
+    price_acs_usd: 3300000,
     engines: "RR Avon",
     required_runway_m: 2450
   },
@@ -3369,7 +3369,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 470,
     mtow_kg: 37500,
     fuel_burn_kgph: 3200,
-    price_acs_usd: 9000000,
+    price_acs_usd: 3050000,
     engines: "RR Spey",
     required_runway_m: 1700
   },
@@ -3384,7 +3384,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 250,
     mtow_kg: 20000,
     fuel_burn_kgph: 900,
-    price_acs_usd: 3500000,
+    price_acs_usd: 1050000,
     engines: "RR Dart",
     required_runway_m: 1150
   },
@@ -3399,7 +3399,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 265,
     mtow_kg: 23000,
     fuel_burn_kgph: 1050,
-    price_acs_usd: 3800000,
+    price_acs_usd: 1300000,
     engines: "RR Dart",
     required_runway_m: 1250
   },
@@ -3412,7 +3412,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 540,
     mtow_kg: 77000,
     fuel_burn_kgph: 5100,
-    price_acs_usd: 14500000,
+    price_acs_usd: 4300000,
     engines: "JT8D",
     required_runway_m: 2150
   },
@@ -3425,7 +3425,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 515,
     mtow_kg: 50000,
     fuel_burn_kgph: 3800,
-    price_acs_usd: 11000000,
+    price_acs_usd: 3700000,
     engines: "JT8D",
     required_runway_m: 1850
   },
@@ -3438,7 +3438,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 520,
     mtow_kg: 52000,
     fuel_burn_kgph: 4000,
-    price_acs_usd: 12500000,
+    price_acs_usd: 4200000,
     engines: "JT8D",
     required_runway_m: 1850
   },
@@ -3453,7 +3453,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 555,
     mtow_kg: 333000,
     fuel_burn_kgph: 22000,
-    price_acs_usd: 35000000,
+    price_acs_usd: 24000000,
     engines: "JT9D",
     required_runway_m: 3550
   },
@@ -3466,7 +3466,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 560,
     mtow_kg: 378000,
     fuel_burn_kgph: 23000,
-    price_acs_usd: 38000000,
+    price_acs_usd: 39000000,
     engines: "JT9D",
     required_runway_m: 3550
   },
@@ -3479,7 +3479,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 540,
     mtow_kg: 240000,
     fuel_burn_kgph: 15500,
-    price_acs_usd: 29000000,
+    price_acs_usd: 20000000,
     engines: "GE CF6-6",
     required_runway_m: 3350
   },
@@ -3492,7 +3492,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 540,
     mtow_kg: 231000,
     fuel_burn_kgph: 15000,
-    price_acs_usd: 30000000,
+    price_acs_usd: 20000000,
     engines: "RR RB211",
     required_runway_m: 3200
   },
@@ -3505,7 +3505,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 510,
     mtow_kg: 142000,
     fuel_burn_kgph: 9000,
-    price_acs_usd: 25000000,
+    price_acs_usd: 20000000,
     engines: "GE CF6-50",
     required_runway_m: 2750
   },
@@ -3533,7 +3533,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 500,
     mtow_kg: 164000,
     fuel_burn_kgph: 8800,
-    price_acs_usd: 32000000,
+    price_acs_usd: 52000000,
     engines: "GE CF6-80C2",
     required_runway_m: 2600
   },
@@ -3546,7 +3546,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 480,
     mtow_kg: 63000,
     fuel_burn_kgph: 3500,
-    price_acs_usd: 21000000,
+    price_acs_usd: 19000000,
     engines: "JT8D-200",
     required_runway_m: 2300
   },
@@ -3559,7 +3559,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 485,
     mtow_kg: 68000,
     fuel_burn_kgph: 3600,
-    price_acs_usd: 22500000,
+    price_acs_usd: 21000000,
     engines: "JT8D-217",
     required_runway_m: 1850
   },
@@ -3572,7 +3572,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 490,
     mtow_kg: 62000,
     fuel_burn_kgph: 3400,
-    price_acs_usd: 23000000,
+    price_acs_usd: 22500000,
     engines: "CFM56-3",
     required_runway_m: 1800
   },
@@ -3585,7 +3585,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 490,
     mtow_kg: 68000,
     fuel_burn_kgph: 3550,
-    price_acs_usd: 24000000,
+    price_acs_usd: 30000000,
     engines: "CFM56-3",
     required_runway_m: 1850
   },
@@ -3598,7 +3598,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 495,
     mtow_kg: 115000,
     fuel_burn_kgph: 5200,
-    price_acs_usd: 35000000,
+    price_acs_usd: 42000000,
     engines: "RB211-535",
     required_runway_m: 2500
   },
@@ -3611,7 +3611,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 510,
     mtow_kg: 135000,
     fuel_burn_kgph: 7000,
-    price_acs_usd: 42000000,
+    price_acs_usd: 48000000,
     engines: "JT9D-7R4",
     required_runway_m: 2500
   },
@@ -3624,7 +3624,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 510,
     mtow_kg: 158000,
     fuel_burn_kgph: 7600,
-    price_acs_usd: 51000000,
+    price_acs_usd: 67000000,
     engines: "CF6-80C2",
     required_runway_m: 2550
   },
@@ -3639,7 +3639,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 465,
     mtow_kg: 28500,
     fuel_burn_kgph: 2800,
-    price_acs_usd: 8500000,
+    price_acs_usd: 2900000,
     engines: "RR Spey",
     required_runway_m: 1500
   },
@@ -3654,7 +3654,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 470,
     mtow_kg: 38000,
     fuel_burn_kgph: 3000,
-    price_acs_usd: 12000000,
+    price_acs_usd: 9850000,
     engines: "RR Tay",
     required_runway_m: 2000
   },
@@ -3667,7 +3667,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 475,
     mtow_kg: 45000,
     fuel_burn_kgph: 3200,
-    price_acs_usd: 14000000,
+    price_acs_usd: 11500000,
     engines: "RR Tay",
     required_runway_m: 2100
   },
@@ -3682,7 +3682,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 515,
     mtow_kg: 65000,
     fuel_burn_kgph: 2600,
-    price_acs_usd: 48000000,
+    price_acs_usd: 37500000,
     engines: "CFM56-7B",
     required_runway_m: 1800
   },
@@ -3695,7 +3695,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 515,
     mtow_kg: 70000,
     fuel_burn_kgph: 2700,
-    price_acs_usd: 56000000,
+    price_acs_usd: 43500000,
     engines: "CFM56-7B",
     required_runway_m: 1850
   },
@@ -3708,7 +3708,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 515,
     mtow_kg: 79000,
     fuel_burn_kgph: 2900,
-    price_acs_usd: 68000000,
+    price_acs_usd: 53000000,
     engines: "CFM56-7B",
     required_runway_m: 2000
   },
@@ -3738,7 +3738,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 567,
     mtow_kg: 396900,
     fuel_burn_kgph: 25000,
-    price_acs_usd: 180000000,
+    price_acs_usd: 156000000,
     engines: "PW4062 / RB211 / CF6-80",
     required_runway_m: 3650
   },
@@ -3753,7 +3753,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 470,
     mtow_kg: 123000,
     fuel_burn_kgph: 5600,
-    price_acs_usd: 80000000,
+    price_acs_usd: 62500000,
     engines: "RB211-535E4",
     required_runway_m: 2500
   },
@@ -3783,7 +3783,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 560,
     mtow_kg: 247000,
     fuel_burn_kgph: 9000,
-    price_acs_usd: 150000000,
+    price_acs_usd: 130000000,
     engines: "PW4077 / GE90-77",
     required_runway_m: 3100
   },
@@ -3796,7 +3796,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 560,
     mtow_kg: 263000,
     fuel_burn_kgph: 11000,
-    price_acs_usd: 180000000,
+    price_acs_usd: 167000000,
     engines: "GE90-92B",
     required_runway_m: 3100
   },
@@ -3811,7 +3811,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 480,
     mtow_kg: 68000,
     fuel_burn_kgph: 2600,
-    price_acs_usd: 59000000,
+    price_acs_usd: 56000000,
     engines: "CFM56-5B",
     required_runway_m: 1850
   },
@@ -3826,7 +3826,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 480,
     mtow_kg: 75500,
     fuel_burn_kgph: 2700,
-    price_acs_usd: 72000000,
+    price_acs_usd: 45000000,
     engines: "CFM56-5B",
     required_runway_m: 1900
   },
@@ -3841,7 +3841,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 480,
     mtow_kg: 77000,
     fuel_burn_kgph: 2900,
-    price_acs_usd: 80000000,
+    price_acs_usd: 40000000,
     engines: "CFM56-5B",
     required_runway_m: 1900
   },
@@ -3856,7 +3856,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 480,
     mtow_kg: 89000,
     fuel_burn_kgph: 3100,
-    price_acs_usd: 95000000,
+    price_acs_usd: 56000000,
     engines: "CFM56-5B",
     required_runway_m: 2050
   },
@@ -3869,7 +3869,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 517,
     mtow_kg: 230000,
     fuel_burn_kgph: 8600,
-    price_acs_usd: 185000000,
+    price_acs_usd: 120000000,
     engines: "Trent 700",
     required_runway_m: 3000
   },
@@ -3882,7 +3882,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 517,
     mtow_kg: 242000,
     fuel_burn_kgph: 9000,
-    price_acs_usd: 200000000,
+    price_acs_usd: 130000000,
     engines: "Trent 700",
     required_runway_m: 3000
   },
@@ -3895,7 +3895,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 520,
     mtow_kg: 285000,
     fuel_burn_kgph: 10200,
-    price_acs_usd: 135000000,
+    price_acs_usd: 132000000,
     engines: "GE CF6-80C2",
     required_runway_m: 3450
   },
@@ -3908,7 +3908,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 450,
     mtow_kg: 21500,
     fuel_burn_kgph: 1600,
-    price_acs_usd: 24000000,
+    price_acs_usd: 18500000,
     engines: "GE CF34-3A1",
     required_runway_m: 1300
   },
@@ -3921,7 +3921,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 450,
     mtow_kg: 24000,
     fuel_burn_kgph: 1650,
-    price_acs_usd: 27000000,
+    price_acs_usd: 21000000,
     engines: "GE CF34-3B1",
     required_runway_m: 1300
   },
@@ -3934,7 +3934,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 470,
     mtow_kg: 35000,
     fuel_burn_kgph: 2100,
-    price_acs_usd: 32000000,
+    price_acs_usd: 25000000,
     engines: "GE CF34-8C1",
     required_runway_m: 1450
   },
@@ -3977,7 +3977,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 300,
     mtow_kg: 18500,
     fuel_burn_kgph: 1200,
-    price_acs_usd: 18000000,
+    price_acs_usd: 14000000,
     engines: "PW120",
     required_runway_m: 1150
   },
@@ -3990,7 +3990,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 300,
     mtow_kg: 22500,
     fuel_burn_kgph: 1300,
-    price_acs_usd: 24000000,
+    price_acs_usd: 18500000,
     engines: "PW127",
     required_runway_m: 1250
   },
@@ -4003,7 +4003,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 430,
     mtow_kg: 20500,
     fuel_burn_kgph: 1500,
-    price_acs_usd: 21000000,
+    price_acs_usd: 16500000,
     engines: "RR AE3007",
     required_runway_m: 1250
   },
@@ -4016,7 +4016,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 430,
     mtow_kg: 22500,
     fuel_burn_kgph: 1600,
-    price_acs_usd: 24000000,
+    price_acs_usd: 18500000,
     engines: "RR AE3007",
     required_runway_m: 1300
   },
@@ -4059,7 +4059,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 470,
     mtow_kg: 103000,
     fuel_burn_kgph: 5200,
-    price_acs_usd: 35000000,
+    price_acs_usd: 28500000,
     engines: "PS-90A",
     required_runway_m: 2500
   },
@@ -4074,7 +4074,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 480,
     mtow_kg: 250000,
     fuel_burn_kgph: 10500,
-    price_acs_usd: 85000000,
+    price_acs_usd: 66500000,
     engines: "PS-90A",
     required_runway_m: 3050
   },
@@ -4089,7 +4089,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 450,
     mtow_kg: 79000,
     fuel_burn_kgph: 2100,
-    price_acs_usd: 49500000,
+    price_acs_usd: 95500000,
     engines: "PW1127G-JM / LEAP-1A",
     required_runway_m: 1800
   },
@@ -4102,7 +4102,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 450,
     mtow_kg: 89000,
     fuel_burn_kgph: 2300,
-    price_acs_usd: 56500000,
+    price_acs_usd: 115000000,
     engines: "PW1130G-JM / LEAP-1A",
     required_runway_m: 1900
   },
@@ -4115,7 +4115,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 450,
     mtow_kg: 97000,
     fuel_burn_kgph: 2400,
-    price_acs_usd: 61000000,
+    price_acs_usd: 129000000,
     engines: "LEAP-1A32",
     required_runway_m: 2100
   },
@@ -4130,7 +4130,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 450,
     mtow_kg: 101000,
     fuel_burn_kgph: 2350,
-    price_acs_usd: 68500000,
+    price_acs_usd: 142000000,
     engines: "LEAP-1A35",
     required_runway_m: 2500
   },
@@ -4214,7 +4214,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 450,
     mtow_kg: 60000,
     fuel_burn_kgph: 1600,
-    price_acs_usd: 82000000,
+    price_acs_usd: 81000000,
     engines: "PW1500G",
     required_runway_m: 1650
   },
@@ -4227,7 +4227,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 450,
     mtow_kg: 69000,
     fuel_burn_kgph: 1700,
-    price_acs_usd: 89000000,
+    price_acs_usd: 91500000,
     engines: "PW1500G",
     required_runway_m: 1750
   },
@@ -4257,7 +4257,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 470,
     mtow_kg: 80100,
     fuel_burn_kgph: 2050,
-    price_acs_usd: 61500000,
+    price_acs_usd: 99600000,
     engines: "LEAP-1B",
     required_runway_m: 2000
   },
@@ -4270,7 +4270,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 470,
     mtow_kg: 82000,
     fuel_burn_kgph: 2150,
-    price_acs_usd: 65500000,
+    price_acs_usd: 121600000,
     engines: "LEAP-1B",
     required_runway_m: 2000
   },
@@ -4283,7 +4283,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 470,
     mtow_kg: 88000,
     fuel_burn_kgph: 2200,
-    price_acs_usd: 70000000,
+    price_acs_usd: 128900000,
     engines: "LEAP-1B",
     required_runway_m: 2050
   },
@@ -4298,7 +4298,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 470,
     mtow_kg: 89200,
     fuel_burn_kgph: 2250,
-    price_acs_usd: 75000000,
+    price_acs_usd: 134900000,
     engines: "LEAP-1B",
     required_runway_m: 2050
   },
@@ -4313,7 +4313,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 488,
     mtow_kg: 228000,
     fuel_burn_kgph: 6200,
-    price_acs_usd: 227000000,
+    price_acs_usd: 206800000,
     engines: "GEnx-1B",
     required_runway_m: 2900
   },
@@ -4326,7 +4326,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 488,
     mtow_kg: 254000,
     fuel_burn_kgph: 6800,
-    price_acs_usd: 264000000,
+    price_acs_usd: 249500000,
     engines: "GEnx-1B",
     required_runway_m: 2900
   },
@@ -4339,7 +4339,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 488,
     mtow_kg: 254000,
     fuel_burn_kgph: 7100,
-    price_acs_usd: 306000000,
+    price_acs_usd: 297500000,
     engines: "GEnx-1B",
     required_runway_m: 2900
   },
@@ -4427,7 +4427,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 276,
     mtow_kg: 23000,
     fuel_burn_kgph: 780,
-    price_acs_usd: 21500000,
+    price_acs_usd: 26000000,
     engines: "PW127M",
     required_runway_m: 1250
   },
@@ -4524,7 +4524,7 @@ const ACS_AIRCRAFT_DB = [
     speed_kts: 450,
     mtow_kg: 72500,
     fuel_burn_kgph: 2300,
-    price_acs_usd: 65000000,
+    price_acs_usd: 99000000,
     engines: "LEAP-1C",
     required_runway_m: 1850
   },
