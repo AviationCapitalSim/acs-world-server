@@ -179,6 +179,7 @@ router.get(
           route.updated_at,
 
           fleet.aircraft_uid,
+          fleet.model_key AS fleet_model_key,
           fleet.manufacturer AS fleet_manufacturer,
           fleet.aircraft_name AS fleet_aircraft_name,
           fleet.status AS aircraft_status,
@@ -189,6 +190,7 @@ router.get(
           fleet.current_airport,
 
           catalog.manufacturer AS catalog_manufacturer,
+          catalog.model_key AS catalog_model_key,
           catalog.model AS catalog_model,
           catalog.aircraft_name AS catalog_aircraft_name,
           catalog.seats AS catalog_seats,
@@ -229,7 +231,9 @@ router.get(
          AND fleet.airline_id = route.airline_id
 
         LEFT JOIN public.aircraft_catalog catalog
-          ON catalog.model_key = route.model_key
+        ON LOWER(catalog.model_key) = LOWER(
+        COALESCE(fleet.model_key, route.model_key)
+        )
 
         CROSS JOIN LATERAL
           public.acs_calculate_passenger_demand(
