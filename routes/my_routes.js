@@ -591,7 +591,10 @@ router.get(
                 : ACS_MR_integer(row.aircraft_id),
             aircraft_uid: row.aircraft_uid || null,
             registration: row.registration || null,
-            model_key: row.model_key,
+            model_key:
+            row.catalog_model_key ||
+            row.fleet_model_key ||
+            row.model_key,
             manufacturer:
               row.catalog_manufacturer ||
               row.fleet_manufacturer ||
