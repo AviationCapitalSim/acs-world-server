@@ -149,6 +149,30 @@ router.get(
         });
       }
 
+      const airlineResult = await client.query(
+  `
+  SELECT
+    airline_id,
+    airline_name,
+    iata,
+    icao,
+    color_hex
+  FROM public.airlines
+  WHERE airline_id = $1
+  LIMIT 1
+  `,
+  [airlineId]
+);
+
+const airline = airlineResult.rows[0] || null;
+
+if (!airline) {
+  return res.status(404).json({
+    ok: false,
+    error: "AIRLINE_NOT_FOUND"
+  });
+}
+     
       const routeResult = await client.query(
         `
         WITH clock AS MATERIALIZED (
