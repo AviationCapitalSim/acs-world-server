@@ -28,6 +28,7 @@ import aircraftRoutes, {
 import factoryRoutes from "./routes/factory.js";
 import cabinPresetsRoutes from "./routes/cabin_presets.js";
 import routePlanRoutes from "./routes/route_plans.js";
+import myRoutesOccRoutes from "./routes/my_routes.js";
 import airportsRoutes from "./routes/airports.js";
 import skytrackRoutes from "./routes/skytrack.js";
 import skytrackGlobalRoutes
@@ -361,6 +362,7 @@ app.use("/v1/skytrack", skytrackSnapshotRoutes);
 app.use("/v1", aircraftRoutes);
 app.use("/v1", cabinPresetsRoutes);
 app.use("/v1", routePlanRoutes);
+app.use("/v1", myRoutesOccRoutes);
 app.use("/v1/aircraft/factory", factoryRoutes);
 app.use("/v1", airportsRoutes);
 app.use("/v1", flightSettlementRoutes);
