@@ -693,8 +693,15 @@ if (!airline) {
         version: "v1.0",
         authority: "POSTGRESQL_MY_ROUTES_OCC",
         current_sim_time: currentSimTime,
-        airline_id: airlineId,
-        summary: {
+airline_id: airlineId,
+airline: {
+  airline_id: ACS_MR_integer(airline.airline_id),
+  airline_name: airline.airline_name || null,
+  iata: airline.iata || null,
+  icao: airline.icao || null,
+  color_hex: airline.color_hex || null
+},
+summary: {
           active_routes: routes.length,
           ...ACS_MR_buildTrend(
             summaryCurrent,
