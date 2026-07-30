@@ -1515,39 +1515,33 @@ router.get(
       }
 
       const fareResult = await client.query(
-        `
-        SELECT resolved.*
-        FROM public.acs_historical_fare_rules fare_rule
+  `
+  SELECT resolved.*
+  FROM public.acs_historical_fare_rules fare_rule
 
-        INNER JOIN public.acs_economic_periods economic_period
-          ON economic_period.period_code = fare_rule.period_code
+  CROSS JOIN LATERAL
+    public.acs_resolve_route_fare(
+      $1,
+      $2,
+      fare_rule.service_class,
+      $3::timestamp
+    ) resolved
 
-        CROSS JOIN LATERAL
-          public.acs_resolve_route_fare(
-            $1,
-            $2,
-            fare_rule.service_class,
-            $3::timestamp
-          ) resolved
+  WHERE fare_rule.is_active = true
+    AND EXTRACT(YEAR FROM $3::timestamp)::integer
+      BETWEEN fare_rule.effective_from_year
+          AND fare_rule.effective_to_year
 
-        WHERE fare_rule.is_active = true
-          AND EXTRACT(YEAR FROM $3::timestamp)::integer
-            BETWEEN fare_rule.effective_from_year
-                AND fare_rule.effective_to_year
-          AND EXTRACT(YEAR FROM $3::timestamp)::integer
-            BETWEEN economic_period.start_year
-                AND economic_period.end_year
-
-        ORDER BY
-          CASE fare_rule.service_class
-            WHEN 'Y' THEN 1
-            WHEN 'C' THEN 2
-            WHEN 'F' THEN 3
-            ELSE 4
-          END
-        `,
-        [airlineId, routePlanId, currentSimTime]
-      );
+  ORDER BY
+    CASE fare_rule.service_class
+      WHEN 'Y' THEN 1
+      WHEN 'C' THEN 2
+      WHEN 'F' THEN 3
+      ELSE 4
+    END
+  `,
+  [airlineId, routePlanId, currentSimTime]
+);
 
       return res.json({
         ok: true,
