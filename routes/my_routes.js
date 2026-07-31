@@ -1085,6 +1085,292 @@ router.get(
 );
 
 /* ============================================================
+   GET /v1/routes/my-routes-occ/fares/global
+   ------------------------------------------------------------
+   Returns the authenticated airline-wide Y/C/F fare controls
+   and the historical fare range across its active routes.
+   ============================================================ */
+
+router.get(
+  "/routes/my-routes-occ/fares/global",
+  requireAuth,
+  async (req, res) => {
+    const airlineId = Number(req.airline_id);
+
+    if (!Number.isInteger(airlineId) || airlineId <= 0) {
+      return res.status(401).json({
+        ok: false,
+        error: "NO_AIRLINE_SESSION"
+      });
+    }
+
+    const client = await pool.connect();
+
+    try {
+      const clockResult = await client.query(`
+        SELECT acs_get_current_sim_time() AS current_sim_time
+      `);
+
+      const currentSimTime =
+        clockResult.rows[0]?.current_sim_time || null;
+
+      if (!currentSimTime) {
+        return res.status(503).json({
+          ok: false,
+          error: "ACS_TIME_AUTHORITY_UNAVAILABLE"
+        });
+      }
+
+      const fareResult = await client.query(
+        `
+        WITH current_rules AS MATERIALIZED (
+          SELECT DISTINCT ON (fare.service_class)
+            fare.service_class,
+            period.period_code,
+            fare.base_yield_usd_per_pax_nm,
+            fare.class_multiplier
+          FROM public.acs_historical_fare_rules fare
+          INNER JOIN public.acs_economic_periods period
+            ON period.id = fare.period_id
+          WHERE fare.is_active = true
+            AND EXTRACT(YEAR FROM $2::timestamp)::integer
+              BETWEEN fare.effective_from_year
+                  AND fare.effective_to_year
+            AND EXTRACT(YEAR FROM $2::timestamp)::integer
+              BETWEEN period.era_start_year
+                  AND period.era_end_year
+          ORDER BY
+            fare.service_class,
+            fare.effective_from_year DESC,
+            fare.id DESC
+        ),
+        latest_adjustments AS MATERIALIZED (
+          SELECT DISTINCT ON (history.service_class)
+            history.service_class,
+            history.id AS adjustment_record_id,
+            history.previous_adjustment_percent,
+            history.adjustment_percent,
+            history.effective_from_sim_time,
+            history.changed_at_sim_time,
+            history.changed_by_user_id
+          FROM public.acs_fare_adjustment_history history
+          WHERE history.airline_id = $1
+            AND history.adjustment_scope = 'AIRLINE'
+            AND history.route_plan_id IS NULL
+            AND history.effective_from_sim_time <= $2::timestamp
+          ORDER BY
+            history.service_class,
+            history.effective_from_sim_time DESC,
+            history.id DESC
+        ),
+        route_references AS MATERIALIZED (
+          SELECT
+            rule.service_class,
+            ROUND(
+              route.distance_nm::numeric
+              * rule.base_yield_usd_per_pax_nm
+              * rule.class_multiplier,
+              2
+            ) AS reference_fare_usd
+          FROM current_rules rule
+          INNER JOIN public.route_plans route
+            ON route.airline_id = $1
+           AND COALESCE(route.distance_nm, 0) > 0
+           AND UPPER(COALESCE(route.route_state, 'ACTIVE')) = 'ACTIVE'
+           AND UPPER(COALESCE(route.route_type, 'PASSENGER')) = 'PASSENGER'
+        )
+        SELECT
+          rule.service_class,
+          rule.period_code,
+          rule.base_yield_usd_per_pax_nm,
+          rule.class_multiplier,
+          COALESCE(adjustment.previous_adjustment_percent, 0)
+            AS previous_adjustment_percent,
+          COALESCE(adjustment.adjustment_percent, 0)
+            AS current_adjustment_percent,
+          adjustment.adjustment_record_id,
+          adjustment.effective_from_sim_time,
+          adjustment.changed_at_sim_time,
+          adjustment.changed_by_user_id,
+          MIN(reference.reference_fare_usd)
+            AS reference_min_fare_usd,
+          MAX(reference.reference_fare_usd)
+            AS reference_max_fare_usd,
+          ROUND(
+            MIN(reference.reference_fare_usd)
+            * (
+                1
+                + COALESCE(adjustment.adjustment_percent, 0) / 100
+              ),
+            2
+          ) AS current_min_fare_usd,
+          ROUND(
+            MAX(reference.reference_fare_usd)
+            * (
+                1
+                + COALESCE(adjustment.adjustment_percent, 0) / 100
+              ),
+            2
+          ) AS current_max_fare_usd
+        FROM current_rules rule
+        LEFT JOIN latest_adjustments adjustment
+          ON adjustment.service_class = rule.service_class
+        LEFT JOIN route_references reference
+          ON reference.service_class = rule.service_class
+        GROUP BY
+          rule.service_class,
+          rule.period_code,
+          rule.base_yield_usd_per_pax_nm,
+          rule.class_multiplier,
+          adjustment.previous_adjustment_percent,
+          adjustment.adjustment_percent,
+          adjustment.adjustment_record_id,
+          adjustment.effective_from_sim_time,
+          adjustment.changed_at_sim_time,
+          adjustment.changed_by_user_id
+        ORDER BY
+          CASE rule.service_class
+            WHEN 'Y' THEN 1
+            WHEN 'C' THEN 2
+            WHEN 'F' THEN 3
+            ELSE 4
+          END
+        `,
+        [airlineId, currentSimTime]
+      );
+
+      return res.json({
+        ok: true,
+        endpoint: "AIRLINE_TICKET_CONTROL",
+        authority: "POSTGRESQL_HISTORICAL_FARE_AUTHORITY",
+        current_sim_time: currentSimTime,
+        airline_id: airlineId,
+        fares: fareResult.rows,
+        count: fareResult.rows.length
+      });
+    } catch (error) {
+      console.error("AIRLINE TICKET CONTROL READ ERROR:", error);
+
+      return res.status(500).json({
+        ok: false,
+        error: "AIRLINE_TICKET_CONTROL_QUERY_FAILED",
+        details: error.message
+      });
+    } finally {
+      client.release();
+    }
+  }
+);
+
+/* ============================================================
+   POST /v1/routes/my-routes-occ/fares/global
+   ------------------------------------------------------------
+   Saves authenticated airline-wide Y/C/F adjustments.
+   Each value must be a whole percentage from -20 to +20.
+   ============================================================ */
+
+router.post(
+  "/routes/my-routes-occ/fares/global",
+  requireAuth,
+  async (req, res) => {
+    const airlineId = Number(req.airline_id);
+    const changedByUserId = req.user_id || null;
+    const adjustments = req.body?.adjustments;
+
+    if (!Number.isInteger(airlineId) || airlineId <= 0) {
+      return res.status(401).json({
+        ok: false,
+        error: "NO_AIRLINE_SESSION"
+      });
+    }
+
+    if (!adjustments || typeof adjustments !== "object") {
+      return res.status(400).json({
+        ok: false,
+        error: "GLOBAL_FARE_ADJUSTMENTS_REQUIRED"
+      });
+    }
+
+    const classes = ["Y", "C", "F"];
+    const values = {};
+
+    for (const serviceClass of classes) {
+      const value = Number(adjustments[serviceClass]);
+
+      if (
+        !Number.isInteger(value) ||
+        value < -20 ||
+        value > 20
+      ) {
+        return res.status(400).json({
+          ok: false,
+          error: "INVALID_GLOBAL_FARE_ADJUSTMENT",
+          service_class: serviceClass
+        });
+      }
+
+      values[serviceClass] = value;
+    }
+
+    const client = await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      const saved = [];
+
+      for (const serviceClass of classes) {
+        const result = await client.query(
+          `
+          SELECT *
+          FROM public.acs_record_fare_adjustment(
+            $1,
+            NULL,
+            'AIRLINE',
+            $2,
+            $3,
+            $4,
+            'AIRLINE TICKET CONTROL'
+          )
+          `,
+          [
+            airlineId,
+            serviceClass,
+            values[serviceClass],
+            changedByUserId
+          ]
+        );
+
+        saved.push(result.rows[0]);
+      }
+
+      await client.query("COMMIT");
+
+      return res.json({
+        ok: true,
+        endpoint: "AIRLINE_TICKET_CONTROL_SAVE",
+        authority: "POSTGRESQL_FARE_ADJUSTMENT_AUTHORITY",
+        airline_id: airlineId,
+        saved,
+        count: saved.length
+      });
+    } catch (error) {
+      await client.query("ROLLBACK");
+
+      console.error("AIRLINE TICKET CONTROL SAVE ERROR:", error);
+
+      return res.status(400).json({
+        ok: false,
+        error: "AIRLINE_TICKET_CONTROL_SAVE_REJECTED",
+        details: error.message
+      });
+    } finally {
+      client.release();
+    }
+  }
+);
+
+/* ============================================================
    GET /v1/routes/my-routes-occ/:routePlanId/fares
    ------------------------------------------------------------
    Reads the historical reference fare and the currently
