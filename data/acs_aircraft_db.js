@@ -2511,19 +2511,7 @@ const ACS_AIRCRAFT_DB = [
   },
 
   // 1960s
-  {
-    manufacturer: "Sikorsky",
-    model: "S-64 Skycrane",
-    year: 1962,
-    seats: 2,
-    range_nm: 200,
-    speed_kts: 100,
-    mtow_kg: 19000,
-    fuel_burn_kgph: 1100,
-    price_acs_usd: 8150000,
-    engines: "Pratt & Whitney JFTD12A",
-    required_runway_m: 0
-  },
+  
   {
     manufacturer: "Mil",
     model: "Mi-2",
