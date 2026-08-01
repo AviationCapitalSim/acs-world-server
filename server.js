@@ -55,6 +55,9 @@ import {
 import {
   ACS_runFinanceMonthlyCloseRuntime
 } from "./services/acs_finance_runtime.js";
+import {
+  ACS_runFactoryCapacityRuntime
+} from "./services/acs_factory_capacity_runtime.js";
 
 dotenv.config();
 
@@ -192,6 +195,25 @@ registerACSRuntimeJobHandler(
   async () => {
     const result =
       await ACS_runFinanceMonthlyCloseRuntime();
+
+    return {
+      processedCount:
+        Number(result?.processedCount || 0)
+    };
+  }
+);
+
+registerACSRuntimeJobHandler(
+  "FACTORY_CAPACITY",
+  async ({ job, simTime }) => {
+    const result =
+      await ACS_runFactoryCapacityRuntime({
+        simTime,
+        horizonYears:
+          Number(job?.config?.horizon_years) || 10,
+        minimumHorizonYear:
+          Number(job?.config?.minimum_horizon_year) || 2035
+      });
 
     return {
       processedCount:
@@ -427,4 +449,3 @@ process.on("SIGTERM", () => {
 process.on("SIGINT", () => {
   ACS_shutdown("SIGINT");
 });
-
