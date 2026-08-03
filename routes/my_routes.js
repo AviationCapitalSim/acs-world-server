@@ -119,6 +119,39 @@ function ACS_MR_normalizeDemand(row, prefix) {
   };
 }
 
+function ACS_MR_allocatePassengerRevenue(row) {
+  const totalRevenue = Math.max(
+    0,
+    ACS_MR_integer(row?.total_revenue)
+  );
+  const weightY = Math.max(0, ACS_MR_number(row?.weight_y));
+  const weightC = Math.max(0, ACS_MR_number(row?.weight_c));
+  const weightF = Math.max(0, ACS_MR_number(row?.weight_f));
+  const totalWeight = weightY + weightC + weightF;
+
+  if (totalRevenue <= 0 || totalWeight <= 0) {
+    return { y: 0, c: 0, f: 0 };
+  }
+
+  let revenueF = Math.floor(totalRevenue * weightF / totalWeight);
+  let revenueC = Math.floor(totalRevenue * weightC / totalWeight);
+  let revenueY = 0;
+
+  if (weightY > 0) {
+    revenueY = Math.max(0, totalRevenue - revenueC - revenueF);
+  } else if (weightC > 0) {
+    revenueC = Math.max(0, totalRevenue - revenueF);
+  } else {
+    revenueF = totalRevenue;
+  }
+
+  return {
+    y: revenueY,
+    c: revenueC,
+    f: revenueF
+  };
+}
+
 router.get(
   "/routes/my-routes-occ",
   requireAuth,
@@ -396,6 +429,101 @@ if (!airline) {
         [airlineId, currentSimTime]
       );
 
+      const classRevenueResult = await client.query(
+        `
+        WITH clock AS MATERIALIZED (
+          SELECT $2::timestamp AS sim_time
+        ),
+        occurrence_weights AS MATERIALIZED (
+          SELECT
+            occurrence.id AS occurrence_id,
+            occurrence.route_plan_id,
+            MAX(COALESCE(occurrence.settled_revenue, 0))::numeric
+              AS settled_revenue,
+            COALESCE(SUM(
+              passenger.passengers
+              * GREATEST(COALESCE(fare.final_fare_usd, 1), 1)
+            ) FILTER (
+              WHERE passenger.service_class = 'Y'
+            ), 0)::numeric AS weight_y,
+            COALESCE(SUM(
+              passenger.passengers
+              * GREATEST(COALESCE(fare.final_fare_usd, 1), 1)
+            ) FILTER (
+              WHERE passenger.service_class = 'C'
+            ), 0)::numeric AS weight_c,
+            COALESCE(SUM(
+              passenger.passengers
+              * GREATEST(COALESCE(fare.final_fare_usd, 1), 1)
+            ) FILTER (
+              WHERE passenger.service_class = 'F'
+            ), 0)::numeric AS weight_f
+          FROM public.flight_occurrences occurrence
+          CROSS JOIN clock
+          JOIN public.route_plans route
+            ON route.id = occurrence.route_plan_id
+           AND route.airline_id = occurrence.airline_id
+          LEFT JOIN public.acs_passenger_flight_results passenger_result
+            ON passenger_result.occurrence_id = occurrence.id
+          CROSS JOIN LATERAL (
+            VALUES
+              (
+                'Y'::text,
+                COALESCE(
+                  passenger_result.captured_y,
+                  occurrence.settled_passengers,
+                  0
+                )::numeric
+              ),
+              (
+                'C'::text,
+                COALESCE(passenger_result.captured_c, 0)::numeric
+              ),
+              (
+                'F'::text,
+                COALESCE(passenger_result.captured_f, 0)::numeric
+              )
+          ) passenger(service_class, passengers)
+          LEFT JOIN LATERAL (
+            SELECT resolved.final_fare_usd
+            FROM public.acs_resolve_route_fare(
+              occurrence.airline_id,
+              occurrence.route_plan_id,
+              passenger.service_class,
+              occurrence.scheduled_departure_at
+            ) resolved
+            WHERE UPPER(resolved.direction) = UPPER(
+              COALESCE(
+                occurrence.flight_direction,
+                CASE
+                  WHEN UPPER(occurrence.origin) = UPPER(route.origin)
+                    THEN 'OUTBOUND'
+                  ELSE 'RETURN'
+                END
+              )
+            )
+            LIMIT 1
+          ) fare ON true
+          WHERE occurrence.airline_id = $1
+            AND occurrence.arrived_at >= clock.sim_time - INTERVAL '7 days'
+            AND occurrence.arrived_at < clock.sim_time
+            AND occurrence.settled_at IS NOT NULL
+          GROUP BY
+            occurrence.id,
+            occurrence.route_plan_id
+        )
+        SELECT
+          route_plan_id,
+          COALESCE(SUM(settled_revenue), 0)::bigint AS total_revenue,
+          COALESCE(SUM(weight_y), 0)::numeric AS weight_y,
+          COALESCE(SUM(weight_c), 0)::numeric AS weight_c,
+          COALESCE(SUM(weight_f), 0)::numeric AS weight_f
+        FROM occurrence_weights
+        GROUP BY route_plan_id
+        `,
+        [airlineId, currentSimTime]
+      );
+
       const competitorResult = await client.query(
         `
         WITH clock AS MATERIALIZED (
@@ -496,6 +624,15 @@ if (!airline) {
         }
 
         performanceByRoute.get(routeId)[direction] = row;
+      }
+
+      const passengerRevenueByRoute = new Map();
+
+      for (const row of classRevenueResult.rows) {
+        passengerRevenueByRoute.set(
+          String(row.route_plan_id),
+          ACS_MR_allocatePassengerRevenue(row)
+        );
       }
 
       const competitorsByRoute = new Map();
@@ -659,6 +796,16 @@ if (!airline) {
               returnPrevious
             ),
             passenger_data_status: "LEGACY_SETTLEMENT"
+          },
+          route_result: {
+            last_7_days: {
+              net:
+                outboundCurrent.profit
+                + returnCurrent.profit,
+              passenger_revenue:
+                passengerRevenueByRoute.get(routeId)
+                || { y: 0, c: 0, f: 0 }
+            }
           },
           competitors:
             competitorsByRoute.get(routeId) || [],
@@ -1373,8 +1520,8 @@ router.post(
 /* ============================================================
    GET /v1/routes/my-routes-occ/:routePlanId/fares
    ------------------------------------------------------------
-   Reads independent OUTBOUND / RETURN historical fares and
-   route adjustments for Y, C and F.
+   Reads the historical reference fare and the currently
+   applicable manual adjustment for each available cabin class.
    ============================================================ */
 
 router.get(
@@ -1442,40 +1589,37 @@ router.get(
       }
 
       const fareResult = await client.query(
-        `
-        SELECT resolved.*
-        FROM (
-          VALUES
-            ('OUTBOUND'::text, 1),
-            ('RETURN'::text, 2)
-        ) AS fare_direction(direction, direction_order)
+  `
+  SELECT resolved.*
+  FROM public.acs_historical_fare_rules fare_rule
 
-        CROSS JOIN (
-          VALUES
-            ('Y'::text, 1),
-            ('C'::text, 2),
-            ('F'::text, 3)
-        ) AS fare_class(service_class, class_order)
+  CROSS JOIN LATERAL
+    public.acs_resolve_route_fare(
+      $1,
+      $2,
+      fare_rule.service_class,
+      $3::timestamp
+    ) resolved
 
-        CROSS JOIN LATERAL
-          public.acs_resolve_route_direction_fare(
-            $1,
-            $2,
-            fare_direction.direction,
-            fare_class.service_class,
-            $3::timestamp
-          ) resolved
+  WHERE fare_rule.is_active = true
+    AND EXTRACT(YEAR FROM $3::timestamp)::integer
+      BETWEEN fare_rule.effective_from_year
+          AND fare_rule.effective_to_year
 
-        ORDER BY
-          fare_direction.direction_order,
-          fare_class.class_order
-        `,
-        [airlineId, routePlanId, currentSimTime]
-      );
+  ORDER BY
+    CASE fare_rule.service_class
+      WHEN 'Y' THEN 1
+      WHEN 'C' THEN 2
+      WHEN 'F' THEN 3
+      ELSE 4
+    END
+  `,
+  [airlineId, routePlanId, currentSimTime]
+);
 
       return res.json({
         ok: true,
-        endpoint: "ACS_MY_ROUTE_DIRECTION_FARES",
+        endpoint: "ACS_MY_ROUTE_FARES",
         authority: "POSTGRESQL_HISTORICAL_FARE_AUTHORITY",
         current_sim_time: currentSimTime,
         airline_id: airlineId,
@@ -1491,218 +1635,11 @@ router.get(
         count: fareResult.rows.length
       });
     } catch (error) {
-      console.error(
-        "ACS MY ROUTE DIRECTION FARES ERROR:",
-        error
-      );
+      console.error("ACS MY ROUTE FARES ERROR:", error);
 
       return res.status(500).json({
         ok: false,
-        error: "MY_ROUTE_DIRECTION_FARES_QUERY_FAILED",
-        details: error.message
-      });
-    } finally {
-      client.release();
-    }
-  }
-);
-
-/* ============================================================
-   POST /v1/routes/my-routes-occ/:routePlanId/fares
-   ------------------------------------------------------------
-   Saves one or more independent route-direction-class
-   adjustments. Only supplied values are changed.
-   ============================================================ */
-
-router.post(
-  "/routes/my-routes-occ/:routePlanId/fares",
-  requireAuth,
-  async (req, res) => {
-    const airlineId = Number(req.airline_id);
-    const routePlanId = Number(req.params.routePlanId);
-    const changedByUserId = req.user_id || null;
-    const adjustments = req.body?.adjustments;
-
-    if (!Number.isInteger(airlineId) || airlineId <= 0) {
-      return res.status(401).json({
-        ok: false,
-        error: "NO_AIRLINE_SESSION"
-      });
-    }
-
-    if (!Number.isInteger(routePlanId) || routePlanId <= 0) {
-      return res.status(400).json({
-        ok: false,
-        error: "INVALID_ROUTE_PLAN_ID"
-      });
-    }
-
-    if (
-      !adjustments ||
-      typeof adjustments !== "object" ||
-      Array.isArray(adjustments)
-    ) {
-      return res.status(400).json({
-        ok: false,
-        error: "ROUTE_FARE_ADJUSTMENTS_REQUIRED"
-      });
-    }
-
-    const allowedDirections = ["OUTBOUND", "RETURN"];
-    const allowedClasses = ["Y", "C", "F"];
-    const entries = [];
-
-    for (const [direction, classValues] of Object.entries(
-      adjustments
-    )) {
-      if (!allowedDirections.includes(direction)) {
-        return res.status(400).json({
-          ok: false,
-          error: "INVALID_ROUTE_FARE_DIRECTION",
-          direction
-        });
-      }
-
-      if (
-        !classValues ||
-        typeof classValues !== "object" ||
-        Array.isArray(classValues)
-      ) {
-        return res.status(400).json({
-          ok: false,
-          error: "INVALID_ROUTE_FARE_DIRECTION_VALUES",
-          direction
-        });
-      }
-
-      for (const [serviceClass, rawValue] of Object.entries(
-        classValues
-      )) {
-        if (!allowedClasses.includes(serviceClass)) {
-          return res.status(400).json({
-            ok: false,
-            error: "INVALID_ROUTE_FARE_CLASS",
-            direction,
-            service_class: serviceClass
-          });
-        }
-
-        const adjustmentPercent = Number(rawValue);
-
-        if (
-          !Number.isInteger(adjustmentPercent) ||
-          adjustmentPercent < -20 ||
-          adjustmentPercent > 20
-        ) {
-          return res.status(400).json({
-            ok: false,
-            error: "INVALID_ROUTE_FARE_ADJUSTMENT",
-            direction,
-            service_class: serviceClass
-          });
-        }
-
-        entries.push({
-          direction,
-          serviceClass,
-          adjustmentPercent
-        });
-      }
-    }
-
-    if (entries.length === 0) {
-      return res.status(400).json({
-        ok: false,
-        error: "ROUTE_FARE_ADJUSTMENTS_REQUIRED"
-      });
-    }
-
-    const client = await pool.connect();
-
-    try {
-      await client.query("BEGIN");
-
-      const routeResult = await client.query(
-        `
-        SELECT
-          id AS route_plan_id,
-          origin,
-          destination
-        FROM public.route_plans
-        WHERE id = $1
-          AND airline_id = $2
-        LIMIT 1
-        `,
-        [routePlanId, airlineId]
-      );
-
-      const route = routeResult.rows[0] || null;
-
-      if (!route) {
-        await client.query("ROLLBACK");
-
-        return res.status(404).json({
-          ok: false,
-          error: "OWN_ROUTE_NOT_FOUND"
-        });
-      }
-
-      const saved = [];
-
-      for (const entry of entries) {
-        const result = await client.query(
-          `
-          SELECT *
-          FROM public.acs_record_route_direction_fare_adjustment(
-            $1,
-            $2,
-            $3,
-            $4,
-            $5,
-            $6,
-            $7
-          )
-          `,
-          [
-            airlineId,
-            routePlanId,
-            entry.direction,
-            entry.serviceClass,
-            entry.adjustmentPercent,
-            changedByUserId,
-            "ROUTE TICKET PRICE"
-          ]
-        );
-
-        saved.push(result.rows[0]);
-      }
-
-      await client.query("COMMIT");
-
-      return res.json({
-        ok: true,
-        endpoint: "ACS_MY_ROUTE_DIRECTION_FARES_SAVE",
-        authority: "POSTGRESQL_FARE_ADJUSTMENT_AUTHORITY",
-        airline_id: airlineId,
-        route: {
-          route_plan_id: ACS_MR_integer(route.route_plan_id),
-          origin: route.origin || null,
-          destination: route.destination || null
-        },
-        saved,
-        count: saved.length
-      });
-    } catch (error) {
-      await client.query("ROLLBACK");
-
-      console.error(
-        "ACS MY ROUTE DIRECTION FARES SAVE ERROR:",
-        error
-      );
-
-      return res.status(400).json({
-        ok: false,
-        error: "MY_ROUTE_DIRECTION_FARES_SAVE_REJECTED",
+        error: "MY_ROUTE_FARES_QUERY_FAILED",
         details: error.message
       });
     } finally {
