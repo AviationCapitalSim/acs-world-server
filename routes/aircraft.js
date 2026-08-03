@@ -3000,6 +3000,134 @@ router.get("/aircraft/orders", requireAuth, async (req, res) => {
    - No frontend finance mutation
    ============================================================ */
 
+const ACS_ORDER_CABIN_PRODUCTS = Object.freeze({
+  Y_SMART: 1,
+  Y_CLASSIC: 1.25,
+  Y_COMFORT: 1.5,
+  Y_PLUS: 1.75,
+  C_SMART: 2,
+  C_EXECUTIVE: 2.5,
+  C_PREMIER: 3,
+  C_SUPERIOR: 3.5,
+  F_SILVER: 4,
+  F_GOLD: 4.5,
+  F_PLATINUM: 5,
+  F_DIAMOND: 6
+});
+
+function ACS_buildOrderCabinConfiguration({
+  rawConfiguration,
+  catalogCapacity,
+  simYear
+}) {
+  const maximumCapacity = Number(catalogCapacity || 0);
+
+  const hasConfiguration = Boolean(
+    rawConfiguration &&
+    typeof rawConfiguration === "object" &&
+    !Array.isArray(rawConfiguration)
+  );
+
+  const readClass = (cabinClass, defaultProduct, defaultSeats = 0) => {
+    const source = hasConfiguration
+      ? rawConfiguration[cabinClass] || {}
+      : {};
+    const product = String(source.product || defaultProduct)
+      .trim()
+      .toUpperCase();
+    const seats = hasConfiguration
+      ? Number(source.seats ?? 0)
+      : defaultSeats;
+
+    if (
+      !Object.prototype.hasOwnProperty.call(
+        ACS_ORDER_CABIN_PRODUCTS,
+        product
+      ) ||
+      !product.startsWith(`${cabinClass}_`) ||
+      !Number.isInteger(seats) ||
+      seats < 0
+    ) {
+      const error = new Error("INVALID_CABIN_CONFIGURATION");
+      error.code = "INVALID_CABIN_CONFIGURATION";
+      throw error;
+    }
+
+    return { product, seats };
+  };
+
+  if (!Number.isFinite(maximumCapacity) || maximumCapacity <= 0) {
+    if (hasConfiguration) {
+      const requestedSeats = ["Y", "C", "F"].reduce(
+        (total, cabinClass) =>
+          total + Number(rawConfiguration?.[cabinClass]?.seats || 0),
+        0
+      );
+      if (requestedSeats > 0) {
+        const error = new Error("AIRCRAFT_HAS_NO_PASSENGER_CABIN");
+        error.code = "AIRCRAFT_HAS_NO_PASSENGER_CABIN";
+        throw error;
+      }
+    }
+
+    return {
+      rulesVersion: "ACS_CABIN_V1",
+      source: "NON_PASSENGER_AIRCRAFT",
+      economy: { product: "Y_SMART", seats: 0 },
+      business: { product: "C_SMART", seats: 0 },
+      first: { product: "F_SILVER", seats: 0 },
+      usedCapacity: 0
+    };
+  }
+
+  const economy = readClass(
+    "Y",
+    "Y_SMART",
+    Math.floor(maximumCapacity)
+  );
+  const business = readClass("C", "C_SMART", 0);
+  const first = readClass("F", "F_SILVER", 0);
+
+  if (business.seats > 0 && Number(simYear) < 1979) {
+    const error = new Error("BUSINESS_CLASS_NOT_HISTORICALLY_AVAILABLE");
+    error.code = "BUSINESS_CLASS_NOT_HISTORICALLY_AVAILABLE";
+    throw error;
+  }
+
+  const totalSeats = economy.seats + business.seats + first.seats;
+  const usedCapacity =
+    economy.seats * ACS_ORDER_CABIN_PRODUCTS[economy.product] +
+    business.seats * ACS_ORDER_CABIN_PRODUCTS[business.product] +
+    first.seats * ACS_ORDER_CABIN_PRODUCTS[first.product];
+
+  if (totalSeats <= 0) {
+    const error = new Error("EMPTY_CABIN_CONFIGURATION");
+    error.code = "EMPTY_CABIN_CONFIGURATION";
+    throw error;
+  }
+
+  if (usedCapacity > maximumCapacity + 0.0001) {
+    const error = new Error("CABIN_CONFIGURATION_EXCEEDS_CAPACITY");
+    error.code = "CABIN_CONFIGURATION_EXCEEDS_CAPACITY";
+    error.details = {
+      used_capacity_units: usedCapacity,
+      maximum_capacity_units: maximumCapacity
+    };
+    throw error;
+  }
+
+  return {
+    rulesVersion: "ACS_CABIN_V1",
+    source: hasConfiguration
+      ? "FACTORY_ORDER_CONFIRMED"
+      : "CATALOG_DEFAULT",
+    economy,
+    business,
+    first,
+    usedCapacity
+  };
+}
+
 router.post("/aircraft/orders", requireAuth, async (req, res) => {
   const client = await pool.connect();
 
@@ -3166,6 +3294,7 @@ if (!Number.isInteger(simYear) || simYear < 1900 || simYear > 2100) {
         ac.model,
         ac.aircraft_name,
         ac.year,
+        ac.seats,
         ac.price_acs_usd,
         ac.image_filename,
 
@@ -3206,6 +3335,22 @@ if (!Number.isInteger(simYear) || simYear < 1900 || simYear > 2100) {
     }
 
     const aircraft = aircraftResult.rows[0];
+
+    let orderCabin;
+    try {
+      orderCabin = ACS_buildOrderCabinConfiguration({
+        rawConfiguration: req.body?.cabin_configuration,
+        catalogCapacity: aircraft.seats,
+        simYear
+      });
+    } catch (cabinError) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        ok: false,
+        error: cabinError?.code || "INVALID_CABIN_CONFIGURATION",
+        details: cabinError?.details || null
+      });
+    }
 
     const unitPrice = Math.round(Number(aircraft.price_acs_usd || 0));
     const totalPrice = unitPrice * quantity;
@@ -3545,6 +3690,16 @@ const orderResult = await client.query(
     order_date,
     estimated_delivery_date,
     actual_delivery_date,
+    cabin_rules_version,
+    cabin_configuration_source,
+    y_product,
+    y_seats,
+    c_product,
+    c_seats,
+    f_product,
+    f_seats,
+    cabin_capacity_units,
+    cabin_configured_at,
     notes,
     created_at,
     updated_at
@@ -3572,6 +3727,16 @@ const orderResult = await client.query(
     NOW(),
     $14,
     NULL,
+    $17,
+    $18,
+    $19,
+    $20,
+    $21,
+    $22,
+    $23,
+    $24,
+    $25,
+    acs_get_current_sim_time(),
     $16,
     NOW(),
     NOW()
@@ -3623,7 +3788,16 @@ end_of_lease_options: ownershipType === "LEASE"
 source: ownershipType === "LEASE"
   ? "ACS_LEASE_NEW_BACKEND_ORDER_OCC_V1"
   : "ACS_BUY_NEW_BACKEND_ORDER_V3_REAL_PAYMENT_COLUMNS"
-    })
+    }),
+    orderCabin.rulesVersion,
+    orderCabin.source,
+    orderCabin.economy.product,
+    orderCabin.economy.seats,
+    orderCabin.business.product,
+    orderCabin.business.seats,
+    orderCabin.first.product,
+    orderCabin.first.seats,
+    orderCabin.usedCapacity
   ]
 );
 
