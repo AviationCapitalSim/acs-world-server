@@ -501,15 +501,27 @@ if (!airline) {
             WHERE class_passengers.passengers > 0
           ) passenger
 
-          LEFT JOIN LATERAL (
+            LEFT JOIN LATERAL (
             SELECT
               resolved.final_fare_usd
-            FROM public.acs_resolve_route_fare(
+
+            FROM public.acs_resolve_route_direction_fare(
               occurrence.airline_id,
               occurrence.route_plan_id,
+              CASE
+                WHEN UPPER(COALESCE(occurrence.flight_direction, ''))
+                     IN ('OUTBOUND', 'RETURN')
+                  THEN UPPER(occurrence.flight_direction)
+
+                WHEN UPPER(occurrence.origin) = UPPER(route.origin)
+                  THEN 'OUTBOUND'
+
+                ELSE 'RETURN'
+              END,
               passenger.service_class,
               occurrence.scheduled_departure_at
             ) resolved
+
             LIMIT 1
           ) fare ON true
           WHERE occurrence.airline_id = $1
