@@ -672,6 +672,16 @@ async function ACS_deliveryProcessOrder(orderId) {
           maintenance_status,
           purchase_price,
           current_value,
+          cabin_rules_version,
+          cabin_configuration_source,
+          y_product,
+          y_seats,
+          c_product,
+          c_seats,
+          f_product,
+          f_seats,
+          cabin_capacity_units,
+          cabin_configured_at,
           currency,
           created_at,
           updated_at
@@ -680,7 +690,9 @@ async function ACS_deliveryProcessOrder(orderId) {
           gen_random_uuid(), $1, $2, 'FACTORY', $3, $4, $5, $6, $7,
           NULL, NULL, $8, $9, NULL, 'ACTIVE', 'AVAILABLE', $10, $10,
           EXTRACT(YEAR FROM $11::timestamp)::integer, $11, $11,
-          0, 0, 100, 'SERVICEABLE', $12, $12, 'USD',
+          0, 0, 100, 'SERVICEABLE', $12, $12,
+          $13, $14, $15, $16, $17, $18, $19, $20, $21, $11,
+          'USD',
           CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
         )
         RETURNING id, airline_id, delivery_unit_number
@@ -697,7 +709,16 @@ async function ACS_deliveryProcessOrder(orderId) {
           unitNumber,
           baseIcao,
           simTime,
-          ownershipType === "LEASED" ? 0 : Number(order.unit_price || 0)
+          ownershipType === "LEASED" ? 0 : Number(order.unit_price || 0),
+          order.cabin_rules_version || "ACS_CABIN_V1",
+          order.cabin_configuration_source || "CATALOG_DEFAULT",
+          order.y_product || "Y_SMART",
+          Number(order.y_seats || 0),
+          order.c_product || "C_SMART",
+          Number(order.c_seats || 0),
+          order.f_product || "F_SILVER",
+          Number(order.f_seats || 0),
+          Number(order.cabin_capacity_units || 0)
         ]
       );
 
