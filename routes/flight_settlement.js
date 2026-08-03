@@ -113,10 +113,7 @@ export async function ACS_runFlightSettlementRuntime({
           allocation.captured_total AS allocated_passengers,
           allocation.load_factor AS allocated_load_factor,
           allocation.competition_score,
-          allocation.route_maturity,
-          route_fares.fare_y,
-          route_fares.fare_c,
-          route_fares.fare_f
+          allocation.route_maturity
         FROM due
         JOIN public.route_plans route
           ON route.id = due.route_plan_id
@@ -131,45 +128,9 @@ export async function ACS_runFlightSettlementRuntime({
              BETWEEN period.era_start_year AND period.era_end_year
         JOIN public.flight_economics flight_economics
           ON flight_economics.period_id = period.id
-                JOIN LATERAL (
-          SELECT
-            MAX(resolved.final_fare_usd) FILTER (
-              WHERE fare_class.service_class = 'Y'
-            )::numeric AS fare_y,
-
-            MAX(resolved.final_fare_usd) FILTER (
-              WHERE fare_class.service_class = 'C'
-            )::numeric AS fare_c,
-
-            MAX(resolved.final_fare_usd) FILTER (
-              WHERE fare_class.service_class = 'F'
-            )::numeric AS fare_f
-
-          FROM (
-            VALUES
-              ('Y'::text),
-              ('C'::text),
-              ('F'::text)
-          ) fare_class(service_class)
-
-          CROSS JOIN LATERAL
-            public.acs_resolve_route_direction_fare(
-              due.airline_id,
-              due.route_plan_id,
-              CASE
-                WHEN UPPER(COALESCE(due.flight_direction, ''))
-                     IN ('OUTBOUND', 'RETURN')
-                  THEN UPPER(due.flight_direction)
-
-                WHEN UPPER(due.origin) = UPPER(route.origin)
-                  THEN 'OUTBOUND'
-
-                ELSE 'RETURN'
-              END,
-              fare_class.service_class,
-              due.scheduled_departure_at
-            ) resolved
-        ) route_fares ON true
+        JOIN LATERAL public.acs_allocate_passengers_for_flight(
+          due.id
+        ) allocation ON true
       ),
       base_amounts AS MATERIALIZED (
         SELECT
@@ -186,14 +147,10 @@ export async function ACS_runFlightSettlementRuntime({
           base_amounts.*,
           COALESCE(allocated_passengers, 0)::integer AS passengers,
           ROUND(
-            COALESCE(captured_y, 0)
-              * COALESCE(fare_y, 0)
-
-            + COALESCE(captured_c, 0)
-              * COALESCE(fare_c, 0)
-
-            + COALESCE(captured_f, 0)
-              * COALESCE(fare_f, 0)
+            COALESCE(allocated_passengers, 0)
+            * COALESCE(distance_nm, 0)
+            * COALESCE(passenger_yield_usd_per_pax_mile, 0)
+            * COALESCE(demand_multiplier, 1)
           )::bigint AS revenue_amount,
           ROUND(
             (
