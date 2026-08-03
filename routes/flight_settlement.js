@@ -106,7 +106,14 @@ export async function ACS_runFlightSettlementRuntime({
           flight_economics.landing_fee_base_usd,
           flight_economics.navigation_usd_per_nm,
           flight_economics.overflight_usd_per_nm,
-          route_rank.route_number
+          allocation.offered_seats,
+          allocation.captured_y,
+          allocation.captured_c,
+          allocation.captured_f,
+          allocation.captured_total AS allocated_passengers,
+          allocation.load_factor AS allocated_load_factor,
+          allocation.competition_score,
+          allocation.route_maturity
         FROM due
         JOIN public.route_plans route
           ON route.id = due.route_plan_id
@@ -121,23 +128,14 @@ export async function ACS_runFlightSettlementRuntime({
              BETWEEN period.era_start_year AND period.era_end_year
         JOIN public.flight_economics flight_economics
           ON flight_economics.period_id = period.id
-        CROSS JOIN LATERAL (
-          SELECT COUNT(*)::integer AS route_number
-          FROM public.route_plans ordered_route
-          WHERE ordered_route.airline_id = due.airline_id
-            AND ordered_route.id <= due.route_plan_id
-        ) route_rank
+        JOIN LATERAL public.acs_allocate_passengers_for_flight(
+          due.id
+        ) allocation ON true
       ),
       base_amounts AS MATERIALIZED (
         SELECT
           economics.*,
-          LEAST(
-            0.92,
-            CASE
-              WHEN route_number <= 4 THEN 0.74 * 1.18
-              ELSE 0.62
-            END
-          )::numeric AS load_factor,
+          COALESCE(allocated_load_factor, 0)::numeric AS load_factor,
           GREATEST(
             0.25,
             COALESCE(block_time_min, 60)::numeric / 60
@@ -147,12 +145,9 @@ export async function ACS_runFlightSettlementRuntime({
       amounts AS MATERIALIZED (
         SELECT
           base_amounts.*,
-          GREATEST(
-            1,
-            ROUND(COALESCE(seats, 0) * load_factor)
-          )::integer AS passengers,
+          COALESCE(allocated_passengers, 0)::integer AS passengers,
           ROUND(
-            GREATEST(1, ROUND(COALESCE(seats, 0) * load_factor))
+            COALESCE(allocated_passengers, 0)
             * COALESCE(distance_nm, 0)
             * COALESCE(passenger_yield_usd_per_pax_mile, 0)
             * COALESCE(demand_multiplier, 1)
@@ -328,7 +323,100 @@ export async function ACS_runFlightSettlementRuntime({
         CROSS JOIN clock
         WHERE occurrence.id = amounts.id
           AND occurrence.settled_at IS NULL
-        RETURNING occurrence.id
+        RETURNING
+          occurrence.id,
+          occurrence.route_plan_id,
+          occurrence.airline_id,
+          occurrence.schedule_item_id,
+          occurrence.arrived_at,
+          occurrence.settled_load_factor
+      ),
+      updated_schedule_items AS (
+        UPDATE public.schedule_items item
+        SET
+          settled_load_factor = occurrence.settled_load_factor,
+          updated_at = CURRENT_TIMESTAMP
+        FROM updated_occurrences occurrence
+        WHERE item.id = occurrence.schedule_item_id
+        RETURNING item.id
+      ),
+      maturity_routes AS MATERIALIZED (
+        SELECT
+          occurrence.route_plan_id,
+          occurrence.airline_id,
+          MAX(occurrence.arrived_at) AS as_of_sim_time
+        FROM updated_occurrences occurrence
+        WHERE occurrence.route_plan_id IS NOT NULL
+          AND occurrence.arrived_at IS NOT NULL
+        GROUP BY occurrence.route_plan_id, occurrence.airline_id
+      ),
+      maturity_snapshots AS MATERIALIZED (
+        SELECT
+          route.route_plan_id,
+          route.airline_id,
+          evaluation.*
+        FROM maturity_routes route
+        JOIN LATERAL public.acs_evaluate_route_maturity(
+          route.route_plan_id,
+          route.as_of_sim_time
+        ) evaluation ON true
+      ),
+      updated_maturity AS (
+        INSERT INTO public.acs_route_market_maturity (
+          route_plan_id,
+          airline_id,
+          first_scheduled_sim_time,
+          last_completed_sim_time,
+          scheduled_due_flights,
+          completed_flights,
+          cancelled_flights,
+          on_time_flights,
+          compliance_ratio,
+          punctuality_ratio,
+          organic_awareness,
+          operational_bonus,
+          marketing_bonus,
+          maturity_score,
+          rules_version,
+          created_at,
+          updated_at
+        )
+        SELECT
+          snapshot.route_plan_id,
+          snapshot.airline_id,
+          snapshot.first_scheduled_sim_time,
+          snapshot.last_completed_sim_time,
+          snapshot.scheduled_due_flights,
+          snapshot.completed_flights,
+          snapshot.cancelled_flights,
+          snapshot.on_time_flights,
+          snapshot.compliance_ratio,
+          snapshot.punctuality_ratio,
+          snapshot.organic_awareness,
+          snapshot.operational_bonus,
+          0,
+          snapshot.maturity_score,
+          'ACS_PAX_SETTLEMENT_V1',
+          CURRENT_TIMESTAMP,
+          CURRENT_TIMESTAMP
+        FROM maturity_snapshots snapshot
+        ON CONFLICT (route_plan_id)
+        DO UPDATE SET
+          airline_id = EXCLUDED.airline_id,
+          first_scheduled_sim_time = EXCLUDED.first_scheduled_sim_time,
+          last_completed_sim_time = EXCLUDED.last_completed_sim_time,
+          scheduled_due_flights = EXCLUDED.scheduled_due_flights,
+          completed_flights = EXCLUDED.completed_flights,
+          cancelled_flights = EXCLUDED.cancelled_flights,
+          on_time_flights = EXCLUDED.on_time_flights,
+          compliance_ratio = EXCLUDED.compliance_ratio,
+          punctuality_ratio = EXCLUDED.punctuality_ratio,
+          organic_awareness = EXCLUDED.organic_awareness,
+          operational_bonus = EXCLUDED.operational_bonus,
+          maturity_score = EXCLUDED.maturity_score,
+          rules_version = 'ACS_PAX_SETTLEMENT_V1',
+          updated_at = CURRENT_TIMESTAMP
+        RETURNING route_plan_id
       )
       SELECT COUNT(*)::integer AS processed_count
       FROM updated_occurrences
