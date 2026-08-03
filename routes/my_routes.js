@@ -463,45 +463,53 @@ if (!airline) {
           JOIN public.route_plans route
             ON route.id = occurrence.route_plan_id
            AND route.airline_id = occurrence.airline_id
-          LEFT JOIN public.acs_passenger_flight_results passenger_result
+                    LEFT JOIN public.acs_passenger_flight_results passenger_result
             ON passenger_result.occurrence_id = occurrence.id
+
           CROSS JOIN LATERAL (
-            VALUES
-              (
-                'Y'::text,
-                COALESCE(
-                  passenger_result.captured_y,
-                  occurrence.settled_passengers,
-                  0
-                )::numeric
-              ),
-              (
-                'C'::text,
-                COALESCE(passenger_result.captured_c, 0)::numeric
-              ),
-              (
-                'F'::text,
-                COALESCE(passenger_result.captured_f, 0)::numeric
-              )
-          ) passenger(service_class, passengers)
+            SELECT
+              class_passengers.service_class,
+              class_passengers.passengers
+            FROM (
+              VALUES
+                (
+                  'Y'::text,
+                  COALESCE(
+                    passenger_result.captured_y,
+                    occurrence.settled_passengers,
+                    0
+                  )::numeric
+                ),
+                (
+                  'C'::text,
+                  COALESCE(
+                    passenger_result.captured_c,
+                    0
+                  )::numeric
+                ),
+                (
+                  'F'::text,
+                  COALESCE(
+                    passenger_result.captured_f,
+                    0
+                  )::numeric
+                )
+            ) class_passengers(
+              service_class,
+              passengers
+            )
+            WHERE class_passengers.passengers > 0
+          ) passenger
+
           LEFT JOIN LATERAL (
-            SELECT resolved.final_fare_usd
+            SELECT
+              resolved.final_fare_usd
             FROM public.acs_resolve_route_fare(
               occurrence.airline_id,
               occurrence.route_plan_id,
               passenger.service_class,
               occurrence.scheduled_departure_at
             ) resolved
-            WHERE UPPER(resolved.direction) = UPPER(
-              COALESCE(
-                occurrence.flight_direction,
-                CASE
-                  WHEN UPPER(occurrence.origin) = UPPER(route.origin)
-                    THEN 'OUTBOUND'
-                  ELSE 'RETURN'
-                END
-              )
-            )
             LIMIT 1
           ) fare ON true
           WHERE occurrence.airline_id = $1
