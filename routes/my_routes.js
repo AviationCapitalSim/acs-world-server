@@ -119,6 +119,69 @@ function ACS_MR_normalizeDemand(row, prefix) {
   };
 }
 
+function ACS_MR_allocatePassengerRevenue(row) {
+  const totalRevenue = Math.max(
+    0,
+    ACS_MR_integer(row?.total_revenue)
+  );
+
+  const weightY = Math.max(
+    0,
+    ACS_MR_number(row?.weight_y)
+  );
+
+  const weightC = Math.max(
+    0,
+    ACS_MR_number(row?.weight_c)
+  );
+
+  const weightF = Math.max(
+    0,
+    ACS_MR_number(row?.weight_f)
+  );
+
+  const totalWeight =
+    weightY + weightC + weightF;
+
+  if (totalRevenue <= 0 || totalWeight <= 0) {
+    return {
+      y: 0,
+      c: 0,
+      f: 0
+    };
+  }
+
+  let revenueF = Math.floor(
+    totalRevenue * weightF / totalWeight
+  );
+
+  let revenueC = Math.floor(
+    totalRevenue * weightC / totalWeight
+  );
+
+  let revenueY = 0;
+
+  if (weightY > 0) {
+    revenueY = Math.max(
+      0,
+      totalRevenue - revenueC - revenueF
+    );
+  } else if (weightC > 0) {
+    revenueC = Math.max(
+      0,
+      totalRevenue - revenueF
+    );
+  } else {
+    revenueF = totalRevenue;
+  }
+
+  return {
+    y: revenueY,
+    c: revenueC,
+    f: revenueF
+  };
+}
+
 router.get(
   "/routes/my-routes-occ",
   requireAuth,
