@@ -878,6 +878,23 @@ for (const row of classRevenueResult.rows) {
             ),
             passenger_data_status: "LEGACY_SETTLEMENT"
           },
+
+           route_result: {
+  last_7_days: {
+    net:
+      outboundCurrent.profit
+      + returnCurrent.profit,
+
+    passenger_revenue:
+      passengerRevenueByRoute.get(routeId)
+      || {
+        y: 0,
+        c: 0,
+        f: 0
+      }
+  }
+},
+           
           competitors:
             competitorsByRoute.get(routeId) || [],
           created_at: row.created_at,
