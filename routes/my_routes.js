@@ -119,39 +119,6 @@ function ACS_MR_normalizeDemand(row, prefix) {
   };
 }
 
-function ACS_MR_allocatePassengerRevenue(row) {
-  const totalRevenue = Math.max(
-    0,
-    ACS_MR_integer(row?.total_revenue)
-  );
-  const weightY = Math.max(0, ACS_MR_number(row?.weight_y));
-  const weightC = Math.max(0, ACS_MR_number(row?.weight_c));
-  const weightF = Math.max(0, ACS_MR_number(row?.weight_f));
-  const totalWeight = weightY + weightC + weightF;
-
-  if (totalRevenue <= 0 || totalWeight <= 0) {
-    return { y: 0, c: 0, f: 0 };
-  }
-
-  let revenueF = Math.floor(totalRevenue * weightF / totalWeight);
-  let revenueC = Math.floor(totalRevenue * weightC / totalWeight);
-  let revenueY = 0;
-
-  if (weightY > 0) {
-    revenueY = Math.max(0, totalRevenue - revenueC - revenueF);
-  } else if (weightC > 0) {
-    revenueC = Math.max(0, totalRevenue - revenueF);
-  } else {
-    revenueF = totalRevenue;
-  }
-
-  return {
-    y: revenueY,
-    c: revenueC,
-    f: revenueF
-  };
-}
-
 router.get(
   "/routes/my-routes-occ",
   requireAuth,
@@ -429,109 +396,6 @@ if (!airline) {
         [airlineId, currentSimTime]
       );
 
-      const classRevenueResult = await client.query(
-        `
-        WITH clock AS MATERIALIZED (
-          SELECT $2::timestamp AS sim_time
-        ),
-        occurrence_weights AS MATERIALIZED (
-          SELECT
-            occurrence.id AS occurrence_id,
-            occurrence.route_plan_id,
-            MAX(COALESCE(occurrence.settled_revenue, 0))::numeric
-              AS settled_revenue,
-            COALESCE(SUM(
-              passenger.passengers
-              * GREATEST(COALESCE(fare.final_fare_usd, 1), 1)
-            ) FILTER (
-              WHERE passenger.service_class = 'Y'
-            ), 0)::numeric AS weight_y,
-            COALESCE(SUM(
-              passenger.passengers
-              * GREATEST(COALESCE(fare.final_fare_usd, 1), 1)
-            ) FILTER (
-              WHERE passenger.service_class = 'C'
-            ), 0)::numeric AS weight_c,
-            COALESCE(SUM(
-              passenger.passengers
-              * GREATEST(COALESCE(fare.final_fare_usd, 1), 1)
-            ) FILTER (
-              WHERE passenger.service_class = 'F'
-            ), 0)::numeric AS weight_f
-          FROM public.flight_occurrences occurrence
-          CROSS JOIN clock
-          JOIN public.route_plans route
-            ON route.id = occurrence.route_plan_id
-           AND route.airline_id = occurrence.airline_id
-                    LEFT JOIN public.acs_passenger_flight_results passenger_result
-            ON passenger_result.occurrence_id = occurrence.id
-
-          CROSS JOIN LATERAL (
-            SELECT
-              class_passengers.service_class,
-              class_passengers.passengers
-            FROM (
-              VALUES
-                (
-                  'Y'::text,
-                  COALESCE(
-                    passenger_result.captured_y,
-                    occurrence.settled_passengers,
-                    0
-                  )::numeric
-                ),
-                (
-                  'C'::text,
-                  COALESCE(
-                    passenger_result.captured_c,
-                    0
-                  )::numeric
-                ),
-                (
-                  'F'::text,
-                  COALESCE(
-                    passenger_result.captured_f,
-                    0
-                  )::numeric
-                )
-            ) class_passengers(
-              service_class,
-              passengers
-            )
-            WHERE class_passengers.passengers > 0
-          ) passenger
-
-          LEFT JOIN LATERAL (
-            SELECT
-              resolved.final_fare_usd
-            FROM public.acs_resolve_route_fare(
-              occurrence.airline_id,
-              occurrence.route_plan_id,
-              passenger.service_class,
-              occurrence.scheduled_departure_at
-            ) resolved
-            LIMIT 1
-          ) fare ON true
-          WHERE occurrence.airline_id = $1
-            AND occurrence.arrived_at >= clock.sim_time - INTERVAL '7 days'
-            AND occurrence.arrived_at < clock.sim_time
-            AND occurrence.settled_at IS NOT NULL
-          GROUP BY
-            occurrence.id,
-            occurrence.route_plan_id
-        )
-        SELECT
-          route_plan_id,
-          COALESCE(SUM(settled_revenue), 0)::bigint AS total_revenue,
-          COALESCE(SUM(weight_y), 0)::numeric AS weight_y,
-          COALESCE(SUM(weight_c), 0)::numeric AS weight_c,
-          COALESCE(SUM(weight_f), 0)::numeric AS weight_f
-        FROM occurrence_weights
-        GROUP BY route_plan_id
-        `,
-        [airlineId, currentSimTime]
-      );
-
       const competitorResult = await client.query(
         `
         WITH clock AS MATERIALIZED (
@@ -632,15 +496,6 @@ if (!airline) {
         }
 
         performanceByRoute.get(routeId)[direction] = row;
-      }
-
-      const passengerRevenueByRoute = new Map();
-
-      for (const row of classRevenueResult.rows) {
-        passengerRevenueByRoute.set(
-          String(row.route_plan_id),
-          ACS_MR_allocatePassengerRevenue(row)
-        );
       }
 
       const competitorsByRoute = new Map();
@@ -804,16 +659,6 @@ if (!airline) {
               returnPrevious
             ),
             passenger_data_status: "LEGACY_SETTLEMENT"
-          },
-          route_result: {
-            last_7_days: {
-              net:
-                outboundCurrent.profit
-                + returnCurrent.profit,
-              passenger_revenue:
-                passengerRevenueByRoute.get(routeId)
-                || { y: 0, c: 0, f: 0 }
-            }
           },
           competitors:
             competitorsByRoute.get(routeId) || [],
