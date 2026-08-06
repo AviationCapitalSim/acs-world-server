@@ -348,6 +348,217 @@ if (!airline) {
         [airlineId, currentSimTime]
       );
 
+           const routeImageResult = await client.query(
+        `
+        WITH
+        clock AS MATERIALIZED (
+          SELECT $2::timestamp AS sim_time
+        ),
+        rules AS MATERIALIZED (
+          SELECT active_rule.*
+          FROM public.acs_passenger_settlement_rules active_rule
+          WHERE active_rule.is_active = true
+          ORDER BY
+            active_rule.updated_at DESC,
+            active_rule.rule_code
+          LIMIT 1
+        ),
+        evaluated AS MATERIALIZED (
+          SELECT
+            route.id AS route_plan_id,
+            GREATEST(
+              COALESCE(jsonb_array_length(route.selected_days), 1),
+              1
+            ) AS frequency_days,
+            evaluation.organic_awareness,
+            evaluation.operational_bonus,
+            evaluation.cabin_unlock_factor,
+            evaluation.maturity_score,
+            LEAST(
+              COALESCE(maturity.marketing_bonus, 0),
+              rules.marketing_bonus_max
+            ) AS marketing_bonus,
+            LEAST(
+              rules.cabin_bonus_max,
+              COALESCE(
+                (
+                  COALESCE(fleet.y_seats, 0)
+                  * public.acs_cabin_product_bonus(fleet.y_product)
+                  +
+                  COALESCE(fleet.c_seats, 0)
+                  * public.acs_cabin_product_bonus(fleet.c_product)
+                  +
+                  COALESCE(fleet.f_seats, 0)
+                  * public.acs_cabin_product_bonus(fleet.f_product)
+                )
+                /
+                NULLIF(
+                  COALESCE(fleet.y_seats, 0)
+                  + COALESCE(fleet.c_seats, 0)
+                  + COALESCE(fleet.f_seats, 0),
+                  0
+                ),
+                0
+              )
+            ) * evaluation.cabin_unlock_factor AS cabin_bonus
+          FROM public.route_plans route
+          CROSS JOIN clock
+          CROSS JOIN rules
+          JOIN LATERAL public.acs_evaluate_route_maturity(
+            route.id,
+            clock.sim_time
+          ) evaluation ON true
+          LEFT JOIN public.acs_route_market_maturity maturity
+            ON maturity.route_plan_id = route.id
+          LEFT JOIN public.aircraft_fleet fleet
+            ON fleet.id = route.aircraft_id
+           AND fleet.airline_id = route.airline_id
+          WHERE route.airline_id = $1
+            AND UPPER(COALESCE(route.route_state, 'ACTIVE')) = 'ACTIVE'
+            AND UPPER(COALESCE(route.route_type, 'PASSENGER'))
+                = 'PASSENGER'
+        ),
+        activity AS MATERIALIZED (
+          SELECT
+            evaluated.route_plan_id,
+            evaluated.frequency_days,
+            evaluated.organic_awareness,
+            evaluated.operational_bonus,
+            evaluated.maturity_score,
+            evaluated.cabin_bonus,
+            evaluated.marketing_bonus,
+
+            COUNT(occurrence.id) FILTER (
+              WHERE occurrence.scheduled_departure_at >=
+                    clock.sim_time - INTERVAL '90 days'
+                AND occurrence.scheduled_departure_at < clock.sim_time
+            )::integer AS due_flights_90d,
+
+            COUNT(occurrence.id) FILTER (
+              WHERE occurrence.scheduled_departure_at >=
+                    clock.sim_time - INTERVAL '90 days'
+                AND occurrence.scheduled_departure_at < clock.sim_time
+                AND occurrence.operational_status = 'ARRIVED'
+                AND occurrence.arrived_at IS NOT NULL
+                AND occurrence.arrived_at <= clock.sim_time
+            )::integer AS completed_flights_90d,
+
+            COUNT(occurrence.id) FILTER (
+              WHERE occurrence.scheduled_departure_at >=
+                    clock.sim_time - INTERVAL '90 days'
+                AND occurrence.scheduled_departure_at < clock.sim_time
+                AND occurrence.operational_status = 'HELD'
+            )::integer AS held_flights_90d,
+
+            MAX(occurrence.arrived_at) FILTER (
+              WHERE occurrence.operational_status = 'ARRIVED'
+                AND occurrence.arrived_at <= clock.sim_time
+            ) AS last_arrived_at
+
+          FROM evaluated
+          CROSS JOIN clock
+          LEFT JOIN public.flight_occurrences occurrence
+            ON occurrence.route_plan_id = evaluated.route_plan_id
+          GROUP BY
+            evaluated.route_plan_id,
+            evaluated.frequency_days,
+            evaluated.organic_awareness,
+            evaluated.operational_bonus,
+            evaluated.maturity_score,
+            evaluated.cabin_bonus,
+            evaluated.marketing_bonus
+        ),
+        scored AS (
+          SELECT
+            activity.*,
+
+            CASE
+              WHEN activity.due_flights_90d = 0 THEN 1::numeric
+              ELSE LEAST(
+                1::numeric,
+                (
+                  activity.completed_flights_90d
+                  + GREATEST(activity.frequency_days * 2, 2)
+                )::numeric
+                /
+                (
+                  activity.due_flights_90d
+                  + GREATEST(activity.frequency_days * 2, 2)
+                )::numeric
+              )
+            END AS reliability_factor,
+
+            GREATEST(
+              0::numeric,
+              LEAST(
+                1::numeric,
+                1::numeric
+                -
+                (
+                  GREATEST(
+                    (
+                      EXTRACT(
+                        EPOCH FROM (
+                          clock.sim_time
+                          - COALESCE(
+                              activity.last_arrived_at,
+                              clock.sim_time
+                            )
+                        )
+                      ) / 86400
+                    )
+                    -
+                    (
+                      7::numeric
+                      / activity.frequency_days::numeric
+                    ),
+                    0
+                  )
+                  / 90::numeric
+                )
+              )
+            ) AS recency_factor
+
+          FROM activity
+          CROSS JOIN clock
+        )
+        SELECT
+          scored.route_plan_id,
+          scored.due_flights_90d,
+          scored.completed_flights_90d,
+          scored.held_flights_90d,
+          scored.organic_awareness,
+          scored.operational_bonus,
+          scored.cabin_bonus,
+          scored.marketing_bonus,
+
+          LEAST(
+            scored.reliability_factor,
+            scored.recency_factor
+          ) AS continuity_factor,
+
+          ROUND(
+            LEAST(
+              rules.absolute_capture_max,
+              scored.maturity_score
+              + scored.cabin_bonus
+              + scored.marketing_bonus
+            )
+            *
+            LEAST(
+              scored.reliability_factor,
+              scored.recency_factor
+            ),
+            6
+          ) AS route_image_score
+
+        FROM scored
+        CROSS JOIN rules
+        ORDER BY scored.route_plan_id
+        `,
+        [airlineId, currentSimTime]
+      );
+       
       const performanceResult = await client.query(
         `
         WITH clock AS MATERIALIZED (
