@@ -902,6 +902,40 @@ if (!airline) {
         [airlineId, currentSimTime]
       );
 
+            const routeImageByRoute = new Map();
+
+      for (const row of routeImageResult.rows) {
+        routeImageByRoute.set(
+          String(row.route_plan_id),
+          {
+            score: ACS_MR_number(row.route_image_score),
+            percentage:
+              Math.round(
+                ACS_MR_number(row.route_image_score) * 10000
+              ) / 100,
+            continuity:
+              ACS_MR_number(row.continuity_factor),
+            due_flights_90d:
+              ACS_MR_integer(row.due_flights_90d),
+            completed_flights_90d:
+              ACS_MR_integer(row.completed_flights_90d),
+            held_flights_90d:
+              ACS_MR_integer(row.held_flights_90d),
+            components: {
+              organic:
+                ACS_MR_number(row.organic_awareness),
+              operational:
+                ACS_MR_number(row.operational_bonus),
+              cabin:
+                ACS_MR_number(row.cabin_bonus),
+              marketing:
+                ACS_MR_number(row.marketing_bonus)
+            },
+            authority: "ACS_ROUTE_IMAGE_READ_MODEL_V1"
+          }
+        );
+      }
+
       const performanceByRoute = new Map();
 
       for (const row of performanceResult.rows) {
