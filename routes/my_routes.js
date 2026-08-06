@@ -1046,7 +1046,7 @@ for (const row of classRevenueResult.rows) {
             outboundPrevious[field] + returnPrevious[field];
         }
 
-        return {
+                return {
           route_plan_id: ACS_MR_integer(row.route_plan_id),
           route_uid: row.route_uid || null,
           route_type: row.route_type,
@@ -1061,6 +1061,10 @@ for (const row of classRevenueResult.rows) {
             Array.isArray(row.selected_days)
               ? row.selected_days.length
               : 0,
+
+          route_image:
+            routeImageByRoute.get(routeId) || null,
+
           departure: row.departure,
           arrival: row.arrival,
           flight_numbers: {
