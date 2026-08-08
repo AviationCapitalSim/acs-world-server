@@ -92,7 +92,11 @@ function mapRecord(row) {
 router.get("/fuel/market", requireAuth, async (req, res) => {
   try {
     const result = await pool.query(`
-      WITH active_market AS (
+      WITH world_authority AS (
+  SELECT EXTRACT(YEAR FROM acs_get_current_sim_time())::smallint
+    AS current_sim_year
+),
+active_market AS (
         SELECT
           CASE
             WHEN fuel_code = 'AVGAS' THEN 'AVGAS'
@@ -113,11 +117,14 @@ router.get("/fuel/market", requireAuth, async (req, res) => {
           revision_code,
           is_simulation_seed,
           source_retrieved_on,
-          updated_at
-        FROM public.fuel_market_series
-        WHERE is_active = true
+updated_at,
+world_authority.current_sim_year
+FROM public.fuel_market_series
+CROSS JOIN world_authority
+WHERE is_active = true
           AND fuel_code IN ('AVGAS', 'TURBINE_KEROSENE_EQ', 'JET_FUEL', 'SAF')
-      ),
+          AND price_year <= world_authority.current_sim_year
+          ),
       movement AS (
         SELECT
           active_market.*,
@@ -149,7 +156,8 @@ router.get("/fuel/market", requireAuth, async (req, res) => {
         revision_code,
         is_simulation_seed,
         source_retrieved_on,
-        updated_at
+        updated_at,
+        current_sim_year
       FROM movement
       ORDER BY logical_series_code, price_year
     `);
@@ -208,6 +216,7 @@ router.get("/fuel/market", requireAuth, async (req, res) => {
     return res.json({
       ok: true,
       as_of: retrievedDates.sort().at(-1) || null,
+      world_year: Number(result.rows[0]?.current_sim_year) || null,
       dataset_revision: updateTimes.sort().at(-1) || null,
       fuels
     });
