@@ -296,23 +296,15 @@ router.get("/airports/catalog", requireAuth, async (req, res) => {
         ) AS slot_cost_usd,
 
         aa.landing_fee_usd
-          AS landing_fee_base_usd,
+       AS landing_fee_base_usd,
 
-        COALESCE(
-          ahp.landing_fee_usd,
-          aa.landing_fee_usd
-        ) AS landing_fee_usd,
+COALESCE(
+  ahp.landing_fee_usd,
+  aa.landing_fee_usd
+) AS landing_fee_usd,
 
-        aa.fuel_usd_gal
-          AS fuel_base_usd_gal,
-
-        COALESCE(
-          ahp.fuel_usd_gal,
-          aa.fuel_usd_gal
-        ) AS fuel_usd_gal,
-
-        aa.ticket_fee_percent
-          AS ticket_fee_percent_base,
+aa.ticket_fee_percent
+  AS ticket_fee_percent_base,
 
         COALESCE(
           ahp.ticket_fee_percent,
@@ -611,24 +603,16 @@ router.get(
             aa.slot_cost_usd
           ) AS slot_cost_usd,
 
-          aa.landing_fee_usd
-            AS landing_fee_base_usd,
+         aa.landing_fee_usd
+  AS landing_fee_base_usd,
 
-          COALESCE(
-            ahp.landing_fee_usd,
-            aa.landing_fee_usd
-          ) AS landing_fee_usd,
+COALESCE(
+  ahp.landing_fee_usd,
+  aa.landing_fee_usd
+) AS landing_fee_usd,
 
-          aa.fuel_usd_gal
-            AS fuel_base_usd_gal,
-
-          COALESCE(
-            ahp.fuel_usd_gal,
-            aa.fuel_usd_gal
-          ) AS fuel_usd_gal,
-
-          aa.ticket_fee_percent
-            AS ticket_fee_percent_base,
+aa.ticket_fee_percent
+  AS ticket_fee_percent_base,
 
           COALESCE(
             ahp.ticket_fee_percent,
