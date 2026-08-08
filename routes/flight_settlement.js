@@ -98,10 +98,15 @@ export async function ACS_runFlightSettlementRuntime({
         SELECT
           due.*,
           catalog.seats,
+          catalog.seats,
           catalog.fuel_burn_kgph,
+          catalog.fuel_code,
+          fuel_product.density_kg_per_us_gallon,
+          fuel_market.resolved_fuel_code,
+          fuel_market.resolved_price_year,
+          fuel_market.price_usd_per_us_gallon,
           flight_economics.passenger_yield_usd_per_pax_mile,
           flight_economics.demand_multiplier,
-          flight_economics.fuel_price_usd_per_gallon,
           flight_economics.handling_base_usd,
           flight_economics.landing_fee_base_usd,
           flight_economics.navigation_usd_per_nm,
@@ -122,7 +127,12 @@ export async function ACS_runFlightSettlementRuntime({
           ON fleet.id = due.aircraft_id
          AND fleet.airline_id = due.airline_id
         JOIN public.aircraft_catalog catalog
-          ON catalog.model_key = fleet.model_key
+         ON catalog.model_key = fleet.model_key
+        JOIN public.fuel_product_catalog fuel_product
+         ON fuel_product.fuel_code = catalog.fuel_code
+        JOIN LATERAL public.acs_resolve_fuel_market_price(
+          catalog.fuel_code
+        ) fuel_market ON true
         JOIN public.acs_economic_periods period
           ON EXTRACT(YEAR FROM due.arrived_at)::integer
              BETWEEN period.era_start_year AND period.era_end_year
@@ -152,12 +162,13 @@ export async function ACS_runFlightSettlementRuntime({
             * COALESCE(passenger_yield_usd_per_pax_mile, 0)
             * COALESCE(demand_multiplier, 1)
           )::bigint AS revenue_amount,
-          ROUND(
-            (
-              COALESCE(fuel_burn_kgph, 0)
-              * block_hours / 3.04
-            ) * COALESCE(fuel_price_usd_per_gallon, 0)
-          )::bigint AS fuel_amount,
+         ROUND(
+         (
+          fuel_burn_kgph
+          * block_hours
+         / density_kg_per_us_gallon
+         ) * price_usd_per_us_gallon
+         )::bigint AS fuel_amount,
           ROUND(COALESCE(handling_base_usd, 0))::bigint AS handling_amount,
           ROUND(COALESCE(landing_fee_base_usd, 0))::bigint AS landing_amount,
           ROUND(
