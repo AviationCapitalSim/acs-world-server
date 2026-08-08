@@ -506,11 +506,8 @@ async function ACS_getAirportHistoricalAuthority(
       ac.slot_cost_usd AS slot_cost_base_usd,
       ahp.slot_cost_usd::NUMERIC(12,2) AS slot_cost_usd,
 
-      ac.landing_fee_usd AS landing_fee_base_usd,
-      ahp.landing_fee_usd::NUMERIC(12,2) AS landing_fee_usd,
-
-      ac.fuel_usd_gal AS fuel_base_usd_gal,
-      ahp.fuel_usd_gal::NUMERIC(10,2) AS fuel_usd_gal,
+     ac.landing_fee_usd AS landing_fee_base_usd,
+     ahp.landing_fee_usd::NUMERIC(12,2) AS landing_fee_usd,
 
       ac.runway_m AS runway_m_base,
       ahp.runway_m::INTEGER AS runway_m,
