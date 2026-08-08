@@ -95,7 +95,6 @@ function prepareAirportForSeed(airport) {
 
     slot_cost_usd: cleanNumberOrZero(airport.slot_cost_usd),
     landing_fee_usd: cleanNumberOrZero(airport.landing_fee_usd),
-    fuel_usd_gal: cleanNumberOrZero(airport.fuel_usd_gal),
     ticket_fee_percent: cleanNumberOrZero(airport.ticket_fee_percent),
     pax_growth_factor: cleanNumberOrZero(airport.pax_growth_factor || 1),
 
@@ -144,22 +143,21 @@ async function seedAirportCatalog() {
           demand_c,
           demand_f,
           slot_cost_usd,
-          landing_fee_usd,
-          fuel_usd_gal,
-          ticket_fee_percent,
-          pax_growth_factor,
-          slot_capacity,
-          aircraft_limit,
-          notes,
-          source
-        )
-        VALUES (
-          $1, $2, $3, $4, $5, $6,
-          $7, $8, $9, $10, $11, $12,
-          $13, $14, $15,
-          $16, $17, $18, $19, $20,
-          $21, $22, $23, $24
-        )
+landing_fee_usd,
+ticket_fee_percent,
+pax_growth_factor,
+slot_capacity,
+aircraft_limit,
+notes,
+source
+)
+VALUES (
+  $1, $2, $3, $4, $5, $6,
+  $7, $8, $9, $10, $11, $12,
+  $13, $14, $15,
+  $16, $17, $18, $19, $20,
+  $21, $22, $23
+)
         ON CONFLICT (icao)
         DO UPDATE SET
           iata = EXCLUDED.iata,
@@ -178,7 +176,6 @@ async function seedAirportCatalog() {
           demand_f = EXCLUDED.demand_f,
           slot_cost_usd = EXCLUDED.slot_cost_usd,
           landing_fee_usd = EXCLUDED.landing_fee_usd,
-          fuel_usd_gal = EXCLUDED.fuel_usd_gal,
           ticket_fee_percent = EXCLUDED.ticket_fee_percent,
           pax_growth_factor = EXCLUDED.pax_growth_factor,
           slot_capacity = EXCLUDED.slot_capacity,
@@ -206,7 +203,6 @@ async function seedAirportCatalog() {
           airport.demand_f,
           airport.slot_cost_usd,
           airport.landing_fee_usd,
-          airport.fuel_usd_gal,
           airport.ticket_fee_percent,
           airport.pax_growth_factor,
           airport.slot_capacity,
