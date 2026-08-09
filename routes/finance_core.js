@@ -61,6 +61,157 @@ const ACS_monthKey = (year, month) => {
 };
 
 /* ============================================================
+   ACS AIRCRAFT INSURANCE — POLICY AUTHORITY v1.0
+   ------------------------------------------------------------
+   Rules:
+   - One policy per aircraft.
+   - BASIC is mandatory.
+   - Annual contract with monthly payments.
+   - PostgreSQL simulation time is the only date authority.
+   - RANK integration is prepared but not executed.
+   ============================================================ */
+
+const ACS_INSURANCE_PLANS = Object.freeze({
+  BASIC: Object.freeze({
+    planCode: "BASIC",
+    coveragePercent: 50,
+    deductiblePercent: 20,
+    monthlyRate: 0.0015,
+    rankModifierBasisPoints: 0
+  }),
+
+  STANDARD: Object.freeze({
+    planCode: "STANDARD",
+    coveragePercent: 80,
+    deductiblePercent: 10,
+    monthlyRate: 0.0030,
+    rankModifierBasisPoints: 200
+  }),
+
+  GOLD: Object.freeze({
+    planCode: "GOLD",
+    coveragePercent: 100,
+    deductiblePercent: 5,
+    monthlyRate: 0.0050,
+    rankModifierBasisPoints: 500
+  })
+});
+
+function ACS_normalizeInsurancePlan(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toUpperCase();
+
+  return ACS_INSURANCE_PLANS[normalized]
+    ? normalized
+    : null;
+}
+
+function ACS_getInsurancePlan(planCode) {
+  const normalized =
+    ACS_normalizeInsurancePlan(planCode);
+
+  if (!normalized) {
+    throw new Error(
+      "AIRCRAFT_INSURANCE_PLAN_INVALID"
+    );
+  }
+
+  return ACS_INSURANCE_PLANS[normalized];
+}
+
+/* ============================================================
+   AGE RISK MULTIPLIER
+   ============================================================ */
+
+function ACS_getInsuranceAgeMultiplier(ageYears) {
+  const age = Number(ageYears);
+
+  if (!Number.isFinite(age) || age < 0) {
+    throw new Error(
+      "AIRCRAFT_INSURANCE_AGE_INVALID"
+    );
+  }
+
+  if (age <= 5) {
+    return 1.00;
+  }
+
+  if (age <= 10) {
+    return 1.10;
+  }
+
+  if (age <= 15) {
+    return 1.25;
+  }
+
+  if (age <= 20) {
+    return 1.45;
+  }
+
+  return 1.75;
+}
+
+/* ============================================================
+   MONTHLY PREMIUM CALCULATION
+   ------------------------------------------------------------
+   The aircraft value and age must come from PostgreSQL.
+   This function never obtains time from JavaScript.
+   ============================================================ */
+
+function ACS_calculateInsurancePremium({
+  planCode,
+  currentValue,
+  ageYears
+}) {
+  const plan = ACS_getInsurancePlan(planCode);
+
+  const insuredValue =
+    ACS_toInteger(currentValue);
+
+  if (insuredValue < 0) {
+    throw new Error(
+      "AIRCRAFT_INSURANCE_VALUE_INVALID"
+    );
+  }
+
+  const ageMultiplier =
+    ACS_getInsuranceAgeMultiplier(ageYears);
+
+  const monthlyPremium = Math.max(
+    0,
+    Math.round(
+      insuredValue *
+      plan.monthlyRate *
+      ageMultiplier
+    )
+  );
+
+  return {
+    plan_code: plan.planCode,
+    insured_value: insuredValue,
+    coverage_percent:
+      plan.coveragePercent,
+    deductible_percent:
+      plan.deductiblePercent,
+    monthly_rate:
+      plan.monthlyRate,
+    age_multiplier:
+      ageMultiplier,
+    monthly_premium:
+      monthlyPremium,
+
+    /*
+     * Future RANK authority reads this value only when:
+     * - policy_status = ACTIVE
+     * - outstanding_balance = 0
+     */
+    rank_modifier_basis_points:
+      plan.rankModifierBasisPoints
+  };
+}
+
+/* ============================================================
    OFFICIAL SIMULATION PERIOD
    ============================================================ */
 
