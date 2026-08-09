@@ -2048,8 +2048,6 @@ export async function ACS_ensureFinancePeriod(
     finance
   };
 }
-
-}
  
 export {
   ACS_INSURANCE_PLANS,
