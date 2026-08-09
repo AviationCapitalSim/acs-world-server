@@ -14,6 +14,10 @@
 import express from "express";
 import { pool } from "../db/pool.js";
 import { requireAuth } from "../middleware/auth.js";
+import {
+  ACS_INSURANCE_PLANS,
+  ACS_calculateInsurancePremium
+} from "./finance_core.js";
 
 const router = express.Router();
 
@@ -7166,5 +7170,196 @@ insertedAircraft.push(fleetAircraft);
     client.release();
   }
 });
+
+/* ============================================================
+   AIRCRAFT INSURANCE — READ
+   ============================================================ */
+
+router.get(
+  "/aircraft/fleet/:id/insurance",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const airlineId = Number(req.airline_id);
+      const aircraftId = Number(req.params.id);
+
+      if (
+        !Number.isInteger(airlineId) ||
+        airlineId <= 0 ||
+        !Number.isInteger(aircraftId) ||
+        aircraftId <= 0
+      ) {
+        return res.status(400).json({
+          ok: false,
+          error: "INVALID_AIRCRAFT"
+        });
+      }
+
+      const result = await pool.query(
+        `
+        SELECT
+          af.id AS aircraft_id,
+          af.aircraft_uid,
+          af.registration,
+          af.aircraft_name,
+          af.current_value,
+          af.year_built,
+
+          aip.policy_uid,
+          aip.plan_code,
+          aip.policy_status,
+          aip.insured_value,
+          aip.coverage_percent,
+          aip.deductible_percent,
+          aip.monthly_rate,
+          aip.age_multiplier,
+          aip.monthly_premium,
+          aip.outstanding_balance,
+          aip.policy_start_sim,
+          aip.policy_end_sim,
+          aip.last_payment_sim,
+          aip.next_payment_sim,
+
+          acs_get_current_sim_time()
+            AS current_sim_time,
+
+          GREATEST(
+            0,
+            EXTRACT(
+              YEAR FROM acs_get_current_sim_time()
+            )::INTEGER
+            -
+            COALESCE(
+              af.year_built,
+              EXTRACT(
+                YEAR FROM acs_get_current_sim_time()
+              )::INTEGER
+            )
+          ) AS age_years
+
+        FROM public.aircraft_fleet af
+
+        JOIN public.aircraft_insurance_policies aip
+          ON aip.aircraft_id = af.id
+         AND aip.airline_id = af.airline_id
+
+        WHERE af.id = $1
+          AND af.airline_id = $2
+
+        LIMIT 1
+        `,
+        [
+          aircraftId,
+          airlineId
+        ]
+      );
+
+      if (!result.rows.length) {
+        return res.status(404).json({
+          ok: false,
+          error: "AIRCRAFT_INSURANCE_NOT_FOUND"
+        });
+      }
+
+      const row = result.rows[0];
+
+      const basicQuote =
+        ACS_calculateInsurancePremium({
+          planCode: "BASIC",
+          currentValue: row.current_value,
+          ageYears: row.age_years
+        });
+
+      const standardQuote =
+        ACS_calculateInsurancePremium({
+          planCode: "STANDARD",
+          currentValue: row.current_value,
+          ageYears: row.age_years
+        });
+
+      const goldQuote =
+        ACS_calculateInsurancePremium({
+          planCode: "GOLD",
+          currentValue: row.current_value,
+          ageYears: row.age_years
+        });
+
+      return res.json({
+        ok: true,
+
+        aircraft: {
+          id: Number(row.aircraft_id),
+          aircraft_uid: row.aircraft_uid,
+          registration: row.registration,
+          aircraft_name: row.aircraft_name,
+          current_value:
+            Number(row.current_value || 0),
+          year_built:
+            Number(row.year_built || 0),
+          age_years:
+            Number(row.age_years || 0)
+        },
+
+        policy: {
+          policy_uid: row.policy_uid,
+          plan_code: row.plan_code,
+          policy_status: row.policy_status,
+          insured_value:
+            Number(row.insured_value || 0),
+          coverage_percent:
+            Number(row.coverage_percent || 0),
+          deductible_percent:
+            Number(row.deductible_percent || 0),
+          monthly_rate:
+            Number(row.monthly_rate || 0),
+          age_multiplier:
+            Number(row.age_multiplier || 0),
+          monthly_premium:
+            Number(row.monthly_premium || 0),
+          outstanding_balance:
+            Number(row.outstanding_balance || 0),
+          policy_start_sim:
+            row.policy_start_sim,
+          policy_end_sim:
+            row.policy_end_sim,
+          last_payment_sim:
+            row.last_payment_sim,
+          next_payment_sim:
+            row.next_payment_sim
+        },
+
+        quotes: {
+          BASIC: basicQuote,
+          STANDARD: standardQuote,
+          GOLD: goldQuote
+        },
+
+        current_sim_time:
+          row.current_sim_time,
+
+        pricing: {
+          value_source:
+            "aircraft_fleet.current_value",
+          age_source:
+            "acs_get_current_sim_time",
+          currency: "USD"
+        }
+      });
+
+    } catch (error) {
+      console.error(
+        "AIRCRAFT INSURANCE READ ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        ok: false,
+        error:
+          "AIRCRAFT_INSURANCE_READ_FAILED",
+        details: error.message
+      });
+    }
+  }
+);
 
 export default router;
