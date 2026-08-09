@@ -7219,6 +7219,8 @@ router.get(
           aip.policy_end_sim,
           aip.last_payment_sim,
           aip.next_payment_sim,
+          aip.pending_plan_code,
+          aip.pending_plan_effective_sim,
 
           acs_get_current_sim_time()
             AS current_sim_time,
@@ -7325,7 +7327,11 @@ router.get(
           last_payment_sim:
             row.last_payment_sim,
           next_payment_sim:
-            row.next_payment_sim
+            row.next_payment_sim,
+          pending_plan_code:
+            row.pending_plan_code,
+          pending_plan_effective_sim:
+            row.pending_plan_effective_sim
         },
 
         quotes: {
@@ -7358,6 +7364,259 @@ router.get(
           "AIRCRAFT_INSURANCE_READ_FAILED",
         details: error.message
       });
+    }
+  }
+);
+
+/* ============================================================
+   AIRCRAFT INSURANCE — PLAN CHANGE
+   ============================================================ */
+
+router.post(
+  "/aircraft/fleet/:id/insurance/plan",
+  requireAuth,
+  async (req, res) => {
+    const client = await pool.connect();
+
+    try {
+      const airlineId = Number(req.airline_id);
+      const aircraftId = Number(req.params.id);
+
+      const requestedPlan = String(
+        req.body?.plan_code || ""
+      )
+        .trim()
+        .toUpperCase();
+
+      const validPlans = [
+        "BASIC",
+        "STANDARD",
+        "GOLD"
+      ];
+
+      if (
+        !Number.isInteger(airlineId) ||
+        airlineId <= 0 ||
+        !Number.isInteger(aircraftId) ||
+        aircraftId <= 0 ||
+        !validPlans.includes(requestedPlan)
+      ) {
+        return res.status(400).json({
+          ok: false,
+          error: "INVALID_INSURANCE_REQUEST",
+          message:
+            "The selected insurance plan is invalid."
+        });
+      }
+
+      await client.query("BEGIN");
+
+      const result = await client.query(
+        `
+        SELECT
+          af.id AS aircraft_id,
+          af.registration,
+          af.current_value,
+          af.year_built,
+
+          aip.id AS policy_id,
+          aip.policy_uid,
+          aip.plan_code,
+          aip.policy_status,
+          aip.outstanding_balance,
+          aip.next_payment_sim,
+          aip.pending_plan_code,
+          aip.pending_plan_effective_sim,
+
+          acs_get_current_sim_time()
+            AS current_sim_time,
+
+          GREATEST(
+            0,
+            EXTRACT(
+              YEAR FROM acs_get_current_sim_time()
+            )::INTEGER
+            -
+            COALESCE(
+              af.year_built,
+              EXTRACT(
+                YEAR FROM acs_get_current_sim_time()
+              )::INTEGER
+            )
+          ) AS age_years
+
+        FROM public.aircraft_fleet af
+
+        JOIN public.aircraft_insurance_policies aip
+          ON aip.aircraft_id = af.id
+         AND aip.airline_id = af.airline_id
+
+        WHERE af.id = $1
+          AND af.airline_id = $2
+
+        LIMIT 1
+
+        FOR UPDATE OF af, aip
+        `,
+        [
+          aircraftId,
+          airlineId
+        ]
+      );
+
+      if (!result.rows.length) {
+        await client.query("ROLLBACK");
+
+        return res.status(404).json({
+          ok: false,
+          error: "AIRCRAFT_INSURANCE_NOT_FOUND",
+          message:
+            "Insurance information was not found."
+        });
+      }
+
+      const policy = result.rows[0];
+
+      const currentPlan = String(
+        policy.plan_code || "BASIC"
+      ).toUpperCase();
+
+      if (
+        Number(policy.outstanding_balance || 0) > 0
+      ) {
+        await client.query("ROLLBACK");
+
+        return res.status(409).json({
+          ok: false,
+          error: "INSURANCE_BALANCE_PENDING",
+          message:
+            "Outstanding insurance debt must be paid before changing the policy."
+        });
+      }
+
+      const planOrder = {
+        BASIC: 1,
+        STANDARD: 2,
+        GOLD: 3
+      };
+
+      let changeType = "UNCHANGED";
+      let effectiveSim =
+        policy.current_sim_time;
+
+      if (requestedPlan === currentPlan) {
+        await client.query(
+          `
+          UPDATE public.aircraft_insurance_policies
+          SET
+            pending_plan_code = NULL,
+            pending_plan_effective_sim = NULL,
+            updated_at = NOW()
+          WHERE id = $1
+          `,
+          [policy.policy_id]
+        );
+
+      } else if (
+        planOrder[requestedPlan] >
+        planOrder[currentPlan]
+      ) {
+        const quote =
+          ACS_calculateInsurancePremium({
+            planCode: requestedPlan,
+            currentValue: policy.current_value,
+            ageYears: policy.age_years
+          });
+
+        await client.query(
+          `
+          UPDATE public.aircraft_insurance_policies
+          SET
+            plan_code = $2,
+            policy_status = 'ACTIVE',
+            insured_value = $3,
+            coverage_percent = $4,
+            deductible_percent = $5,
+            monthly_rate = $6,
+            age_multiplier = $7,
+            monthly_premium = $8,
+            rank_modifier_basis_points = $9,
+            pending_plan_code = NULL,
+            pending_plan_effective_sim = NULL,
+            updated_at = NOW()
+          WHERE id = $1
+          `,
+          [
+            policy.policy_id,
+            requestedPlan,
+            quote.insured_value,
+            quote.coverage_percent,
+            quote.deductible_percent,
+            quote.monthly_rate,
+            quote.age_multiplier,
+            quote.monthly_premium,
+            quote.rank_modifier_basis_points
+          ]
+        );
+
+        changeType = "UPGRADE";
+        effectiveSim =
+          policy.current_sim_time;
+
+      } else {
+        await client.query(
+          `
+          UPDATE public.aircraft_insurance_policies
+          SET
+            pending_plan_code = $2,
+            pending_plan_effective_sim =
+              next_payment_sim,
+            updated_at = NOW()
+          WHERE id = $1
+          `,
+          [
+            policy.policy_id,
+            requestedPlan
+          ]
+        );
+
+        changeType =
+          "DOWNGRADE_SCHEDULED";
+
+        effectiveSim =
+          policy.next_payment_sim;
+      }
+
+      await client.query("COMMIT");
+
+      return res.json({
+        ok: true,
+        aircraft_id: aircraftId,
+        previous_plan: currentPlan,
+        requested_plan: requestedPlan,
+        change_type: changeType,
+        effective_sim: effectiveSim
+      });
+
+    } catch (error) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (_) {}
+
+      console.error(
+        "AIRCRAFT INSURANCE PLAN ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        ok: false,
+        error:
+          "AIRCRAFT_INSURANCE_PLAN_FAILED",
+        details: error.message
+      });
+
+    } finally {
+      client.release();
     }
   }
 );
