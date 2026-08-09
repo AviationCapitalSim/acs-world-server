@@ -517,9 +517,13 @@ async function ACS_settleAircraftInsurance(
       AND COALESCE(cf.capital, 0)
           >= aip.outstanding_balance
 
-    ORDER BY aip.id
+    ORDER BY
+  aip.outstanding_balance ASC,
+  aip.id
 
-    FOR UPDATE OF aip, cf
+LIMIT 1
+
+FOR UPDATE OF aip, cf
     `,
     [airlineId, cutoffSimTime]
   );
@@ -1078,11 +1082,18 @@ async function ACS_getPeriodBoundaries(
       MAKE_DATE($1, $2, 1)::TIMESTAMP
         AS period_start,
 
-      (
+            (
         MAKE_DATE($1, $2, 1)
         + INTERVAL '1 month'
       )::TIMESTAMP
         AS next_period_start,
+
+      (
+        MAKE_DATE($1, $2, 1)
+        + INTERVAL '1 month'
+        - INTERVAL '1 millisecond'
+      )::TIMESTAMP
+        AS period_end,
 
       FLOOR(
         EXTRACT(
@@ -1733,6 +1744,7 @@ export async function ACS_ensureFinancePeriod(
    * Current period: ensure mandatory policies and settle
    * every insurance anniversary already reached.
    */
+   
   if (openPeriodNumber === officialPeriodNumber) {
     insuranceCreatedCount +=
       await ACS_ensureBasicAircraftInsurance(
@@ -1775,6 +1787,7 @@ export async function ACS_ensureFinancePeriod(
    * This also repairs a month already opened by the previous
    * rollover sequence without its opening payroll.
    */
+   
   const currentBoundaries =
     await ACS_getPeriodBoundaries(
       client,
@@ -1862,11 +1875,11 @@ export async function ACS_ensureFinancePeriod(
         boundaries.next_period_timestamp_ms
       ) - 1;
 
-         insuranceAppliedCount +=
+      insuranceAppliedCount +=
       await ACS_settleAircraftInsurance(
         client,
         normalizedAirlineId,
-        boundaries.next_period_start
+        boundaries.period_end
       );
 
     const insuranceFinanceRefresh =
