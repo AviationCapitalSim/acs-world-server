@@ -484,7 +484,6 @@ async function ACS_settleAircraftInsurance(
   airlineId,
   cutoffSimTime
 ) {
-  ) {
   let appliedCount = 0;
 
   /*
