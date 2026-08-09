@@ -552,6 +552,7 @@ async function ACS_archiveFinanceMonth(
       cost_maintenance,
       cost_hr,
       cost_leasing,
+      cost_insurance,      
       cost_loans,
       cost_other,
 
@@ -600,15 +601,16 @@ async function ACS_archiveFinanceMonth(
       $21,
       $22,
       $23,
-
       $24,
-      $25,
 
+      $25,
       $26,
+
+      $27,
       0,
 
-      $27,
-      $27,
+      $28,
+      $28,
       'MONTHLY_CLOSE',
       'VERIFIED',
       MAKE_DATE($2, $3, 1)::TIMESTAMP,
@@ -661,6 +663,7 @@ async function ACS_archiveFinanceMonth(
       ACS_toInteger(finance.cost_maintenance),
       ACS_toInteger(finance.cost_hr),
       ACS_toInteger(finance.cost_leasing),
+      ACS_toInteger(finance.cost_insurance),      
       ACS_toInteger(finance.cost_loans),
       ACS_toInteger(finance.cost_other),
 
@@ -772,6 +775,7 @@ async function ACS_openNextFinanceMonth(
       cost_maintenance = 0,
       cost_hr = 0,
       cost_leasing = 0,
+      cost_insurance = 0,     
       cost_airport = 0,
       cost_other = 0,
 
