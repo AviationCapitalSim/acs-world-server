@@ -484,7 +484,32 @@ async function ACS_settleAircraftInsurance(
   airlineId,
   cutoffSimTime
 ) {
+  ) {
   let appliedCount = 0;
+
+  /*
+   * Activate scheduled downgrades whose historical
+   * effective date has arrived.
+   */
+  await client.query(
+    `
+    UPDATE public.aircraft_insurance_policies
+    SET
+      plan_code = pending_plan_code,
+      pending_plan_code = NULL,
+      pending_plan_effective_sim = NULL,
+      updated_at = NOW()
+    WHERE airline_id = $1
+      AND pending_plan_code IS NOT NULL
+      AND pending_plan_effective_sim IS NOT NULL
+      AND pending_plan_effective_sim
+          <= $2::TIMESTAMP
+    `,
+    [
+      airlineId,
+      cutoffSimTime
+    ]
+  );
 
   /*
    * First restore policies whose complete outstanding balance
