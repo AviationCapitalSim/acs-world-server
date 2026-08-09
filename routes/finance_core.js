@@ -212,6 +212,923 @@ function ACS_calculateInsurancePremium({
 }
 
 /* ============================================================
+   ACS AIRCRAFT INSURANCE — OCC ALERT AUTHORITY v1.0
+   ------------------------------------------------------------
+   Alert actions:
+   - PAID
+   - PAYMENT_DUE
+   - RESTORED
+   - ACTIVATED
+   - UPGRADED
+   - DOWNGRADE_SCHEDULED
+   ============================================================ */
+
+async function ACS_createInsuranceOccAlert(
+  client,
+  {
+    airlineId,
+    policyUid,
+    aircraftId,
+    registration,
+    planCode,
+    action,
+    amount,
+    outstandingBalance = 0,
+    nextPaymentSim = null,
+    eventSimTime,
+    monthKey
+  }
+) {
+  const normalizedAction = String(action || "")
+    .trim()
+    .toUpperCase();
+
+  const allowedActions = new Set([
+    "PAID",
+    "PAYMENT_DUE",
+    "RESTORED",
+    "ACTIVATED",
+    "UPGRADED",
+    "DOWNGRADE_SCHEDULED"
+  ]);
+
+  if (!allowedActions.has(normalizedAction)) {
+    throw new Error(
+      "AIRCRAFT_INSURANCE_ALERT_ACTION_INVALID"
+    );
+  }
+
+  const cleanRegistration =
+    String(registration || "UNREGISTERED").trim();
+
+  const cleanPlan =
+    ACS_normalizeInsurancePlan(planCode) || "BASIC";
+
+  const cleanAmount =
+    Math.max(0, ACS_toInteger(amount));
+
+  const cleanOutstanding =
+    Math.max(
+      0,
+      ACS_toInteger(outstandingBalance)
+    );
+
+  const alertKeySuffix =
+    monthKey ||
+    String(eventSimTime || "CURRENT");
+
+  const alertKey =
+    `INSURANCE_${normalizedAction}:` +
+    `${policyUid}:` +
+    `${alertKeySuffix}`;
+
+  let level = "info";
+  let title = "";
+  let message = "";
+
+  if (normalizedAction === "PAID") {
+    title = "AIRCRAFT INSURANCE PAID";
+
+    message =
+      `Monthly insurance premium for aircraft ` +
+      `${cleanRegistration} has been paid successfully.\n\n` +
+      `Policy: ${cleanPlan}\n` +
+      `Amount paid: USD ${cleanAmount.toLocaleString("en-US")}\n` +
+      `Coverage: ACTIVE` +
+      (
+        nextPaymentSim
+          ? `\nNext payment: ${nextPaymentSim}`
+          : ""
+      );
+  }
+
+  if (normalizedAction === "PAYMENT_DUE") {
+    level = cleanOutstanding > cleanAmount
+      ? "critical"
+      : "warning";
+
+    title = cleanOutstanding > cleanAmount
+      ? "AIRCRAFT INSURANCE COVERAGE SUSPENDED"
+      : "AIRCRAFT INSURANCE PAYMENT DUE";
+
+    message =
+      `Insurance payment for aircraft ` +
+      `${cleanRegistration} could not be completed ` +
+      `due to insufficient company funds.\n\n` +
+      `Policy: ${cleanPlan}\n` +
+      `Amount due: USD ${cleanAmount.toLocaleString("en-US")}\n` +
+      `Outstanding balance: USD ` +
+      `${cleanOutstanding.toLocaleString("en-US")}\n` +
+      `Coverage status: PAYMENT DUE\n\n` +
+      `Settle the outstanding balance to restore ` +
+      `full coverage.`;
+  }
+
+  if (normalizedAction === "RESTORED") {
+    title = "AIRCRAFT INSURANCE RESTORED";
+
+    message =
+      `Outstanding insurance premiums for aircraft ` +
+      `${cleanRegistration} have been paid.\n\n` +
+      `Amount settled: USD ` +
+      `${cleanAmount.toLocaleString("en-US")}\n` +
+      `Policy: ${cleanPlan}\n` +
+      `Full coverage has been restored.`;
+  }
+
+  if (normalizedAction === "ACTIVATED") {
+    title = "AIRCRAFT INSURANCE ACTIVATED";
+
+    message =
+      `Mandatory aircraft insurance has been activated ` +
+      `for aircraft ${cleanRegistration}.\n\n` +
+      `Policy: ${cleanPlan}\n` +
+      `Initial premium: USD ` +
+      `${cleanAmount.toLocaleString("en-US")}\n` +
+      `Coverage status: ACTIVE`;
+  }
+
+  if (normalizedAction === "UPGRADED") {
+    title = "AIRCRAFT INSURANCE UPGRADED";
+
+    message =
+      `Insurance coverage for aircraft ` +
+      `${cleanRegistration} has been upgraded.\n\n` +
+      `New policy: ${cleanPlan}\n` +
+      `Amount charged: USD ` +
+      `${cleanAmount.toLocaleString("en-US")}`;
+  }
+
+  if (normalizedAction === "DOWNGRADE_SCHEDULED") {
+    title = "INSURANCE DOWNGRADE SCHEDULED";
+
+    message =
+      `Insurance coverage downgrade for aircraft ` +
+      `${cleanRegistration} has been scheduled.\n\n` +
+      `Next policy: ${cleanPlan}` +
+      (
+        nextPaymentSim
+          ? `\nEffective date: ${nextPaymentSim}`
+          : ""
+      );
+  }
+
+  const result = await client.query(
+    `
+    INSERT INTO public.occ_alerts (
+      airline_id,
+      alert_key,
+      category,
+      level,
+      title,
+      message,
+      source,
+      source_ref,
+      event_sim_time,
+      created_at,
+      updated_at
+    )
+    VALUES (
+      $1,
+      $2,
+      'insurance',
+      $3,
+      $4,
+      $5,
+      'aircraft_insurance_policies',
+      $6,
+      $7,
+      NOW(),
+      NOW()
+    )
+    ON CONFLICT (
+      airline_id,
+      alert_key
+    )
+    WHERE deleted_at IS NULL
+    DO NOTHING
+    RETURNING id
+    `,
+    [
+      airlineId,
+      alertKey,
+      level,
+      title,
+      message,
+      String(policyUid || aircraftId),
+      eventSimTime || null
+    ]
+  );
+
+  return result.rows[0] || null;
+}
+
+/* ============================================================
+   ACS AIRCRAFT INSURANCE — OCC ALERTS
+   ============================================================ */
+
+async function ACS_createInsuranceOccAlert(
+  client,
+  {
+    airlineId,
+    policyUid,
+    registration,
+    planCode,
+    action,
+    amount,
+    outstandingBalance = 0,
+    nextPaymentSim = null,
+    eventSimTime,
+    monthKey
+  }
+) {
+  const normalizedAction = String(action || "")
+    .trim()
+    .toUpperCase();
+
+  const cleanRegistration =
+    String(registration || "UNREGISTERED").trim();
+
+  const cleanPlan =
+    ACS_normalizeInsurancePlan(planCode) || "BASIC";
+
+  const cleanAmount =
+    Math.max(0, ACS_toInteger(amount));
+
+  const cleanOutstanding =
+    Math.max(0, ACS_toInteger(outstandingBalance));
+
+  const messages = {
+    PAID: {
+      level: "info",
+      title: "AIRCRAFT INSURANCE PAID",
+      message:
+        `Monthly insurance premium for aircraft ` +
+        `${cleanRegistration} has been paid successfully.\n\n` +
+        `Policy: ${cleanPlan}\n` +
+        `Amount paid: USD ${cleanAmount.toLocaleString("en-US")}\n` +
+        `Coverage: ACTIVE` +
+        (
+          nextPaymentSim
+            ? `\nNext payment: ${nextPaymentSim}`
+            : ""
+        )
+    },
+
+    PAYMENT_DUE: {
+      level:
+        cleanOutstanding > cleanAmount
+          ? "critical"
+          : "warning",
+      title:
+        cleanOutstanding > cleanAmount
+          ? "AIRCRAFT INSURANCE COVERAGE SUSPENDED"
+          : "AIRCRAFT INSURANCE PAYMENT DUE",
+      message:
+        `Insurance payment for aircraft ` +
+        `${cleanRegistration} could not be completed ` +
+        `due to insufficient company funds.\n\n` +
+        `Policy: ${cleanPlan}\n` +
+        `Amount due: USD ${cleanAmount.toLocaleString("en-US")}\n` +
+        `Outstanding balance: USD ` +
+        `${cleanOutstanding.toLocaleString("en-US")}\n` +
+        `Coverage status: PAYMENT DUE`
+    },
+
+    RESTORED: {
+      level: "info",
+      title: "AIRCRAFT INSURANCE RESTORED",
+      message:
+        `Outstanding insurance premiums for aircraft ` +
+        `${cleanRegistration} have been paid.\n\n` +
+        `Amount settled: USD ` +
+        `${cleanAmount.toLocaleString("en-US")}\n` +
+        `Policy: ${cleanPlan}\n` +
+        `Full coverage has been restored.`
+    }
+  };
+
+  const alert = messages[normalizedAction];
+
+  if (!alert) {
+    throw new Error(
+      "AIRCRAFT_INSURANCE_ALERT_ACTION_INVALID"
+    );
+  }
+
+  const alertKey =
+    `INSURANCE_${normalizedAction}:` +
+    `${policyUid}:${monthKey}`;
+
+  const result = await client.query(
+    `
+    INSERT INTO public.occ_alerts (
+      airline_id,
+      alert_key,
+      category,
+      level,
+      title,
+      message,
+      source,
+      source_ref,
+      event_sim_time,
+      created_at,
+      updated_at
+    )
+    VALUES (
+      $1,
+      $2,
+      'insurance',
+      $3,
+      $4,
+      $5,
+      'aircraft_insurance_policies',
+      $6,
+      $7,
+      NOW(),
+      NOW()
+    )
+    ON CONFLICT (airline_id, alert_key)
+    WHERE deleted_at IS NULL
+    DO NOTHING
+    RETURNING id
+    `,
+    [
+      airlineId,
+      alertKey,
+      alert.level,
+      alert.title,
+      alert.message,
+      String(policyUid),
+      eventSimTime
+    ]
+  );
+
+  return result.rows[0] || null;
+}
+
+/* ============================================================
+   ENSURE MANDATORY BASIC POLICY
+   ============================================================ */
+
+async function ACS_ensureBasicAircraftInsurance(
+  client,
+  airlineId,
+  officialPeriod
+) {
+  const aircraftResult = await client.query(
+    `
+    SELECT
+      af.id,
+      af.registration,
+      af.current_value,
+
+      GREATEST(
+        0,
+        EXTRACT(
+          YEAR FROM acs_get_current_sim_time()
+        )::INTEGER
+        - COALESCE(
+            af.year_built,
+            EXTRACT(
+              YEAR FROM acs_get_current_sim_time()
+            )::INTEGER
+          )
+      ) AS age_years
+
+    FROM public.aircraft_fleet af
+
+    LEFT JOIN public.aircraft_insurance_policies aip
+      ON aip.aircraft_id = af.id
+
+    WHERE af.airline_id = $1
+      AND aip.id IS NULL
+      AND UPPER(COALESCE(af.status, 'ACTIVE'))
+          <> 'SCRAPPED'
+
+    ORDER BY af.id
+
+    FOR UPDATE OF af
+    `,
+    [airlineId]
+  );
+
+  let createdCount = 0;
+
+  for (const aircraft of aircraftResult.rows) {
+    const quote = ACS_calculateInsurancePremium({
+      planCode: "BASIC",
+      currentValue: aircraft.current_value,
+      ageYears: aircraft.age_years
+    });
+
+    const inserted = await client.query(
+      `
+      INSERT INTO public.aircraft_insurance_policies (
+        airline_id,
+        aircraft_id,
+        plan_code,
+        policy_status,
+        insured_value,
+        coverage_percent,
+        deductible_percent,
+        monthly_rate,
+        age_multiplier,
+        monthly_premium,
+        rank_modifier_basis_points,
+        outstanding_balance,
+        policy_start_sim,
+        policy_end_sim,
+        next_payment_sim,
+        created_at,
+        updated_at
+      )
+      VALUES (
+        $1,
+        $2,
+        'BASIC',
+        'ACTIVE',
+        $3,
+        $4,
+        $5,
+        $6,
+        $7,
+        $8,
+        0,
+        0,
+        $9::TIMESTAMP,
+        $9::TIMESTAMP + INTERVAL '1 year',
+        $9::TIMESTAMP,
+        NOW(),
+        NOW()
+      )
+      ON CONFLICT (aircraft_id)
+      DO NOTHING
+      RETURNING id
+      `,
+      [
+        airlineId,
+        aircraft.id,
+        quote.insured_value,
+        quote.coverage_percent,
+        quote.deductible_percent,
+        quote.monthly_rate,
+        quote.age_multiplier,
+        quote.monthly_premium,
+        officialPeriod.sim_time
+      ]
+    );
+
+    if (inserted.rows.length) {
+      createdCount += 1;
+    }
+  }
+
+  return createdCount;
+}
+
+/* ============================================================
+   SETTLE INSURANCE THROUGH ACS SIMULATION TIME
+   ============================================================ */
+
+async function ACS_settleAircraftInsurance(
+  client,
+  airlineId,
+  cutoffSimTime
+) {
+  let appliedCount = 0;
+
+  /*
+   * First restore policies whose complete outstanding balance
+   * can now be paid.
+   */
+  const arrearsResult = await client.query(
+    `
+    SELECT
+      aip.*,
+      af.registration,
+      cf.capital,
+
+      TO_CHAR(
+        $2::TIMESTAMP,
+        'YYYY-MM'
+      ) AS month_key
+
+    FROM public.aircraft_insurance_policies aip
+
+    JOIN public.aircraft_fleet af
+      ON af.id = aip.aircraft_id
+     AND af.airline_id = aip.airline_id
+
+    JOIN public.company_finance cf
+      ON cf.airline_id = aip.airline_id
+
+    WHERE aip.airline_id = $1
+      AND aip.policy_status = 'PAYMENT_DUE'
+      AND aip.outstanding_balance > 0
+      AND COALESCE(cf.capital, 0)
+          >= aip.outstanding_balance
+
+    ORDER BY aip.id
+
+    FOR UPDATE OF aip, cf
+    `,
+    [airlineId, cutoffSimTime]
+  );
+
+  for (const policy of arrearsResult.rows) {
+    const amount =
+      ACS_toInteger(policy.outstanding_balance);
+
+    const paymentReference =
+      `INSURANCE_ARREARS:` +
+      `${policy.policy_uid}:` +
+      `${policy.month_key}`;
+
+    const logResult = await client.query(
+      `
+      INSERT INTO public.finance_log (
+        airline_id,
+        type,
+        source,
+        amount,
+        timestamp,
+        reference_uid,
+        description,
+        created_at
+      )
+      VALUES (
+        $1,
+        'PAYMENT',
+        'AIRCRAFT_INSURANCE_ARREARS',
+        $2,
+        FLOOR(
+          EXTRACT(EPOCH FROM $3::TIMESTAMP) * 1000
+        )::BIGINT,
+        $4,
+        $5,
+        NOW()
+      )
+      ON CONFLICT (reference_uid)
+      DO NOTHING
+      RETURNING id
+      `,
+      [
+        airlineId,
+        amount,
+        cutoffSimTime,
+        paymentReference,
+        `Insurance arrears paid for aircraft ` +
+          `${policy.registration || "UNREGISTERED"}`
+      ]
+    );
+
+    if (!logResult.rows.length) {
+      continue;
+    }
+
+    await client.query(
+      `
+      UPDATE public.company_finance
+      SET
+        capital = COALESCE(capital, 0) - $2,
+        debt = GREATEST(
+          0,
+          COALESCE(debt, 0) - $2
+        ),
+        updated_at = NOW()
+      WHERE airline_id = $1
+      `,
+      [airlineId, amount]
+    );
+
+    await client.query(
+      `
+      UPDATE public.aircraft_insurance_policies
+      SET
+        policy_status = 'ACTIVE',
+        outstanding_balance = 0,
+        updated_at = NOW()
+      WHERE id = $1
+      `,
+      [policy.id]
+    );
+
+    await ACS_createInsuranceOccAlert(
+      client,
+      {
+        airlineId,
+        policyUid: policy.policy_uid,
+        registration: policy.registration,
+        planCode: policy.plan_code,
+        action: "RESTORED",
+        amount,
+        eventSimTime: cutoffSimTime,
+        monthKey: policy.month_key
+      }
+    );
+
+    appliedCount += 1;
+  }
+
+  /*
+   * Process every premium whose anniversary has arrived.
+   */
+  while (true) {
+    const dueResult = await client.query(
+      `
+      SELECT
+        aip.*,
+        af.registration,
+        af.current_value,
+        cf.capital,
+
+        GREATEST(
+          0,
+          EXTRACT(
+            YEAR FROM aip.next_payment_sim
+          )::INTEGER
+          - COALESCE(
+              af.year_built,
+              EXTRACT(
+                YEAR FROM aip.next_payment_sim
+              )::INTEGER
+            )
+        ) AS age_years,
+
+        TO_CHAR(
+          aip.next_payment_sim,
+          'YYYY-MM'
+        ) AS month_key
+
+      FROM public.aircraft_insurance_policies aip
+
+      JOIN public.aircraft_fleet af
+        ON af.id = aip.aircraft_id
+       AND af.airline_id = aip.airline_id
+
+      JOIN public.company_finance cf
+        ON cf.airline_id = aip.airline_id
+
+      WHERE aip.airline_id = $1
+        AND aip.policy_status IN (
+          'ACTIVE',
+          'PAYMENT_DUE'
+        )
+        AND aip.next_payment_sim <= $2::TIMESTAMP
+
+      ORDER BY
+        aip.next_payment_sim,
+        aip.id
+
+      LIMIT 1
+
+      FOR UPDATE OF aip, cf
+      `,
+      [airlineId, cutoffSimTime]
+    );
+
+    if (!dueResult.rows.length) {
+      break;
+    }
+
+    const policy = dueResult.rows[0];
+
+    const quote = ACS_calculateInsurancePremium({
+      planCode: policy.plan_code,
+      currentValue: policy.current_value,
+      ageYears: policy.age_years
+    });
+
+    const premium =
+      ACS_toInteger(quote.monthly_premium);
+
+    const paymentReference =
+      `INSURANCE_MONTHLY:` +
+      `${policy.policy_uid}:` +
+      `${policy.month_key}`;
+
+    const existingLog = await client.query(
+      `
+      SELECT id
+      FROM public.finance_log
+      WHERE reference_uid = $1
+      LIMIT 1
+      `,
+      [paymentReference]
+    );
+
+    if (existingLog.rows.length) {
+      await client.query(
+        `
+        UPDATE public.aircraft_insurance_policies
+        SET
+          next_payment_sim =
+            next_payment_sim + INTERVAL '1 month',
+          updated_at = NOW()
+        WHERE id = $1
+        `,
+        [policy.id]
+      );
+
+      continue;
+    }
+
+    const cannotPay =
+      ACS_toInteger(policy.outstanding_balance) > 0 ||
+      ACS_toInteger(policy.capital) < premium;
+
+    await client.query(
+      `
+      INSERT INTO public.finance_log (
+        airline_id,
+        type,
+        source,
+        amount,
+        timestamp,
+        reference_uid,
+        description,
+        created_at
+      )
+      VALUES (
+        $1,
+        'EXPENSE',
+        'AIRCRAFT_INSURANCE_MONTHLY',
+        $2,
+        FLOOR(
+          EXTRACT(
+            EPOCH FROM $3::TIMESTAMP
+          ) * 1000
+        )::BIGINT,
+        $4,
+        $5,
+        NOW()
+      )
+      `,
+      [
+        airlineId,
+        premium,
+        policy.next_payment_sim,
+        paymentReference,
+        `Monthly ${policy.plan_code} insurance for ` +
+          `${policy.registration || "UNREGISTERED"}`
+      ]
+    );
+
+    if (cannotPay) {
+      await client.query(
+        `
+        UPDATE public.company_finance
+        SET
+          expenses =
+            COALESCE(expenses, 0) + $2,
+          profit =
+            COALESCE(profit, 0) - $2,
+          cost_insurance =
+            COALESCE(cost_insurance, 0) + $2,
+          debt =
+            COALESCE(debt, 0) + $2,
+          updated_at = NOW()
+        WHERE airline_id = $1
+        `,
+        [airlineId, premium]
+      );
+
+      const updatedPolicy = await client.query(
+        `
+        UPDATE public.aircraft_insurance_policies
+        SET
+          policy_status = 'PAYMENT_DUE',
+          insured_value = $2,
+          coverage_percent = $3,
+          deductible_percent = $4,
+          monthly_rate = $5,
+          age_multiplier = $6,
+          monthly_premium = $7,
+          rank_modifier_basis_points = $8,
+          outstanding_balance =
+            outstanding_balance + $7,
+          next_payment_sim =
+            next_payment_sim + INTERVAL '1 month',
+          policy_end_sim = CASE
+            WHEN next_payment_sim >= policy_end_sim
+              THEN policy_end_sim + INTERVAL '1 year'
+            ELSE policy_end_sim
+          END,
+          updated_at = NOW()
+        WHERE id = $1
+        RETURNING outstanding_balance
+        `,
+        [
+          policy.id,
+          quote.insured_value,
+          quote.coverage_percent,
+          quote.deductible_percent,
+          quote.monthly_rate,
+          quote.age_multiplier,
+          premium,
+          quote.rank_modifier_basis_points
+        ]
+      );
+
+      await ACS_createInsuranceOccAlert(
+        client,
+        {
+          airlineId,
+          policyUid: policy.policy_uid,
+          registration: policy.registration,
+          planCode: policy.plan_code,
+          action: "PAYMENT_DUE",
+          amount: premium,
+          outstandingBalance:
+            updatedPolicy.rows[0].outstanding_balance,
+          eventSimTime: policy.next_payment_sim,
+          monthKey: policy.month_key
+        }
+      );
+    } else {
+      await client.query(
+        `
+        UPDATE public.company_finance
+        SET
+          capital =
+            COALESCE(capital, 0) - $2,
+          expenses =
+            COALESCE(expenses, 0) + $2,
+          profit =
+            COALESCE(profit, 0) - $2,
+          cost_insurance =
+            COALESCE(cost_insurance, 0) + $2,
+          updated_at = NOW()
+        WHERE airline_id = $1
+        `,
+        [airlineId, premium]
+      );
+
+      const updatedPolicy = await client.query(
+        `
+        UPDATE public.aircraft_insurance_policies
+        SET
+          policy_status = 'ACTIVE',
+          insured_value = $2,
+          coverage_percent = $3,
+          deductible_percent = $4,
+          monthly_rate = $5,
+          age_multiplier = $6,
+          monthly_premium = $7,
+          rank_modifier_basis_points = $8,
+          last_payment_sim = next_payment_sim,
+          next_payment_sim =
+            next_payment_sim + INTERVAL '1 month',
+          policy_end_sim = CASE
+            WHEN next_payment_sim >= policy_end_sim
+              THEN policy_end_sim + INTERVAL '1 year'
+            ELSE policy_end_sim
+          END,
+          updated_at = NOW()
+        WHERE id = $1
+        RETURNING
+          TO_CHAR(
+            next_payment_sim,
+            'DD MON YYYY'
+          ) AS next_payment_display
+        `,
+        [
+          policy.id,
+          quote.insured_value,
+          quote.coverage_percent,
+          quote.deductible_percent,
+          quote.monthly_rate,
+          quote.age_multiplier,
+          premium,
+          quote.rank_modifier_basis_points
+        ]
+      );
+
+      await ACS_createInsuranceOccAlert(
+        client,
+        {
+          airlineId,
+          policyUid: policy.policy_uid,
+          registration: policy.registration,
+          planCode: policy.plan_code,
+          action: "PAID",
+          amount: premium,
+          nextPaymentSim:
+            updatedPolicy.rows[0].next_payment_display,
+          eventSimTime: policy.next_payment_sim,
+          monthKey: policy.month_key
+        }
+      );
+    }
+
+    appliedCount += 1;
+  }
+
+  return appliedCount;
+}
+
+/* ============================================================
    OFFICIAL SIMULATION PERIOD
    ============================================================ */
 
@@ -1003,6 +1920,9 @@ export async function ACS_ensureFinancePeriod(
       officialPeriod
     );
 
+  let insuranceAppliedCount = 0;
+  let insuranceCreatedCount = 0;  
+   
   const financeYear =
     Number(finance.current_sim_year);
 
@@ -1021,6 +1941,38 @@ export async function ACS_ensureFinancePeriod(
       officialPeriod.month
     );
 
+    /*
+   * Current period: ensure mandatory policies and settle
+   * every insurance anniversary already reached.
+   */
+  if (openPeriodNumber === officialPeriodNumber) {
+    insuranceCreatedCount +=
+      await ACS_ensureBasicAircraftInsurance(
+        client,
+        normalizedAirlineId,
+        officialPeriod
+      );
+
+    insuranceAppliedCount +=
+      await ACS_settleAircraftInsurance(
+        client,
+        normalizedAirlineId,
+        officialPeriod.sim_time
+      );
+
+    const refreshedFinance = await client.query(
+      `
+      SELECT *
+      FROM public.company_finance
+      WHERE airline_id = $1
+      FOR UPDATE
+      `,
+      [normalizedAirlineId]
+    );
+
+    finance = refreshedFinance.rows[0];
+  }
+   
   if (openPeriodNumber > officialPeriodNumber) {
     throw new Error(
       `FINANCE_PERIOD_AHEAD_OF_SIMULATION_TIME:` +
@@ -1076,6 +2028,10 @@ export async function ACS_ensureFinancePeriod(
         payrollAppliedCount,
       current_payroll:
         currentPayrollAmount,
+      insurance_created_count:
+        insuranceCreatedCount,
+      insurance_applied_count:
+        insuranceAppliedCount,       
       current_period: officialPeriod,
       finance
     };
@@ -1087,6 +2043,7 @@ export async function ACS_ensureFinancePeriod(
    * Close every missing month in sequence.
    * Every newly opened month receives its payroll immediately.
    */
+   
   while (
     ACS_periodNumber(
       finance.current_sim_year,
@@ -1117,10 +2074,32 @@ export async function ACS_ensureFinancePeriod(
         boundaries.next_period_timestamp_ms
       ) - 1;
 
+         insuranceAppliedCount +=
+      await ACS_settleAircraftInsurance(
+        client,
+        normalizedAirlineId,
+        boundaries.next_period_start
+      );
+
+    const insuranceFinanceRefresh =
+      await client.query(
+        `
+        SELECT *
+        FROM public.company_finance
+        WHERE airline_id = $1
+        FOR UPDATE
+        `,
+        [normalizedAirlineId]
+      );
+
+    finance =
+      insuranceFinanceRefresh.rows[0];
+     
     /*
      * Payroll was applied when this month opened.
      * Capture the HR total without charging it again.
      */
+     
     const closedPayrollAmount =
       ACS_toInteger(finance.cost_hr);
 
@@ -1180,6 +2159,7 @@ export async function ACS_ensureFinancePeriod(
      * Apply payroll immediately after opening the new month.
      * PostgreSQL provides the exact first timestamp of the month.
      */
+     
     const nextBoundaries =
       await ACS_getPeriodBoundaries(
         client,
@@ -1225,6 +2205,33 @@ export async function ACS_ensureFinancePeriod(
     });
   }
 
+     insuranceCreatedCount +=
+    await ACS_ensureBasicAircraftInsurance(
+      client,
+      normalizedAirlineId,
+      officialPeriod
+    );
+
+  insuranceAppliedCount +=
+    await ACS_settleAircraftInsurance(
+      client,
+      normalizedAirlineId,
+      officialPeriod.sim_time
+    );
+
+  const finalFinanceRefresh =
+    await client.query(
+      `
+      SELECT *
+      FROM public.company_finance
+      WHERE airline_id = $1
+      FOR UPDATE
+      `,
+      [normalizedAirlineId]
+    );
+
+  finance = finalFinanceRefresh.rows[0];
+   
   return {
     ok: true,
     rolled_over:
@@ -1232,6 +2239,10 @@ export async function ACS_ensureFinancePeriod(
     closed_months: closedMonths,
     payroll_applied_count:
       payrollAppliedCount,
+    insurance_created_count:
+      insuranceCreatedCount,
+    insurance_applied_count:
+      insuranceAppliedCount,     
     current_period: officialPeriod,
     finance
   };
