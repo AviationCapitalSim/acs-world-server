@@ -7736,8 +7736,39 @@ router.post(
         changeType =
           "DOWNGRADE_SCHEDULED";
 
-        effectiveSim =
+                effectiveSim =
           policy.next_payment_sim;
+      }
+
+      if (changeType !== "UNCHANGED") {
+        const alertQuote =
+          ACS_calculateInsurancePremium({
+            planCode: requestedPlan,
+            currentValue:
+              policy.current_value,
+            ageYears:
+              policy.age_years
+          });
+
+        await ACS_createInsurancePlanChangeAlert(
+          client,
+          {
+            airlineId,
+            policyUid:
+              policy.policy_uid,
+            registration:
+              policy.registration,
+            previousPlan:
+              currentPlan,
+            requestedPlan,
+            changeType,
+            confirmedSimTime:
+              policy.current_sim_time,
+            effectiveSim,
+            monthlyPremium:
+              alertQuote.monthly_premium
+          }
+        );
       }
 
       await client.query("COMMIT");
