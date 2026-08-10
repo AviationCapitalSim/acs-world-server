@@ -12,6 +12,7 @@
 import { pool } from "../db/pool.js";
 
 const DELIVERY_LOCK_NAMESPACE = 1095783252;
+const USED_DELIVERY_LOCK_NAMESPACE = 1095783253;
 
 function ACS_deliveryInteger(value, fallback = 0) {
   const number = Number(value);
@@ -796,13 +797,186 @@ async function ACS_deliveryProcessOrder(orderId) {
   }
 }
 
+/* ============================================================
+   ACS USED AIRCRAFT DELIVERY — PostgreSQL Authority v1.0
+   ------------------------------------------------------------
+   - Uses only the ACS historical clock.
+   - Activates OWNED used aircraft when delivery becomes due.
+   - Starts depreciation when the aircraft enters service.
+   - Does not create any financial movement.
+   - Row locking and status transition guarantee idempotency.
+   ============================================================ */
+
+async function ACS_deliveryProcessUsedAircraft(aircraftId) {
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const lockResult = await client.query(
+      `
+      SELECT pg_try_advisory_xact_lock($1, $2) AS locked
+      `,
+      [USED_DELIVERY_LOCK_NAMESPACE, Number(aircraftId)]
+    );
+
+    if (lockResult.rows[0]?.locked !== true) {
+      await client.query("ROLLBACK");
+
+      return {
+        processedCount: 0,
+        action: "USED_AIRCRAFT_ALREADY_LOCKED"
+      };
+    }
+
+    const clockResult = await client.query(
+      `
+      SELECT acs_get_current_sim_time()::timestamp AS sim_time
+      `
+    );
+
+    const simTime = clockResult.rows[0]?.sim_time;
+
+    if (!simTime) {
+      throw new Error("ACS_SIM_TIME_UNAVAILABLE");
+    }
+
+    const aircraftResult = await client.query(
+      `
+      SELECT
+        id,
+        airline_id,
+        source,
+        ownership_type,
+        status,
+        operational_status,
+        delivery_date,
+        entry_into_service_date,
+        depreciation_status,
+        depreciation_method,
+        depreciation_basis,
+        depreciation_residual_value,
+        depreciation_useful_life_months,
+        depreciation_start_sim
+      FROM public.aircraft_fleet
+      WHERE id = $1
+        AND source = 'USED_MARKET'
+        AND ownership_type = 'OWNED'
+        AND status = 'PENDING_DELIVERY'
+      FOR UPDATE SKIP LOCKED
+      `,
+      [aircraftId]
+    );
+
+    if (!aircraftResult.rows.length) {
+      await client.query("ROLLBACK");
+
+      return {
+        processedCount: 0,
+        action: "USED_AIRCRAFT_NOT_ELIGIBLE"
+      };
+    }
+
+    const aircraft = aircraftResult.rows[0];
+
+    if (!aircraft.delivery_date) {
+      throw new Error("USED_AIRCRAFT_DELIVERY_DATE_REQUIRED");
+    }
+
+    const dueResult = await client.query(
+      `
+      SELECT $1::timestamp <= $2::timestamp AS due
+      `,
+      [aircraft.delivery_date, simTime]
+    );
+
+    if (dueResult.rows[0]?.due !== true) {
+      await client.query("ROLLBACK");
+
+      return {
+        processedCount: 0,
+        action: "USED_AIRCRAFT_NOT_DUE"
+      };
+    }
+
+    const depreciationReady =
+      String(aircraft.depreciation_status || "") === "PENDING_SERVICE" &&
+      String(aircraft.depreciation_method || "") === "STRAIGHT_LINE" &&
+      Number(aircraft.depreciation_basis || 0) > 0 &&
+      Number(aircraft.depreciation_residual_value || 0) >= 0 &&
+      Number(aircraft.depreciation_basis || 0) >
+        Number(aircraft.depreciation_residual_value || 0) &&
+      Number(aircraft.depreciation_useful_life_months || 0) > 0;
+
+    if (!depreciationReady) {
+      throw new Error(
+        "USED_AIRCRAFT_DEPRECIATION_CONFIGURATION_INVALID"
+      );
+    }
+
+    const updateResult = await client.query(
+      `
+      UPDATE public.aircraft_fleet
+      SET
+        status = 'ACTIVE',
+        operational_status = 'AVAILABLE',
+        entry_into_service_date =
+          COALESCE(entry_into_service_date, $2::timestamp),
+        depreciation_status = 'ACTIVE',
+        depreciation_start_sim =
+          COALESCE(depreciation_start_sim, $2::timestamp),
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = $1
+        AND source = 'USED_MARKET'
+        AND ownership_type = 'OWNED'
+        AND status = 'PENDING_DELIVERY'
+      RETURNING
+        id,
+        airline_id,
+        registration,
+        status,
+        operational_status,
+        entry_into_service_date,
+        depreciation_status,
+        depreciation_start_sim
+      `,
+      [aircraftId, simTime]
+    );
+
+    if (!updateResult.rows.length) {
+      await client.query("ROLLBACK");
+
+      return {
+        processedCount: 0,
+        action: "USED_AIRCRAFT_ALREADY_PROCESSED"
+      };
+    }
+
+    await client.query("COMMIT");
+
+    return {
+      processedCount: 1,
+      action: "USED_AIRCRAFT_DELIVERED",
+      aircraft: updateResult.rows[0]
+    };
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (_) {}
+
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 export async function ACS_runAircraftDeliveryRuntime({ batchSize = 100 } = {}) {
   const normalizedBatchSize = Math.min(
     1000,
     Math.max(1, ACS_deliveryInteger(batchSize, 100))
   );
 
-  const dueResult = await pool.query(
+  const factoryDueResult = await pool.query(
     `
     SELECT id
     FROM public.new_aircraft_orders
@@ -818,15 +992,54 @@ export async function ACS_runAircraftDeliveryRuntime({ batchSize = 100 } = {}) {
     [normalizedBatchSize]
   );
 
-  let processedCount = 0;
+  const usedDueResult = await pool.query(
+    `
+    SELECT id
+    FROM public.aircraft_fleet
+    WHERE source = 'USED_MARKET'
+      AND ownership_type = 'OWNED'
+      AND status = 'PENDING_DELIVERY'
+      AND delivery_date IS NOT NULL
+      AND delivery_date <= acs_get_current_sim_time()
+    ORDER BY delivery_date, id
+    LIMIT $1
+    `,
+    [normalizedBatchSize]
+  );
 
-  for (const row of dueResult.rows) {
+  let factoryProcessedCount = 0;
+  let usedProcessedCount = 0;
+
+  for (const row of factoryDueResult.rows) {
     const result = await ACS_deliveryProcessOrder(Number(row.id));
-    processedCount += Number(result?.processedCount || 0);
+
+    factoryProcessedCount += Number(
+      result?.processedCount || 0
+    );
+  }
+
+  for (const row of usedDueResult.rows) {
+    const result = await ACS_deliveryProcessUsedAircraft(
+      Number(row.id)
+    );
+
+    usedProcessedCount += Number(
+      result?.processedCount || 0
+    );
   }
 
   return {
-    processedCount,
-    dueCount: dueResult.rows.length
+    processedCount:
+      factoryProcessedCount + usedProcessedCount,
+
+    dueCount:
+      factoryDueResult.rows.length +
+      usedDueResult.rows.length,
+
+    factoryProcessedCount,
+    factoryDueCount: factoryDueResult.rows.length,
+
+    usedProcessedCount,
+    usedDueCount: usedDueResult.rows.length
   };
 }
