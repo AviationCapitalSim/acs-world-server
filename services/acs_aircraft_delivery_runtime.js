@@ -520,15 +520,76 @@ async function ACS_deliveryProcessOrder(orderId) {
         [airlineId, refund]
       );
 
+            await client.query(
+        `
+        UPDATE public.company_finance
+        SET
+          capital =
+            COALESCE(capital, 0) + $2,
+
+          expenses =
+            COALESCE(expenses, 0) + $3,
+
+          profit =
+            COALESCE(profit, 0) - $3,
+
+          cost_new_aircraft_purchase =
+            GREATEST(
+              COALESCE(
+                cost_new_aircraft_purchase,
+                0
+              ) - $4,
+              0
+            ),
+
+          cost_other =
+            COALESCE(cost_other, 0) + $3,
+
+          updated_at = CURRENT_TIMESTAMP
+
+        WHERE airline_id = $1
+        `,
+        [
+          airlineId,
+          refund,
+          penalty,
+          initialPayment
+        ]
+      );
+
       await client.query(
         `
         INSERT INTO public.finance_log (
-          airline_id, type, source, amount, timestamp,
-          reference_uid, description, created_at
+          airline_id,
+          type,
+          source,
+          amount,
+          timestamp,
+          reference_uid,
+          description,
+          created_at
         )
         VALUES
-          ($1, 'INCOME', 'OEM PURCHASE DEFAULT REFUND', $2, $4, $5, $6, CURRENT_TIMESTAMP),
-          ($1, 'EXPENSE', 'OEM PURCHASE DEFAULT PENALTY', $3, $4, $7, $8, CURRENT_TIMESTAMP)
+          (
+            $1,
+            'INCOME',
+            'OEM PURCHASE DEFAULT REFUND',
+            $2,
+            $4,
+            $5,
+            $6,
+            CURRENT_TIMESTAMP
+          ),
+          (
+            $1,
+            'EXPENSE',
+            'OEM PURCHASE DEFAULT PENALTY',
+            $3,
+            $4,
+            $7,
+            $8,
+            CURRENT_TIMESTAMP
+          )
         `,
         [
           airlineId,
@@ -541,7 +602,7 @@ async function ACS_deliveryProcessOrder(orderId) {
           `${aircraftLabel} order ${orderId}`
         ]
       );
-
+       
       await ACS_deliveryReleaseSlots(client, order, quantity);
 
       await client.query(
