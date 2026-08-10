@@ -5351,7 +5351,62 @@ if (!(simTime instanceof Date) || Number.isNaN(simTime.getTime())) {
       usedMaintenanceDisposition = "CLEAR";
     }
 
+        /* ============================================================
+       USED AIRCRAFT — DEPRECIATION INITIALIZATION
+       ------------------------------------------------------------
+       - Straight-line method
+       - 20-year standard useful life
+       - 24-month minimum remaining life
+       - 5% residual value
+       - Starts only when available for service
+       ============================================================ */
+
+    const depreciationBasis =
+      purchasePrice;
+
+    const depreciationResidualValue =
+      Math.round(
+        depreciationBasis * 0.05
+      );
+
+    const aircraftBuildYear =
+      Number(listing.year_built);
+
+    const hasValidBuildYear =
+      Number.isInteger(aircraftBuildYear) &&
+      aircraftBuildYear >= 1900 &&
+      aircraftBuildYear <=
+        simTime.getUTCFullYear();
+
+    const historicalAgeMonths =
+      hasValidBuildYear
+        ? Math.max(
+            0,
+            (
+              simTime.getUTCFullYear() -
+              aircraftBuildYear
+            ) * 12 +
+            simTime.getUTCMonth()
+          )
+        : 216;
+
+    const depreciationUsefulLifeMonths =
+      Math.max(
+        24,
+        240 - historicalAgeMonths
+      );
+
+    const depreciationStartSim =
+      fleetEntryIntoServiceDate || null;
+
+    const depreciationStatus =
+      depreciationStartSim
+        ? "ACTIVE"
+        : "PENDING_SERVICE";
+
+     
     const usedPurchasePolicy = {
+       
       version: "ACS_USED_MARKET_ACQUISITION_OCC_V1_2",
       used_cycle_count_before_purchase: usedCycleCount,
       used_lifetime_count_before_purchase: usedLifetimeCount,
@@ -5412,6 +5467,17 @@ if (!(simTime instanceof Date) || Number.isNaN(simTime.getTime())) {
         maintenance_status,
         purchase_price,
         current_value,
+
+        depreciation_status,
+        depreciation_method,
+        depreciation_basis,
+        depreciation_residual_value,
+        depreciation_useful_life_months,
+        depreciation_start_sim,
+        accumulated_depreciation,
+        book_value,
+        depreciation_last_month_key,
+
         currency,
         created_at,
         updated_at
@@ -5442,6 +5508,17 @@ if (!(simTime instanceof Date) || Number.isNaN(simTime.getTime())) {
         $19,
         $20,
         $21,
+
+        $22,
+        'STRAIGHT_LINE',
+        $23,
+        $24,
+        $25,
+        $26,
+        0,
+        $23,
+        NULL,
+
         'USD',
         NOW(),
         NOW()
