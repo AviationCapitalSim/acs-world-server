@@ -1722,7 +1722,8 @@ async function ACS_archiveFinanceMonth(
       cost_maintenance,
       cost_hr,
       cost_leasing,
-      cost_insurance,      
+      cost_insurance,
+      cost_depreciation,
       cost_loans,
       cost_other,
 
@@ -1772,15 +1773,16 @@ async function ACS_archiveFinanceMonth(
       $22,
       $23,
       $24,
-
       $25,
-      $26,
 
+      $26,
       $27,
+
+      $28,
       0,
 
-      $28,
-      $28,
+      $29,
+      $29,
       'MONTHLY_CLOSE',
       'VERIFIED',
       MAKE_DATE($2, $3, 1)::TIMESTAMP,
@@ -1833,12 +1835,14 @@ async function ACS_archiveFinanceMonth(
       ACS_toInteger(finance.cost_maintenance),
       ACS_toInteger(finance.cost_hr),
       ACS_toInteger(finance.cost_leasing),
-      ACS_toInteger(finance.cost_insurance),      
+      ACS_toInteger(finance.cost_insurance),
+      ACS_toInteger(finance.cost_depreciation),
       ACS_toInteger(finance.cost_loans),
       ACS_toInteger(finance.cost_other),
 
       ACS_toInteger(
         finance.cost_new_aircraft_purchase
+      ),
       ),
 
       ACS_toInteger(
@@ -1945,7 +1949,8 @@ async function ACS_openNextFinanceMonth(
       cost_maintenance = 0,
       cost_hr = 0,
       cost_leasing = 0,
-      cost_insurance = 0,     
+      cost_insurance = 0,
+      cost_depreciation = 0,
       cost_airport = 0,
       cost_other = 0,
 
@@ -2327,6 +2332,10 @@ export async function ACS_ensureFinancePeriod(
       month_key: closingMonthKey,
       payroll: closedPayrollAmount,
       leasing: leasingAmount,
+      depreciation:
+        depreciationSettlement.appliedAmount,
+      depreciated_aircraft:
+        depreciationSettlement.aircraftCount,
       flight_count: flightCount,
       closing_capital:
         ACS_toInteger(finance.opening_capital),
