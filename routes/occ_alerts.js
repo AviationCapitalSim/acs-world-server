@@ -645,9 +645,11 @@ async function ACS_runGlobalOccAlertSync(source = "timer") {
 
   ACS_occGlobalSyncRunning = true;
 
-  const client = await pool.connect();
+  let client = null;
 
   try {
+    client = await pool.connect();
+
     const lockResult = await client.query(`
       SELECT pg_try_advisory_lock(hashtext('ACS_OCC_GLOBAL_ALERT_SYNC')) AS locked
     `);
@@ -656,30 +658,51 @@ async function ACS_runGlobalOccAlertSync(source = "timer") {
       return;
     }
 
-    const currentSimTime = await ACS_getCurrentSimTime(client);
-    const airlineIds = await ACS_getOccGlobalAirlineIds(client, currentSimTime);
+    const currentSimTime =
+      await ACS_getCurrentSimTime(client);
+
+    const airlineIds =
+      await ACS_getOccGlobalAirlineIds(
+        client,
+        currentSimTime
+      );
 
     for (const airlineId of airlineIds) {
-      await ACS_syncOccAlertsForAirline(client, airlineId, currentSimTime);
+      await ACS_syncOccAlertsForAirline(
+        client,
+        airlineId,
+        currentSimTime
+      );
     }
 
-    console.log("[ACS OCC] global alert sync completed:", {
-      source,
-      airlines: airlineIds.length,
-      current_sim_time: currentSimTime
-    });
+    console.log(
+      "[ACS OCC] global alert sync completed:",
+      {
+        source,
+        airlines: airlineIds.length,
+        current_sim_time: currentSimTime
+      }
+    );
 
   } catch (error) {
-    console.error("[ACS OCC] global alert sync failed:", error);
+    console.error(
+      "[ACS OCC] global alert sync failed:",
+      error
+    );
 
   } finally {
-    try {
-      await client.query(`
-        SELECT pg_advisory_unlock(hashtext('ACS_OCC_GLOBAL_ALERT_SYNC'))
-      `);
-    } catch (_) {}
+    if (client) {
+      try {
+        await client.query(`
+          SELECT pg_advisory_unlock(
+            hashtext('ACS_OCC_GLOBAL_ALERT_SYNC')
+          )
+        `);
+      } catch (_) {}
 
-    client.release();
+      client.release();
+    }
+
     ACS_occGlobalSyncRunning = false;
   }
 }
