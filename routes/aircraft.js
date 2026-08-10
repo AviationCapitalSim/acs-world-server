@@ -7368,6 +7368,159 @@ router.get(
   }
 );
 
+async function ACS_createInsurancePlanChangeAlert(
+  client,
+  {
+    airlineId,
+    policyUid,
+    registration,
+    previousPlan,
+    requestedPlan,
+    changeType,
+    confirmedSimTime,
+    effectiveSim,
+    monthlyPremium
+  }
+) {
+  if (
+    !client ||
+    changeType === "UNCHANGED"
+  ) {
+    return null;
+  }
+
+  const cleanRegistration = String(
+    registration || "AIRCRAFT"
+  )
+    .trim()
+    .toUpperCase();
+
+  const cleanPreviousPlan = String(
+    previousPlan || "BASIC"
+  )
+    .trim()
+    .toUpperCase();
+
+  const cleanRequestedPlan = String(
+    requestedPlan || "BASIC"
+  )
+    .trim()
+    .toUpperCase();
+
+  const premium = Math.max(
+    0,
+    Number(monthlyPremium || 0)
+  );
+
+  const effectiveDate = effectiveSim
+    ? new Date(effectiveSim)
+    : null;
+
+  const effectiveDateLabel =
+    effectiveDate &&
+    !Number.isNaN(effectiveDate.getTime())
+      ? effectiveDate
+          .toLocaleDateString(
+            "en-GB",
+            {
+              day: "2-digit",
+              month: "short",
+              year: "numeric",
+              timeZone: "UTC"
+            }
+          )
+          .toUpperCase()
+      : "NEXT PAYMENT DATE";
+
+  const confirmationKeyTime =
+    confirmedSimTime
+      ? new Date(
+          confirmedSimTime
+        ).toISOString()
+      : new Date().toISOString();
+
+  const alertKey = [
+    "INSURANCE_PLAN_CHANGE",
+    String(policyUid),
+    cleanPreviousPlan,
+    cleanRequestedPlan,
+    confirmationKeyTime
+  ].join(":");
+
+  const isUpgrade =
+    changeType === "UPGRADE";
+
+  const title = isUpgrade
+    ? "AIRCRAFT INSURANCE UPGRADED"
+    : "AIRCRAFT INSURANCE DOWNGRADE SCHEDULED";
+
+  const message = isUpgrade
+    ? [
+        `Aircraft ${cleanRegistration} insurance has been upgraded.`,
+        "",
+        `Previous policy: ${cleanPreviousPlan}`,
+        `New policy: ${cleanRequestedPlan}`,
+        `Monthly premium: USD ${premium.toLocaleString("en-US")}`,
+        "Effective date: IMMEDIATELY"
+      ].join("\n")
+    : [
+        `Aircraft ${cleanRegistration} insurance downgrade has been scheduled.`,
+        "",
+        `Current policy: ${cleanPreviousPlan}`,
+        `Scheduled policy: ${cleanRequestedPlan}`,
+        `New monthly premium: USD ${premium.toLocaleString("en-US")}`,
+        `Effective date: ${effectiveDateLabel}`
+      ].join("\n");
+
+  const result = await client.query(
+    `
+    INSERT INTO public.occ_alerts (
+      airline_id,
+      alert_key,
+      category,
+      level,
+      title,
+      message,
+      source,
+      source_ref,
+      event_sim_time,
+      created_at,
+      updated_at
+    )
+    VALUES (
+      $1,
+      $2,
+      'insurance',
+      'info',
+      $3,
+      $4,
+      'aircraft_insurance_policies',
+      $5,
+      $6,
+      NOW(),
+      NOW()
+    )
+    ON CONFLICT (
+      airline_id,
+      alert_key
+    )
+    WHERE deleted_at IS NULL
+    DO NOTHING
+    RETURNING *
+    `,
+    [
+      airlineId,
+      alertKey,
+      title,
+      message,
+      String(policyUid),
+      confirmedSimTime
+    ]
+  );
+
+  return result.rows[0] || null;
+}
+
 /* ============================================================
    AIRCRAFT INSURANCE — PLAN CHANGE
    ============================================================ */
