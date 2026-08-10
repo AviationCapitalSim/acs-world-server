@@ -1398,6 +1398,285 @@ async function ACS_countMonthlyFlights(
 }
 
 /* ============================================================
+   SETTLE MONTHLY AIRCRAFT DEPRECIATION
+   ------------------------------------------------------------
+   Rules:
+   - OWNED aircraft only.
+   - Straight-line monthly depreciation.
+   - Full monthly charge when available during any part
+     of the closing month.
+   - Monthly amount is always rounded upward.
+   - Capital is not reduced because this is a non-cash expense.
+   - Book value never falls below residual value.
+   - One canonical movement per aircraft and month.
+   ============================================================ */
+
+async function ACS_settleMonthlyAircraftDepreciation(
+  client,
+  airlineId,
+  year,
+  month,
+  closingTimestampMs,
+  boundaries
+) {
+  const monthKey = ACS_monthKey(year, month);
+
+  const result = await client.query(
+    `
+    WITH eligible_aircraft AS MATERIALIZED (
+      SELECT
+        af.id,
+        af.registration,
+        af.aircraft_name,
+        af.depreciation_basis,
+        af.depreciation_residual_value,
+        af.depreciation_useful_life_months,
+        af.accumulated_depreciation,
+        af.book_value,
+
+        LEAST(
+          GREATEST(
+            COALESCE(af.book_value, 0)
+              - COALESCE(
+                  af.depreciation_residual_value,
+                  0
+                ),
+            0
+          ),
+
+          CEIL(
+            GREATEST(
+              COALESCE(af.depreciation_basis, 0)
+                - COALESCE(
+                    af.depreciation_residual_value,
+                    0
+                  ),
+              0
+            )::NUMERIC
+            /
+            GREATEST(
+              COALESCE(
+                af.depreciation_useful_life_months,
+                0
+              ),
+              1
+            )::NUMERIC
+          )::BIGINT
+        )::BIGINT AS depreciation_amount
+
+      FROM public.aircraft_fleet af
+
+      WHERE af.airline_id = $1
+        AND af.ownership_type = 'OWNED'
+        AND af.depreciation_status = 'ACTIVE'
+        AND af.depreciation_method = 'STRAIGHT_LINE'
+        AND af.depreciation_start_sim IS NOT NULL
+
+        /*
+         * The aircraft was available during at least part
+         * of the simulation month being closed.
+         */
+        AND af.depreciation_start_sim < $2::TIMESTAMP
+
+        AND COALESCE(af.book_value, 0)
+          > COALESCE(
+              af.depreciation_residual_value,
+              0
+            )
+
+        AND af.depreciation_last_month_key
+          IS DISTINCT FROM $4::VARCHAR
+
+      FOR UPDATE
+    ),
+
+    inserted_logs AS (
+      INSERT INTO public.finance_log (
+        airline_id,
+        type,
+        source,
+        amount,
+        timestamp,
+        route_plan_id,
+        schedule_item_id,
+        reference_uid,
+        description,
+        created_at
+      )
+
+      SELECT
+        $1,
+        'EXPENSE',
+        'AIRCRAFT_DEPRECIATION_MONTHLY',
+        ea.depreciation_amount,
+        $3,
+        NULL,
+        NULL,
+
+        (
+          'AIRCRAFT_DEPRECIATION:'
+          || ea.id::TEXT
+          || ':'
+          || $4::VARCHAR
+        ),
+
+        (
+          'Monthly depreciation — '
+          || COALESCE(
+               NULLIF(ea.registration, ''),
+               ea.aircraft_name,
+               'Aircraft'
+             )
+          || ' — '
+          || $4::VARCHAR
+        ),
+
+        NOW()
+
+      FROM eligible_aircraft ea
+
+      WHERE ea.depreciation_amount > 0
+
+      ON CONFLICT (reference_uid)
+      DO NOTHING
+
+      RETURNING
+        reference_uid,
+        amount
+    ),
+
+    updated_aircraft AS (
+      UPDATE public.aircraft_fleet af
+
+      SET
+        accumulated_depreciation =
+          LEAST(
+            COALESCE(af.depreciation_basis, 0)
+              - COALESCE(
+                  af.depreciation_residual_value,
+                  0
+                ),
+
+            COALESCE(
+              af.accumulated_depreciation,
+              0
+            ) + ea.depreciation_amount
+          ),
+
+        book_value =
+          GREATEST(
+            COALESCE(
+              af.depreciation_residual_value,
+              0
+            ),
+
+            COALESCE(af.book_value, 0)
+              - ea.depreciation_amount
+          ),
+
+        depreciation_last_month_key =
+          $4::VARCHAR,
+
+        depreciation_status =
+          CASE
+            WHEN
+              COALESCE(af.book_value, 0)
+                - ea.depreciation_amount
+              <= COALESCE(
+                   af.depreciation_residual_value,
+                   0
+                 )
+            THEN 'FULLY_DEPRECIATED'
+            ELSE 'ACTIVE'
+          END,
+
+        updated_at = NOW()
+
+      FROM eligible_aircraft ea
+
+      JOIN inserted_logs il
+        ON il.reference_uid = (
+          'AIRCRAFT_DEPRECIATION:'
+          || ea.id::TEXT
+          || ':'
+          || $4::VARCHAR
+        )
+
+      WHERE af.id = ea.id
+
+      RETURNING
+        af.id,
+        ea.depreciation_amount
+    )
+
+    SELECT
+      COUNT(*)::INTEGER AS aircraft_count,
+
+      COALESCE(
+        SUM(depreciation_amount),
+        0
+      )::BIGINT AS applied_amount
+
+    FROM updated_aircraft
+    `,
+    [
+      airlineId,
+      boundaries.next_period_start,
+      closingTimestampMs,
+      monthKey
+    ]
+  );
+
+  const aircraftCount =
+    ACS_toInteger(
+      result.rows[0]?.aircraft_count
+    );
+
+  const appliedAmount =
+    ACS_toInteger(
+      result.rows[0]?.applied_amount
+    );
+
+  if (appliedAmount > 0) {
+    const financeResult = await client.query(
+      `
+      UPDATE public.company_finance
+      SET
+        expenses =
+          COALESCE(expenses, 0) + $2,
+
+        profit =
+          COALESCE(profit, 0) - $2,
+
+        cost_depreciation =
+          COALESCE(cost_depreciation, 0) + $2,
+
+        updated_at = NOW()
+
+      WHERE airline_id = $1
+
+      RETURNING airline_id
+      `,
+      [
+        airlineId,
+        appliedAmount
+      ]
+    );
+
+    if (!financeResult.rows.length) {
+      throw new Error(
+        "COMPANY_FINANCE_DEPRECIATION_UPDATE_FAILED"
+      );
+    }
+  }
+
+  return {
+    aircraftCount,
+    appliedAmount
+  };
+}
+
+/* ============================================================
    ARCHIVE ONE MONTH
    ------------------------------------------------------------
    Payroll and leasing must already be included in company_finance.
