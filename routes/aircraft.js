@@ -3828,19 +3828,28 @@ const order = orderResult.rows[0];
         `,
         [airlineId, initialPaymentAmount]
       );
-    } else {
+        } else {
       await client.query(
         `
         UPDATE company_finance
         SET
-          capital = COALESCE(capital,0) - $2,
-          expenses = COALESCE(expenses,0) + $2,
-          profit = COALESCE(profit,0) - $2,
-          cost_new_aircraft_purchase = COALESCE(cost_new_aircraft_purchase,0) + $2,
+          capital =
+            COALESCE(capital, 0) - $2,
+
+          cost_new_aircraft_purchase =
+            COALESCE(
+              cost_new_aircraft_purchase,
+              0
+            ) + $2,
+
           updated_at = NOW()
+
         WHERE airline_id = $1
         `,
-        [airlineId, initialPaymentAmount]
+        [
+          airlineId,
+          initialPaymentAmount
+        ]
       );
     }
      
@@ -3852,10 +3861,38 @@ const order = orderResult.rows[0];
       aircraft.aircraft_name ||
       `${aircraft.manufacturer} ${aircraft.model}`;
 
-    const financeSource =
+        const financeSource =
       ownershipType === "LEASE"
         ? `OEM LEASE INITIAL — ${aircraftLabel}`
         : `OEM PURCHASE INITIAL — ${aircraftLabel}`;
+
+    const financeType =
+      ownershipType === "LEASE"
+        ? "EXPENSE"
+        : "INVESTMENT";
+
+    const financeClockResult =
+      await client.query(
+        `
+        SELECT
+          FLOOR(
+            EXTRACT(
+              EPOCH FROM acs_get_current_sim_time()
+            ) * 1000
+          )::BIGINT AS timestamp_ms
+        `
+      );
+
+    const financeTimestamp =
+      Number(
+        financeClockResult.rows[0]?.timestamp_ms
+      );
+
+    if (!Number.isFinite(financeTimestamp)) {
+      throw new Error(
+        "ACS_FINANCE_TIMESTAMP_UNAVAILABLE"
+      );
+    }
 
     await client.query(
       `
@@ -3866,16 +3903,17 @@ const order = orderResult.rows[0];
         amount,
         timestamp
       )
-      VALUES ($1, 'EXPENSE', $2, $3, $4)
+      VALUES ($1, $2, $3, $4, $5)
       `,
       [
         airlineId,
+        financeType,
         financeSource,
         initialPaymentAmount,
-        Date.now()
+        financeTimestamp
       ]
     );
-
+     
     /* ============================================================
        8) RETURN FINANCE SNAPSHOT
        ============================================================ */
