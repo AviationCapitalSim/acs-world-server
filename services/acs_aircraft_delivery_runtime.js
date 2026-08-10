@@ -589,26 +589,51 @@ async function ACS_deliveryProcessOrder(orderId) {
     }
 
     if (chargeFinalPayment) {
-      await client.query(
+            await client.query(
         `
         UPDATE public.company_finance
-        SET capital = COALESCE(capital, 0) - $2,
-            expenses = COALESCE(expenses, 0) + $2,
-            profit = COALESCE(profit, 0) - $2,
-            cost_new_aircraft_purchase = COALESCE(cost_new_aircraft_purchase, 0) + $2,
-            updated_at = CURRENT_TIMESTAMP
+        SET
+          capital =
+            COALESCE(capital, 0) - $2,
+
+          cost_new_aircraft_purchase =
+            COALESCE(
+              cost_new_aircraft_purchase,
+              0
+            ) + $2,
+
+          updated_at = CURRENT_TIMESTAMP
+
         WHERE airline_id = $1
         `,
-        [airlineId, finalPayment]
+        [
+          airlineId,
+          finalPayment
+        ]
       );
 
       await client.query(
         `
         INSERT INTO public.finance_log (
-          airline_id, type, source, amount, timestamp,
-          reference_uid, description, created_at
+          airline_id,
+          type,
+          source,
+          amount,
+          timestamp,
+          reference_uid,
+          description,
+          created_at
         )
-        VALUES ($1, 'EXPENSE', 'OEM PURCHASE FINAL', $2, $3, $4, $5, CURRENT_TIMESTAMP)
+        VALUES (
+          $1,
+          'INVESTMENT',
+          'OEM PURCHASE FINAL',
+          $2,
+          $3,
+          $4,
+          $5,
+          CURRENT_TIMESTAMP
+        )
         `,
         [
           airlineId,
