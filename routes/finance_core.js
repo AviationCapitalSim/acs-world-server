@@ -1843,8 +1843,7 @@ async function ACS_archiveFinanceMonth(
       ACS_toInteger(
         finance.cost_new_aircraft_purchase
       ),
-      ),
-
+   
       ACS_toInteger(
         finance.cost_used_aircraft_purchase
       ),
