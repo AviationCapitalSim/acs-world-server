@@ -759,6 +759,17 @@ async function ACS_deliveryProcessOrder(orderId) {
           maintenance_status,
           purchase_price,
           current_value,
+
+          depreciation_status,
+          depreciation_method,
+          depreciation_basis,
+          depreciation_residual_value,
+          depreciation_useful_life_months,
+          depreciation_start_sim,
+          accumulated_depreciation,
+          book_value,
+          depreciation_last_month_key,
+
           cabin_rules_version,
           cabin_configuration_source,
           y_product,
@@ -777,8 +788,71 @@ async function ACS_deliveryProcessOrder(orderId) {
           gen_random_uuid(), $1, $2, 'FACTORY', $3, $4, $5, $6, $7,
           NULL, NULL, $8, $9, NULL, 'ACTIVE', 'AVAILABLE', $10, $10,
           EXTRACT(YEAR FROM $11::timestamp)::integer, $11, $11,
-          0, 0, 100, 'SERVICEABLE', $12, $12,
-          $13, $14, $15, $16, $17, $18, $19, $20, $21, $11,
+                    0,
+          0,
+          100,
+          'SERVICEABLE',
+          $12,
+          $12,
+
+          CASE
+            WHEN $3 = 'OWNED'
+              THEN 'ACTIVE'
+            ELSE 'NOT_APPLICABLE'
+          END,
+
+          CASE
+            WHEN $3 = 'OWNED'
+              THEN 'STRAIGHT_LINE'
+            ELSE NULL
+          END,
+
+          CASE
+            WHEN $3 = 'OWNED'
+              THEN $12
+            ELSE 0
+          END,
+
+          CASE
+            WHEN $3 = 'OWNED'
+              THEN ROUND(
+                $12::NUMERIC * 0.05
+              )::BIGINT
+            ELSE 0
+          END,
+
+          CASE
+            WHEN $3 = 'OWNED'
+              THEN 240
+            ELSE 0
+          END,
+
+          CASE
+            WHEN $3 = 'OWNED'
+              THEN $11::TIMESTAMP
+            ELSE NULL
+          END,
+
+          0,
+
+          CASE
+            WHEN $3 = 'OWNED'
+              THEN $12
+            ELSE 0
+          END,
+
+          NULL,
+
+          $13,
+          $14,
+          $15,
+          $16,
+          $17,
+          $18,
+          $19,
+          $20,
+          $21,
+          $11,
           'USD',
           CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
         )
