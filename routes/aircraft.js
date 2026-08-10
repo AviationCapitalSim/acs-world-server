@@ -5553,13 +5553,19 @@ if (!(simTime instanceof Date) || Number.isNaN(simTime.getTime())) {
           : (listing.maintenance_status || "SERVICEABLE"),
 
         purchasePrice,
-        currentValue
+        currentValue,
+
+        depreciationStatus,
+        depreciationBasis,
+        depreciationResidualValue,
+        depreciationUsefulLifeMonths,
+        depreciationStartSim
       ]
     );
 
     const aircraft = aircraftResult.rows[0];
 
-         await ACS_ensureAircraftMaintenanceStatus(
+    await ACS_ensureAircraftMaintenanceStatus(
       client,
       aircraft.id,
       aircraft.airline_id || airlineId,
@@ -5575,26 +5581,34 @@ if (!(simTime instanceof Date) || Number.isNaN(simTime.getTime())) {
    5) APPLY FINANCE IMPACT
    ============================================================ */
 
-    await client.query(
+     await client.query(
       `
       UPDATE company_finance
       SET
-      capital = COALESCE(capital, 0) - $2,
-      expenses = COALESCE(expenses, 0) + $2,
-      profit = COALESCE(profit, 0) - $2,
-      cost_used_aircraft_purchase =
-      COALESCE(cost_used_aircraft_purchase, 0) + $2,
-      updated_at = NOW()
+        capital =
+          COALESCE(capital, 0) - $2,
+
+        cost_used_aircraft_purchase =
+          COALESCE(
+            cost_used_aircraft_purchase,
+            0
+          ) + $2,
+
+        updated_at = NOW()
+
       WHERE airline_id = $1
       `,
-      [airlineId, purchasePrice]
+      [
+        airlineId,
+        purchasePrice
+      ]
     );
 
     /* ============================================================
        6) FINANCE LOG
        ============================================================ */
 
-    await client.query(
+     await client.query(
       `
       INSERT INTO finance_log (
         airline_id,
@@ -5603,13 +5617,19 @@ if (!(simTime instanceof Date) || Number.isNaN(simTime.getTime())) {
         amount,
         timestamp
       )
-      VALUES ($1, 'EXPENSE', $2, $3, $4)
+      VALUES (
+        $1,
+        'INVESTMENT',
+        $2,
+        $3,
+        $4
+      )
       `,
       [
         airlineId,
         `USED MARKET PURCHASE — ${aircraftName}`,
         purchasePrice,
-        Date.now()
+        simTime.getTime()
       ]
     );
 
