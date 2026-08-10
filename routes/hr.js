@@ -1992,14 +1992,18 @@ async function runHRMoraleSchedulerTick() {
 
   HR_MORALE_RUNNING = true;
 
-  const client = await pool.connect();
+  let client = null;
 
   try {
+    client = await pool.connect();
+
     const lock = await client.query(
       "SELECT pg_try_advisory_lock(35702026) AS locked"
     );
 
-    if (lock.rows[0]?.locked !== true) return;
+    if (lock.rows[0]?.locked !== true) {
+      return;
+    }
 
     const airlinesResult = await client.query(`
       SELECT DISTINCT airline_id
@@ -2009,7 +2013,10 @@ async function runHRMoraleSchedulerTick() {
 
     for (const row of airlinesResult.rows) {
       const airlineId = Number(row.airline_id);
-      if (!Number.isInteger(airlineId)) continue;
+
+      if (!Number.isInteger(airlineId)) {
+        continue;
+      }
 
       await ensureHRInitialized(airlineId);
       await recalculateHRRequired(airlineId);
@@ -2017,14 +2024,23 @@ async function runHRMoraleSchedulerTick() {
       await applyHRMoraleMonthlyResolver(airlineId);
     }
 
-  } catch (err) {
-    console.error("HR MORALE SCHEDULER ERROR:", err);
-  } finally {
-    try {
-      await client.query("SELECT pg_advisory_unlock(35702026)");
-    } catch (_) {}
+  } catch (error) {
+    console.error(
+      "HR MORALE SCHEDULER ERROR:",
+      error
+    );
 
-    client.release();
+  } finally {
+    if (client) {
+      try {
+        await client.query(
+          "SELECT pg_advisory_unlock(35702026)"
+        );
+      } catch (_) {}
+
+      client.release();
+    }
+
     HR_MORALE_RUNNING = false;
   }
 }
