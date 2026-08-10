@@ -859,10 +859,11 @@ async function ACS_deliveryProcessUsedAircraft(aircraftId) {
         depreciation_useful_life_months,
         depreciation_start_sim
       FROM public.aircraft_fleet
-      WHERE id = $1
+         WHERE id = $1
         AND source = 'USED_MARKET'
         AND ownership_type = 'OWNED'
-        AND status = 'PENDING_DELIVERY'
+        AND depreciation_status = 'PENDING_SERVICE'
+        AND status IN ('PENDING_DELIVERY', 'ACTIVE')
       FOR UPDATE SKIP LOCKED
       `,
       [aircraftId]
@@ -879,24 +880,31 @@ async function ACS_deliveryProcessUsedAircraft(aircraftId) {
 
     const aircraft = aircraftResult.rows[0];
 
-    if (!aircraft.delivery_date) {
-      throw new Error("USED_AIRCRAFT_DELIVERY_DATE_REQUIRED");
-    }
+    const aircraftIsActive =
+      String(aircraft.status || "") === "ACTIVE";
 
-    const dueResult = await client.query(
-      `
-      SELECT $1::timestamp <= $2::timestamp AS due
-      `,
-      [aircraft.delivery_date, simTime]
-    );
+    if (!aircraftIsActive) {
+      if (!aircraft.delivery_date) {
+        throw new Error(
+          "USED_AIRCRAFT_DELIVERY_DATE_REQUIRED"
+        );
+      }
 
-    if (dueResult.rows[0]?.due !== true) {
-      await client.query("ROLLBACK");
+      const dueResult = await client.query(
+        `
+        SELECT $1::timestamp <= $2::timestamp AS due
+        `,
+        [aircraft.delivery_date, simTime]
+      );
 
-      return {
-        processedCount: 0,
-        action: "USED_AIRCRAFT_NOT_DUE"
-      };
+      if (dueResult.rows[0]?.due !== true) {
+        await client.query("ROLLBACK");
+
+        return {
+          processedCount: 0,
+          action: "USED_AIRCRAFT_NOT_DUE"
+        };
+      }
     }
 
     const depreciationReady =
@@ -914,22 +922,34 @@ async function ACS_deliveryProcessUsedAircraft(aircraftId) {
       );
     }
 
-    const updateResult = await client.query(
+        const updateResult = await client.query(
       `
       UPDATE public.aircraft_fleet
       SET
         status = 'ACTIVE',
-        operational_status = 'AVAILABLE',
+
+        operational_status = CASE
+          WHEN status = 'ACTIVE'
+            THEN operational_status
+          ELSE 'AVAILABLE'
+        END,
+
         entry_into_service_date =
           COALESCE(entry_into_service_date, $2::timestamp),
+
         depreciation_status = 'ACTIVE',
+
         depreciation_start_sim =
           COALESCE(depreciation_start_sim, $2::timestamp),
+
         updated_at = CURRENT_TIMESTAMP
+
       WHERE id = $1
         AND source = 'USED_MARKET'
         AND ownership_type = 'OWNED'
-        AND status = 'PENDING_DELIVERY'
+        AND depreciation_status = 'PENDING_SERVICE'
+        AND status IN ('PENDING_DELIVERY', 'ACTIVE')
+
       RETURNING
         id,
         airline_id,
@@ -992,16 +1012,28 @@ export async function ACS_runAircraftDeliveryRuntime({ batchSize = 100 } = {}) {
     [normalizedBatchSize]
   );
 
-  const usedDueResult = await pool.query(
+    const usedDueResult = await pool.query(
     `
     SELECT id
     FROM public.aircraft_fleet
     WHERE source = 'USED_MARKET'
       AND ownership_type = 'OWNED'
-      AND status = 'PENDING_DELIVERY'
-      AND delivery_date IS NOT NULL
-      AND delivery_date <= acs_get_current_sim_time()
-    ORDER BY delivery_date, id
+      AND depreciation_status = 'PENDING_SERVICE'
+      AND (
+        status = 'ACTIVE'
+        OR (
+          status = 'PENDING_DELIVERY'
+          AND delivery_date IS NOT NULL
+          AND delivery_date <= acs_get_current_sim_time()
+        )
+      )
+    ORDER BY
+      CASE
+        WHEN status = 'ACTIVE' THEN 0
+        ELSE 1
+      END,
+      delivery_date,
+      id
     LIMIT $1
     `,
     [normalizedBatchSize]
