@@ -2217,7 +2217,7 @@ export async function ACS_ensureFinancePeriod(
         boundaries
       );
 
-    if (leasingAmount > 0) {
+       if (leasingAmount > 0) {
       finance =
         await ACS_applyMonthlyObligations(
           client,
@@ -2225,6 +2225,32 @@ export async function ACS_ensureFinancePeriod(
           0,
           leasingAmount
         );
+    }
+
+    const depreciationSettlement =
+      await ACS_settleMonthlyAircraftDepreciation(
+        client,
+        normalizedAirlineId,
+        closingYear,
+        closingMonth,
+        closingTimestampMs,
+        boundaries
+      );
+
+    if (depreciationSettlement.appliedAmount > 0) {
+      const depreciationFinanceRefresh =
+        await client.query(
+          `
+          SELECT *
+          FROM public.company_finance
+          WHERE airline_id = $1
+          FOR UPDATE
+          `,
+          [normalizedAirlineId]
+        );
+
+      finance =
+        depreciationFinanceRefresh.rows[0];
     }
 
     const flightCount =
