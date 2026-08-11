@@ -7105,18 +7105,28 @@ if (
          ============================================================ */
 
       if (shouldChargeFinalPayment) {
-        await client.query(
+         
+                await client.query(
           `
           UPDATE company_finance
           SET
-            capital = COALESCE(capital, 0) - $2,
-            expenses = COALESCE(expenses, 0) + $2,
-            profit = COALESCE(profit, 0) - $2,
-            cost_new_aircraft_purchase = COALESCE(cost_new_aircraft_purchase, 0) + $2,
+            capital =
+              COALESCE(capital, 0) - $2,
+
+            cost_new_aircraft_purchase =
+              COALESCE(
+                cost_new_aircraft_purchase,
+                0
+              ) + $2,
+
             updated_at = NOW()
+
           WHERE airline_id = $1
           `,
-          [airlineId, finalPaymentAmount]
+          [
+            airlineId,
+            finalPaymentAmount
+          ]
         );
 
         await client.query(
@@ -7129,13 +7139,23 @@ if (
             timestamp,
             created_at
           )
-          VALUES ($1, 'EXPENSE', $2, $3, $4, NOW())
+          VALUES (
+            $1,
+            'INVESTMENT',
+            $2,
+            $3,
+            FLOOR(
+              EXTRACT(
+                EPOCH FROM acs_get_current_sim_time()
+              ) * 1000
+            )::BIGINT,
+            NOW()
+          )
           `,
           [
             airlineId,
             `OEM PURCHASE FINAL — ${aircraftLabel}`,
-            finalPaymentAmount,
-            Date.now()
+            finalPaymentAmount
           ]
         );
       }
@@ -7179,6 +7199,17 @@ if (
             maintenance_status,
             purchase_price,
             current_value,
+
+            depreciation_status,
+            depreciation_method,
+            depreciation_basis,
+            depreciation_residual_value,
+            depreciation_useful_life_months,
+            depreciation_start_sim,
+            accumulated_depreciation,
+            book_value,
+            depreciation_last_month_key,
+
             currency,
             created_at,
             updated_at
@@ -7210,6 +7241,19 @@ if (
             'SERVICEABLE',
             $11,
             $11,
+
+            'ACTIVE',
+            'STRAIGHT_LINE',
+            $11,
+            ROUND(
+              $11::NUMERIC * 0.05
+            )::BIGINT,
+            240,
+            $10::TIMESTAMP,
+            0,
+            $11,
+            NULL,
+
             'USD',
             NOW(),
             NOW()
