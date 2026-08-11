@@ -6318,44 +6318,19 @@ router.post("/aircraft/orders/delivery-resolver", requireAuth, async (req, res) 
   const client = await pool.connect();
 
   try {
-    const simYear = Number(req.body?.sim_year);
-    const simMonth = Number(req.body?.sim_month);
-    const simDay = Number(req.body?.sim_day);
-
-    /*
-      Optional OCC test guard:
-      - If order_id is provided, LIVE resolver processes only that order.
-      - This protects production tests when due_count contains more than one order.
-    */
-    const requestedOrderId =
-      req.body?.order_id === undefined || req.body?.order_id === null || req.body?.order_id === ""
+        const requestedOrderId =
+      req.body?.order_id === undefined ||
+      req.body?.order_id === null ||
+      req.body?.order_id === ""
         ? null
         : Number(req.body.order_id);
 
-    if (!Number.isInteger(simYear) || simYear < 1900 || simYear > 2100) {
-      return res.status(400).json({
-        ok: false,
-        error: "INVALID_SIM_YEAR"
-      });
-    }
-
-    if (!Number.isInteger(simMonth) || simMonth < 1 || simMonth > 12) {
-      return res.status(400).json({
-        ok: false,
-        error: "INVALID_SIM_MONTH"
-      });
-    }
-
-    if (!Number.isInteger(simDay) || simDay < 1 || simDay > 31) {
-      return res.status(400).json({
-        ok: false,
-        error: "INVALID_SIM_DAY"
-      });
-    }
-
     if (
       requestedOrderId !== null &&
-      (!Number.isInteger(requestedOrderId) || requestedOrderId <= 0)
+      (
+        !Number.isInteger(requestedOrderId) ||
+        requestedOrderId <= 0
+      )
     ) {
       return res.status(400).json({
         ok: false,
@@ -6363,16 +6338,49 @@ router.post("/aircraft/orders/delivery-resolver", requireAuth, async (req, res) 
       });
     }
 
-    const resolverDate = new Date(Date.UTC(
-      simYear,
-      simMonth - 1,
-      simDay,
-      12,
-      0,
-      0
-    ));
-
     await client.query("BEGIN");
+
+    const resolverClockResult =
+      await client.query(
+        `
+        SELECT
+          acs_get_current_sim_time()::TIMESTAMP
+            AS sim_time,
+
+          EXTRACT(
+            YEAR FROM acs_get_current_sim_time()
+          )::INTEGER AS sim_year,
+
+          EXTRACT(
+            MONTH FROM acs_get_current_sim_time()
+          )::INTEGER AS sim_month,
+
+          EXTRACT(
+            DAY FROM acs_get_current_sim_time()
+          )::INTEGER AS sim_day
+        `
+      );
+
+    const resolverClock =
+      resolverClockResult.rows[0];
+
+    if (!resolverClock?.sim_time) {
+      throw new Error(
+        "ACS_DELIVERY_SIM_TIME_UNAVAILABLE"
+      );
+    }
+
+    const resolverDate =
+      new Date(resolverClock.sim_time);
+
+    const simYear =
+      Number(resolverClock.sim_year);
+
+    const simMonth =
+      Number(resolverClock.sim_month);
+
+    const simDay =
+      Number(resolverClock.sim_day);
 
     /* ============================================================
        1) LOAD DUE ORDERS — MULTIPLAYER SAFE
@@ -6520,17 +6528,41 @@ router.post("/aircraft/orders/delivery-resolver", requireAuth, async (req, res) 
         const financeBeforeDefault = financeBeforeDefaultResult.rows[0] || null;
         const capitalBeforeRefund = Math.round(Number(financeBeforeDefault?.capital || 0));
 
-        await client.query(
+                await client.query(
           `
           UPDATE company_finance
           SET
-            capital = COALESCE(capital, 0) + $2,
-            revenue = COALESCE(revenue, 0) + $2,
-            profit = COALESCE(profit, 0) + $2,
+            capital =
+              COALESCE(capital, 0) + $2,
+
+            expenses =
+              COALESCE(expenses, 0) + $3,
+
+            profit =
+              COALESCE(profit, 0) - $3,
+
+            cost_new_aircraft_purchase =
+              GREATEST(
+                COALESCE(
+                  cost_new_aircraft_purchase,
+                  0
+                ) - $4,
+                0
+              ),
+
+            cost_other =
+              COALESCE(cost_other, 0) + $3,
+
             updated_at = NOW()
+
           WHERE airline_id = $1
           `,
-          [airlineId, refundAmount]
+          [
+            airlineId,
+            refundAmount,
+            defaultPenaltyAmount,
+            initialPaymentAmount
+          ]
         );
 
         const financeAfterDefaultResult = await client.query(
@@ -6549,7 +6581,7 @@ router.post("/aircraft/orders/delivery-resolver", requireAuth, async (req, res) 
            2A.3) FINANCE LOG — REFUND + PENALTY
            ============================================================ */
 
-        await client.query(
+                await client.query(
           `
           INSERT INTO finance_log (
             airline_id,
@@ -6560,15 +6592,36 @@ router.post("/aircraft/orders/delivery-resolver", requireAuth, async (req, res) 
             created_at
           )
           VALUES
-            ($1, 'INCOME', $2, $3, $5, NOW()),
-            ($1, 'EXPENSE', $4, $6, $5, NOW())
+            (
+              $1,
+              'INCOME',
+              $2,
+              $3,
+              FLOOR(
+                EXTRACT(
+                  EPOCH FROM acs_get_current_sim_time()
+                ) * 1000
+              )::BIGINT,
+              NOW()
+            ),
+            (
+              $1,
+              'EXPENSE',
+              $4,
+              $5,
+              FLOOR(
+                EXTRACT(
+                  EPOCH FROM acs_get_current_sim_time()
+                ) * 1000
+              )::BIGINT,
+              NOW()
+            )
           `,
           [
             airlineId,
             `OEM PURCHASE DEFAULT REFUND — ${aircraftLabel}`,
             refundAmount,
             `OEM PURCHASE DEFAULT PENALTY — ${aircraftLabel}`,
-            Date.now(),
             defaultPenaltyAmount
           ]
         );
@@ -6774,6 +6827,17 @@ if (
         maintenance_status,
         purchase_price,
         current_value,
+
+        depreciation_status,
+        depreciation_method,
+        depreciation_basis,
+        depreciation_residual_value,
+        depreciation_useful_life_months,
+        depreciation_start_sim,
+        accumulated_depreciation,
+        book_value,
+        depreciation_last_month_key,
+
         currency,
         created_at,
         updated_at
@@ -6805,6 +6869,17 @@ if (
         'SERVICEABLE',
         0,
         $10,
+
+        'NOT_APPLICABLE',
+        NULL,
+        0,
+        0,
+        0,
+        NULL,
+        0,
+        0,
+        NULL,
+
         'USD',
         NOW(),
         NOW()
