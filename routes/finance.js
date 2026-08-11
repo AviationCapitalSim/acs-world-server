@@ -66,11 +66,13 @@ router.get("/finance", requireAuth, async (req, res) => {
      * Mantiene visible durante el mes actual la depreciación
      * registrada en el último cierre mensual.
      */
+    
     const depreciationDisplayResult = await client.query(
       `
       SELECT
         month_key,
-        cost_depreciation
+        cost_depreciation,
+        cost_insurance
       FROM public.finance_history
       WHERE airline_id = $1
         AND record_kind = 'MONTHLY_CLOSE'
@@ -92,6 +94,17 @@ router.get("/finance", requireAuth, async (req, res) => {
         : Number(
             financeResult.rows[0]
               .cost_depreciation || 0
+          );
+
+    financeResult.rows[0].cost_insurance_display =
+      depreciationDisplayResult.rows.length
+        ? Number(
+            depreciationDisplayResult.rows[0]
+              .cost_insurance || 0
+          )
+        : Number(
+            financeResult.rows[0]
+              .cost_insurance || 0
           );
 
     const leasingResult = await client.query(
