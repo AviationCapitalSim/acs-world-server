@@ -61,6 +61,39 @@ router.get("/finance", requireAuth, async (req, res) => {
       [airlineId]
     );
 
+    /*
+     * Valor exclusivamente visual para Company Finance.
+     * Mantiene visible durante el mes actual la depreciación
+     * registrada en el último cierre mensual.
+     */
+    const depreciationDisplayResult = await client.query(
+      `
+      SELECT
+        month_key,
+        cost_depreciation
+      FROM public.finance_history
+      WHERE airline_id = $1
+        AND record_kind = 'MONTHLY_CLOSE'
+      ORDER BY
+        year DESC,
+        month DESC,
+        id DESC
+      LIMIT 1
+      `,
+      [airlineId]
+    );
+
+    financeResult.rows[0].cost_depreciation_display =
+      depreciationDisplayResult.rows.length
+        ? Number(
+            depreciationDisplayResult.rows[0]
+              .cost_depreciation || 0
+          )
+        : Number(
+            financeResult.rows[0]
+              .cost_depreciation || 0
+          );
+
     const leasingResult = await client.query(
       `
       SELECT
