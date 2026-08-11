@@ -73,7 +73,8 @@ router.get("/finance", requireAuth, async (req, res) => {
         month_key,
         cost_depreciation,
         cost_insurance,
-        cost_leasing
+        cost_leasing,
+        cost_taxes
       FROM public.finance_history
       WHERE airline_id = $1
         AND record_kind = 'MONTHLY_CLOSE'
@@ -117,6 +118,17 @@ router.get("/finance", requireAuth, async (req, res) => {
         : Number(
             financeResult.rows[0]
               .cost_leasing || 0
+          );
+
+    financeResult.rows[0].cost_taxes_display =
+      depreciationDisplayResult.rows.length
+        ? Number(
+            depreciationDisplayResult.rows[0]
+              .cost_taxes || 0
+          )
+        : Number(
+            financeResult.rows[0]
+              .cost_taxes || 0
           );
     
     const leasingResult = await client.query(
