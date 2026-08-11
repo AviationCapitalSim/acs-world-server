@@ -61,6 +61,44 @@ const ACS_monthKey = (year, month) => {
 };
 
 /* ============================================================
+   ACS CORPORATE INCOME TAX — HISTORICAL GLOBAL RATE
+   ------------------------------------------------------------
+   Internal values use basis points:
+   100 basis points = 1%.
+   PostgreSQL simulation year is the only year authority.
+   ============================================================ */
+
+const ACS_getCorporateTaxRateBasisPoints = (year) => {
+  const normalizedYear = Number(year);
+
+  if (
+    !Number.isInteger(normalizedYear) ||
+    normalizedYear < 1800 ||
+    normalizedYear > 2200
+  ) {
+    throw new Error(
+      "INVALID_CORPORATE_TAX_SIMULATION_YEAR"
+    );
+  }
+
+  if (normalizedYear < 1913) return 0;
+  if (normalizedYear <= 1919) return 200;
+  if (normalizedYear <= 1929) return 1000;
+  if (normalizedYear <= 1939) return 1500;
+  if (normalizedYear <= 1945) return 2500;
+  if (normalizedYear <= 1951) return 3000;
+  if (normalizedYear <= 1963) return 4000;
+  if (normalizedYear <= 1967) return 3800;
+  if (normalizedYear <= 1979) return 4000;
+  if (normalizedYear <= 1989) return 3800;
+  if (normalizedYear <= 1999) return 3300;
+  if (normalizedYear <= 2009) return 2800;
+  if (normalizedYear <= 2017) return 2400;
+
+  return 2200;
+};
+
+/* ============================================================
    ACS AIRCRAFT INSURANCE — POLICY AUTHORITY v1.0
    ------------------------------------------------------------
    Rules:
