@@ -1055,6 +1055,7 @@ router.get(
           cost_maintenance,
           cost_hr,
           cost_leasing,
+          cost_taxes,
           cost_loans,
           cost_other,
           cost_new_aircraft_purchase,
@@ -1105,8 +1106,9 @@ router.get(
             cost_maintenance,
             cost_hr,
             cost_leasing,
+            cost_taxes,
             cost_loans,
-                        cost_other,
+            cost_other,
             cost_new_aircraft_purchase,
             cost_used_aircraft_purchase,
 
