@@ -1708,9 +1708,636 @@ async function ACS_settleMonthlyAircraftDepreciation(
     }
   }
 
-  return {
+    return {
     aircraftCount,
     appliedAmount
+  };
+}
+
+/* ============================================================
+   SETTLE MONTHLY CORPORATE INCOME TAX
+   ------------------------------------------------------------
+   Rules:
+   - Historical global rate.
+   - Monthly settlement at finance close.
+   - Loan interest is deductible.
+   - Loan principal is added back.
+   - Losses expire after 12 historical months.
+   - Oldest available losses are consumed first.
+   - Tax expense affects profit.
+   - Only the paid amount reduces capital.
+   - Unpaid tax becomes outstanding debt.
+   - One canonical settlement per airline and month.
+   ============================================================ */
+
+async function ACS_settleMonthlyCorporateTax(
+  client,
+  airlineId,
+  year,
+  month,
+  closingTimestampMs,
+  boundaries
+) {
+  const monthKey = ACS_monthKey(year, month);
+
+  const taxRateBasisPoints =
+    ACS_getCorporateTaxRateBasisPoints(year);
+
+  const existingResult = await client.query(
+    `
+    SELECT *
+    FROM public.corporate_tax
+    WHERE airline_id = $1
+      AND year = $2
+      AND month = $3
+    FOR UPDATE
+    `,
+    [airlineId, year, month]
+  );
+
+  if (existingResult.rows.length) {
+    const existing = existingResult.rows[0];
+
+    const financeResult = await client.query(
+      `
+      SELECT *
+      FROM public.company_finance
+      WHERE airline_id = $1
+      FOR UPDATE
+      `,
+      [airlineId]
+    );
+
+    return {
+      applied: false,
+      taxDue: ACS_toInteger(existing.tax_due),
+      taxPaid: ACS_toInteger(existing.tax_paid),
+      taxOutstanding:
+        ACS_toInteger(existing.tax_outstanding),
+      priorTaxPaid: 0,
+      lossGenerated:
+        ACS_toInteger(existing.loss_generated),
+      lossApplied:
+        ACS_toInteger(existing.loss_applied),
+      taxableProfit:
+        ACS_toInteger(
+          existing.taxable_profit_after_losses
+        ),
+      taxRateBasisPoints:
+        ACS_toInteger(
+          existing.tax_rate_basis_points
+        ),
+      finance: financeResult.rows[0]
+    };
+  }
+
+  const financeResult = await client.query(
+    `
+    SELECT *
+    FROM public.company_finance
+    WHERE airline_id = $1
+    FOR UPDATE
+    `,
+    [airlineId]
+  );
+
+  let finance = financeResult.rows[0];
+
+  if (!finance) {
+    throw new Error(
+      "COMPANY_FINANCE_CORPORATE_TAX_ROW_NOT_FOUND"
+    );
+  }
+
+  /*
+   * Settle older outstanding taxes first.
+   * This payment does not affect expenses or profit again.
+   */
+
+  let priorTaxPaid = 0;
+
+  let availableForPriorTax = Math.max(
+    ACS_toInteger(finance.capital),
+    0
+  );
+
+  if (availableForPriorTax > 0) {
+    const outstandingResult = await client.query(
+      `
+      SELECT
+        id,
+        tax_outstanding
+
+      FROM public.corporate_tax
+
+      WHERE airline_id = $1
+        AND month_key < $2::VARCHAR
+        AND tax_outstanding > 0
+
+      ORDER BY year, month, id
+
+      FOR UPDATE
+      `,
+      [airlineId, monthKey]
+    );
+
+    for (const taxRow of outstandingResult.rows) {
+      if (availableForPriorTax <= 0) break;
+
+      const outstandingAmount =
+        ACS_toInteger(taxRow.tax_outstanding);
+
+      const paidAmount = Math.min(
+        outstandingAmount,
+        availableForPriorTax
+      );
+
+      if (paidAmount <= 0) continue;
+
+      await client.query(
+        `
+        UPDATE public.corporate_tax
+        SET
+          tax_paid = tax_paid + $2,
+          tax_outstanding =
+            tax_outstanding - $2,
+
+          payment_status =
+            CASE
+              WHEN tax_outstanding - $2 = 0
+                THEN 'PAID'
+              ELSE 'PARTIALLY_PAID'
+            END,
+
+          settled_sim_time =
+            CASE
+              WHEN tax_outstanding - $2 = 0
+                THEN $3::TIMESTAMP
+              ELSE settled_sim_time
+            END,
+
+          updated_at = NOW()
+
+        WHERE id = $1
+        `,
+        [
+          taxRow.id,
+          paidAmount,
+          boundaries.period_end
+        ]
+      );
+
+      priorTaxPaid += paidAmount;
+      availableForPriorTax -= paidAmount;
+    }
+  }
+
+  if (priorTaxPaid > 0) {
+    const priorPaymentResult = await client.query(
+      `
+      UPDATE public.company_finance
+      SET
+        capital =
+          COALESCE(capital, 0) - $2,
+
+        debt =
+          GREATEST(
+            COALESCE(debt, 0) - $2,
+            0
+          ),
+
+        updated_at = NOW()
+
+      WHERE airline_id = $1
+
+      RETURNING *
+      `,
+      [airlineId, priorTaxPaid]
+    );
+
+    if (!priorPaymentResult.rows.length) {
+      throw new Error(
+        "COMPANY_FINANCE_PRIOR_TAX_PAYMENT_FAILED"
+      );
+    }
+
+    finance = priorPaymentResult.rows[0];
+  }
+
+  const accountingProfitBeforeTax =
+    ACS_toInteger(finance.profit);
+
+  /*
+   * Principal was recorded as an accounting expense by the
+   * loan payment system, but it is not tax deductible.
+   * Interest remains included as a deductible expense.
+   */
+
+  const principalResult = await client.query(
+    `
+    SELECT
+      COALESCE(
+        SUM(principal_component),
+        0
+      )::BIGINT AS principal_addback
+
+    FROM public.bank_loan_payments
+
+    WHERE airline_id = $1
+      AND payment_sim_time >= $2::TIMESTAMP
+      AND payment_sim_time < $3::TIMESTAMP
+    `,
+    [
+      airlineId,
+      boundaries.period_start,
+      boundaries.next_period_start
+    ]
+  );
+
+  const loanPrincipalAddback =
+    ACS_toInteger(
+      principalResult.rows[0]?.principal_addback
+    );
+
+  const taxableProfitBeforeLosses =
+    accountingProfitBeforeTax +
+    loanPrincipalAddback;
+
+  /*
+   * Losses only exist once Corporate Income Tax applies.
+   */
+
+  const lossGenerated =
+    taxRateBasisPoints > 0
+      ? Math.max(
+          -taxableProfitBeforeLosses,
+          0
+        )
+      : 0;
+
+  let remainingTaxableProfit = Math.max(
+    taxableProfitBeforeLosses,
+    0
+  );
+
+  let lossApplied = 0;
+
+  /*
+   * Apply valid losses in FIFO order.
+   */
+
+  if (
+    taxRateBasisPoints > 0 &&
+    remainingTaxableProfit > 0
+  ) {
+    const availableLossesResult =
+      await client.query(
+        `
+        SELECT
+          id,
+          loss_remaining
+
+        FROM public.corporate_tax
+
+        WHERE airline_id = $1
+          AND month_key < $2::VARCHAR
+          AND loss_expires_month_key >= $2::VARCHAR
+          AND loss_remaining > 0
+
+        ORDER BY year, month, id
+
+        FOR UPDATE
+        `,
+        [airlineId, monthKey]
+      );
+
+    for (
+      const lossRow
+      of availableLossesResult.rows
+    ) {
+      if (remainingTaxableProfit <= 0) break;
+
+      const availableLoss =
+        ACS_toInteger(lossRow.loss_remaining);
+
+      const usedAmount = Math.min(
+        availableLoss,
+        remainingTaxableProfit
+      );
+
+      if (usedAmount <= 0) continue;
+
+      await client.query(
+        `
+        UPDATE public.corporate_tax
+        SET
+          loss_used =
+            loss_used + $2,
+
+          loss_remaining =
+            loss_remaining - $2,
+
+          updated_at = NOW()
+
+        WHERE id = $1
+        `,
+        [lossRow.id, usedAmount]
+      );
+
+      lossApplied += usedAmount;
+      remainingTaxableProfit -= usedAmount;
+    }
+  }
+
+  const taxableProfitAfterLosses =
+    remainingTaxableProfit;
+
+  /*
+   * PostgreSQL performs the exact upward rounding.
+   */
+
+  const calculationResult = await client.query(
+    `
+    SELECT
+      CEIL(
+        $1::NUMERIC *
+        $2::NUMERIC /
+        10000
+      )::BIGINT AS tax_due
+    `,
+    [
+      taxableProfitAfterLosses,
+      taxRateBasisPoints
+    ]
+  );
+
+  const taxDue =
+    ACS_toInteger(
+      calculationResult.rows[0]?.tax_due
+    );
+
+  const availableCapital = Math.max(
+    ACS_toInteger(finance.capital),
+    0
+  );
+
+  const taxPaid = Math.min(
+    taxDue,
+    availableCapital
+  );
+
+  const taxOutstanding =
+    taxDue - taxPaid;
+
+  let paymentStatus = "NO_TAX_DUE";
+
+  if (taxRateBasisPoints === 0) {
+    paymentStatus = "NOT_APPLICABLE";
+  } else if (
+    taxDue > 0 &&
+    taxOutstanding === 0
+  ) {
+    paymentStatus = "PAID";
+  } else if (
+    taxPaid > 0 &&
+    taxOutstanding > 0
+  ) {
+    paymentStatus = "PARTIALLY_PAID";
+  } else if (taxOutstanding > 0) {
+    paymentStatus = "PAYMENT_DUE";
+  }
+
+  /*
+   * Twelve historical months after the loss month.
+   * No JavaScript date authority is used.
+   */
+
+  const expiryPeriodNumber =
+    ACS_periodNumber(year, month) + 12;
+
+  const lossExpiresMonthKey =
+    lossGenerated > 0
+      ? ACS_monthKey(
+          Math.floor(
+            expiryPeriodNumber / 12
+          ),
+          (
+            expiryPeriodNumber % 12
+          ) + 1
+        )
+      : null;
+
+  let financeLogId = null;
+
+  if (taxDue > 0) {
+    const referenceUid =
+      `CORPORATE_INCOME_TAX:` +
+      `${airlineId}:${monthKey}`;
+
+    const logResult = await client.query(
+      `
+      INSERT INTO public.finance_log (
+        airline_id,
+        type,
+        source,
+        amount,
+        timestamp,
+        route_plan_id,
+        schedule_item_id,
+        reference_uid,
+        description,
+        created_at
+      )
+      VALUES (
+        $1,
+        'EXPENSE',
+        'CORPORATE_INCOME_TAX',
+        $2,
+        $3,
+        NULL,
+        NULL,
+        $4,
+        $5,
+        NOW()
+      )
+
+      ON CONFLICT (reference_uid)
+      DO UPDATE SET
+        reference_uid =
+          EXCLUDED.reference_uid
+
+      RETURNING id
+      `,
+      [
+        airlineId,
+        taxDue,
+        closingTimestampMs,
+        referenceUid,
+        `Corporate Income Tax — ${monthKey}`
+      ]
+    );
+
+    financeLogId =
+      logResult.rows[0].id;
+  }
+
+  const settledSimTime =
+    taxOutstanding === 0
+      ? boundaries.period_end
+      : null;
+
+  await client.query(
+    `
+    INSERT INTO public.corporate_tax (
+      airline_id,
+      year,
+      month,
+      month_key,
+
+      accounting_profit_before_tax,
+      loan_principal_addback,
+      taxable_profit_before_losses,
+
+      loss_generated,
+      loss_applied,
+      loss_used,
+      loss_remaining,
+      loss_expires_month_key,
+
+      taxable_profit_after_losses,
+      tax_rate_basis_points,
+
+      tax_due,
+      tax_paid,
+      tax_outstanding,
+      payment_status,
+      settled_sim_time,
+
+      finance_log_id,
+      metadata,
+      created_at,
+      updated_at
+    )
+    VALUES (
+      $1,
+      $2,
+      $3,
+      $4,
+
+      $5,
+      $6,
+      $7,
+
+      $8,
+      $9,
+      0,
+      $8,
+      $10,
+
+      $11,
+      $12,
+
+      $13,
+      $14,
+      $15,
+      $16,
+      $17::TIMESTAMP,
+
+      $18,
+
+      JSONB_BUILD_OBJECT(
+        'loss_carryforward_months',
+        12,
+        'loan_interest_deductible',
+        TRUE,
+        'loan_principal_deductible',
+        FALSE
+      ),
+
+      NOW(),
+      NOW()
+    )
+    `,
+    [
+      airlineId,
+      year,
+      month,
+      monthKey,
+
+      accountingProfitBeforeTax,
+      loanPrincipalAddback,
+      taxableProfitBeforeLosses,
+
+      lossGenerated,
+      lossApplied,
+      lossExpiresMonthKey,
+
+      taxableProfitAfterLosses,
+      taxRateBasisPoints,
+
+      taxDue,
+      taxPaid,
+      taxOutstanding,
+      paymentStatus,
+      settledSimTime,
+
+      financeLogId
+    ]
+  );
+
+  const updatedFinanceResult =
+    await client.query(
+      `
+      UPDATE public.company_finance
+      SET
+        capital =
+          COALESCE(capital, 0) - $2,
+
+        expenses =
+          COALESCE(expenses, 0) + $3,
+
+        profit =
+          COALESCE(profit, 0) - $3,
+
+        cost_taxes =
+          COALESCE(cost_taxes, 0) + $3,
+
+        debt =
+          COALESCE(debt, 0) + $4,
+
+        updated_at = NOW()
+
+      WHERE airline_id = $1
+
+      RETURNING *
+      `,
+      [
+        airlineId,
+        taxPaid,
+        taxDue,
+        taxOutstanding
+      ]
+    );
+
+  if (!updatedFinanceResult.rows.length) {
+    throw new Error(
+      "COMPANY_FINANCE_CORPORATE_TAX_UPDATE_FAILED"
+    );
+  }
+
+  return {
+    applied: true,
+    taxDue,
+    taxPaid,
+    taxOutstanding,
+    priorTaxPaid,
+    lossGenerated,
+    lossApplied,
+    taxableProfit:
+      taxableProfitAfterLosses,
+    taxRateBasisPoints,
+    finance:
+      updatedFinanceResult.rows[0]
   };
 }
 
@@ -1762,6 +2389,7 @@ async function ACS_archiveFinanceMonth(
       cost_leasing,
       cost_insurance,
       cost_depreciation,
+      cost_taxes,
       cost_loans,
       cost_other,
 
@@ -1812,15 +2440,16 @@ async function ACS_archiveFinanceMonth(
       $23,
       $24,
       $25,
-
       $26,
-      $27,
 
+      $27,
       $28,
+
+      $29,
       0,
 
-      $29,
-      $29,
+      $30,
+      $30,
       'MONTHLY_CLOSE',
       'VERIFIED',
       MAKE_DATE($2, $3, 1)::TIMESTAMP,
@@ -1875,6 +2504,7 @@ async function ACS_archiveFinanceMonth(
       ACS_toInteger(finance.cost_leasing),
       ACS_toInteger(finance.cost_insurance),
       ACS_toInteger(finance.cost_depreciation),
+      ACS_toInteger(finance.cost_taxes),
       ACS_toInteger(finance.cost_loans),
       ACS_toInteger(finance.cost_other),
 
@@ -1988,6 +2618,7 @@ async function ACS_openNextFinanceMonth(
       cost_leasing = 0,
       cost_insurance = 0,
       cost_depreciation = 0,
+      cost_taxes = 0,
       cost_airport = 0,
       cost_other = 0,
 
@@ -2295,6 +2926,19 @@ export async function ACS_ensureFinancePeriod(
         depreciationFinanceRefresh.rows[0];
     }
 
+    const corporateTaxSettlement =
+      await ACS_settleMonthlyCorporateTax(
+        client,
+        normalizedAirlineId,
+        closingYear,
+        closingMonth,
+        closingTimestampMs,
+        boundaries
+      );
+
+    finance =
+      corporateTaxSettlement.finance;
+
     const flightCount =
       await ACS_countMonthlyFlights(
         client,
@@ -2373,6 +3017,20 @@ export async function ACS_ensureFinancePeriod(
         depreciationSettlement.appliedAmount,
       depreciated_aircraft:
         depreciationSettlement.aircraftCount,
+      corporate_tax:
+        corporateTaxSettlement.taxDue,
+      corporate_tax_paid:
+        corporateTaxSettlement.taxPaid,
+      corporate_tax_outstanding:
+        corporateTaxSettlement.taxOutstanding,
+      prior_corporate_tax_paid:
+        corporateTaxSettlement.priorTaxPaid,
+      corporate_tax_rate_basis_points:
+        corporateTaxSettlement.taxRateBasisPoints,
+      tax_loss_generated:
+        corporateTaxSettlement.lossGenerated,
+      tax_loss_applied:
+        corporateTaxSettlement.lossApplied,
       flight_count: flightCount,
       closing_capital:
         ACS_toInteger(finance.opening_capital),
