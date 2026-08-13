@@ -6884,12 +6884,20 @@ const systemRefresh = {
       frontend actions to identify their real source.
     */
 
-    const systemListings =
+        const systemListings =
       result.rows.map(row => ({
         ...row,
 
+        /*
+          Keep the original numeric ID so the current
+          Used Market purchase endpoint remains functional.
+        */
+
         id:
-          `SYSTEM-${row.id}`,
+          String(row.id),
+
+        listing_source_type:
+          "SYSTEM",
 
         system_listing_id:
           Number(row.id),
@@ -6907,7 +6915,7 @@ const systemRefresh = {
         is_own_listing:
           false
       }));
-
+     
     const airlineListings =
       airlineListingsResult.rows;
 
