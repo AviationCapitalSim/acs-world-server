@@ -6650,6 +6650,271 @@ const systemRefresh = {
   ORDER BY uam.listed_at DESC, uam.id DESC
   `
 );
+
+        /*
+      Airline listings use a prefixed public ID so they
+      cannot collide with system Used Market numeric IDs.
+
+      Examples:
+      SYSTEM-44
+      AIRLINE-12
+    */
+
+    const airlineListingsResult =
+      await client.query(
+        `
+        SELECT
+          (
+            'AIRLINE-' ||
+            aml.id::TEXT
+          ) AS id,
+
+          aml.id
+            AS market_listing_id,
+
+          (
+            'AIRLINE-' ||
+            aml.id::TEXT
+          ) AS listing_uid,
+
+          aml.aircraft_id,
+          aml.seller_airline_id,
+
+          aml.listing_type,
+          aml.listing_source,
+
+          aml.status
+            AS market_listing_status,
+
+          'AVAILABLE'
+            AS listing_status,
+
+          TRUE
+            AS is_player_listing,
+
+          (
+            aml.seller_airline_id = $1
+          ) AS is_own_listing,
+
+          af.manufacturer,
+          af.model_key,
+
+          COALESCE(
+            NULLIF(
+              aml.aircraft_name,
+              ''
+            ),
+            af.aircraft_name,
+            ac.aircraft_name,
+            af.model_key
+          ) AS aircraft_name,
+
+          ac.model,
+          ac.seats,
+          ac.range_nm,
+          ac.speed_kts,
+          ac.engines,
+          ac.aircraft_category,
+          ac.image_filename,
+          ac.image_filename
+            AS image_file_name,
+
+          af.serial_number,
+
+          aml.registration
+            AS previous_registration,
+
+          'AIRLINE OPERATOR'
+            AS previous_operator,
+
+          'AIRLINE OPERATOR'
+            AS previous_operator_name,
+
+          aml.year_built,
+
+          GREATEST(
+            0,
+            $2::INTEGER -
+            COALESCE(
+              aml.year_built,
+              $2::INTEGER
+            )
+          ) AS age_years,
+
+          aml.total_hours,
+          aml.total_cycles,
+          aml.condition_pct,
+
+          COALESCE(
+            aml.current_airport,
+            af.current_airport,
+            af.base_icao
+          ) AS current_location,
+
+          COALESCE(
+            aml.current_airport,
+            af.current_airport,
+            af.base_icao
+          ) AS current_airport,
+
+          aml.base_value
+            AS base_price,
+
+          aml.asking_price
+            AS market_price,
+
+          aml.currency,
+
+          af.maintenance_status,
+
+          ams.c_check_due_hours,
+          ams.c_check_due_cycles,
+          ams.d_check_due_date,
+
+          NULL::INTEGER
+            AS reserved_by_airline_id,
+
+          NULL::INTEGER
+            AS sold_to_airline_id,
+
+          aml.listed_sim_time
+            AS listed_at,
+
+          NULL::TIMESTAMP
+            AS reserved_at,
+
+          NULL::TIMESTAMP
+            AS sold_at,
+
+          'AIRLINE'
+            AS market_source,
+
+          FALSE
+            AS system_generated,
+
+          NULL::TEXT
+            AS generation_batch_id,
+
+          EXTRACT(
+            YEAR FROM aml.listed_sim_time
+          )::INTEGER
+            AS generated_for_sim_year,
+
+          NULL::INTEGER
+            AS expires_sim_year,
+
+          aml.seller_airline_id
+            AS previous_airline_id,
+
+          NULL::TEXT
+            AS lessor_name,
+
+          'ACS OCC MARKET'
+            AS remarketing_agent,
+
+          (
+            aml.listing_type = 'SALE'
+            AND
+            aml.seller_airline_id <> $1
+          ) AS available_for_purchase,
+
+          (
+            aml.listing_type = 'LEASE'
+            AND
+            aml.seller_airline_id <> $1
+          ) AS available_for_lease,
+
+          aml.listing_type
+            AS ownership_offer_type,
+
+          FALSE
+            AS broker_serviced,
+
+          NULL::TIMESTAMP
+            AS broker_serviced_at,
+
+          0::INTEGER
+            AS system_refresh_count,
+
+          NULL::DATE
+            AS system_refresh_last_sim_date,
+
+          NULL::TEXT
+            AS system_refresh_last_type,
+
+          NULL::TEXT
+            AS system_refresh_policy_version,
+
+          aml.created_at,
+          aml.updated_at
+
+        FROM
+          public.aircraft_market_listings aml
+
+        INNER JOIN
+          public.aircraft_fleet af
+          ON af.id = aml.aircraft_id
+
+        LEFT JOIN
+          public.aircraft_catalog ac
+          ON ac.model_key = af.model_key
+
+        LEFT JOIN
+          public.aircraft_maintenance_status ams
+          ON ams.aircraft_id = af.id
+
+        WHERE aml.status IN (
+          'ACTIVE',
+          'OFFER_RECEIVED',
+          'SALE_PENDING'
+        )
+
+        ORDER BY
+          aml.listed_sim_time DESC,
+          aml.id DESC
+        `,
+        [
+          Number(req.airline_id),
+          simDatePayload.sim_year
+        ]
+      );
+
+    /*
+      Prefix system listing IDs as well. This allows
+      frontend actions to identify their real source.
+    */
+
+    const systemListings =
+      result.rows.map(row => ({
+        ...row,
+
+        id:
+          `SYSTEM-${row.id}`,
+
+        system_listing_id:
+          Number(row.id),
+
+        market_listing_id:
+          null,
+
+        listing_type:
+          row.ownership_offer_type ||
+          "SALE",
+
+        is_player_listing:
+          false,
+
+        is_own_listing:
+          false
+      }));
+
+    const airlineListings =
+      airlineListingsResult.rows;
+
+    const usedMarketListings = [
+      ...airlineListings,
+      ...systemListings
+    ];
      
     await client.query("COMMIT");
 
@@ -6674,8 +6939,19 @@ const systemRefresh = {
         sim_day: simDatePayload.sim_day,
         sim_date: simDatePayload.sim_date
       },
-      count: result.rows.length,
-      used_market: result.rows
+      count:
+        usedMarketListings.length,
+
+      market_counts: {
+        airline_listings:
+          airlineListings.length,
+
+      system_listings:
+          systemListings.length
+      },
+
+      used_market:
+        usedMarketListings
     });
 
   } catch (err) {
