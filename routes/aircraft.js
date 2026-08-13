@@ -768,6 +768,651 @@ router.get("/aircraft/fleet", requireAuth, async (req, res) => {
 });
 
 /* ============================================================
+   🟨 ACS AIRCRAFT SALE QUOTE — BACKEND AUTHORITY v1.0
+   ------------------------------------------------------------
+   Route:
+   GET /v1/aircraft/fleet/:id/sale/quote
+
+   Purpose:
+   - Validate aircraft ownership
+   - Calculate authoritative ACS market valuation
+   - Return four sale price levels
+   - Lowest allowed is 5% below minimum market price
+   - No frontend price authority
+   - No finance mutation
+   - No Used Market mutation
+   - Special 20+ year rule will be added later
+   ============================================================ */
+
+const ACS_AIRCRAFT_SALE_POLICY = Object.freeze({
+  brokerCommissionRate: 0.02,
+
+  minimumMarketMultiplier: 0.90,
+  maximumMarketMultiplier: 1.12,
+
+  lowestAllowedDiscount: 0.05,
+
+  maximumGeneralAgeYears: 20,
+  annualAgeAdjustment: 0.0125,
+
+  maximumHoursPenalty: 0.12,
+  maximumCyclesPenalty: 0.12,
+
+  hoursPenaltyReference: 60000,
+  cyclesPenaltyReference: 30000
+});
+
+function ACS_saleClamp(
+  value,
+  minimum,
+  maximum
+) {
+  const numericValue = Number(value);
+
+  if (!Number.isFinite(numericValue)) {
+    return minimum;
+  }
+
+  return Math.min(
+    maximum,
+    Math.max(minimum, numericValue)
+  );
+}
+
+function ACS_saleRoundMoney(value) {
+  const numericValue = Number(value);
+
+  if (
+    !Number.isFinite(numericValue) ||
+    numericValue <= 0
+  ) {
+    return 0;
+  }
+
+  /*
+    ACS Market quotes are rounded to the nearest
+    USD 1,000 to avoid artificial precision.
+  */
+
+  return Math.max(
+    1000,
+    Math.round(numericValue / 1000) * 1000
+  );
+}
+
+function ACS_saleNormalizeStatus(value) {
+  return String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "_");
+}
+
+function ACS_saleResolveBaseValue(aircraft) {
+  const candidates = [
+    aircraft.current_value,
+    aircraft.purchase_price,
+    aircraft.price_acs_usd
+  ];
+
+  for (const candidate of candidates) {
+    const value = Number(candidate);
+
+    if (
+      Number.isFinite(value) &&
+      value > 0
+    ) {
+      return value;
+    }
+  }
+
+  return 0;
+}
+
+function ACS_saleResolveEligibility(aircraft) {
+  const ownership =
+    ACS_saleNormalizeStatus(
+      aircraft.ownership_type
+    );
+
+  const fleetStatus =
+    ACS_saleNormalizeStatus(
+      aircraft.status
+    );
+
+  const operationalStatus =
+    ACS_saleNormalizeStatus(
+      aircraft.operational_status
+    );
+
+  const cCheckStatus =
+    ACS_saleNormalizeStatus(
+      aircraft.c_check_status
+    );
+
+  const dCheckStatus =
+    ACS_saleNormalizeStatus(
+      aircraft.d_check_status
+    );
+
+  if (ownership !== "OWNED") {
+    return {
+      eligible: false,
+      code: "AIRCRAFT_NOT_OWNED",
+      message:
+        "Only airline-owned aircraft can be listed for sale."
+    };
+  }
+
+  if (
+    [
+      "FOR_SALE",
+      "SOLD",
+      "SCRAPPED"
+    ].includes(fleetStatus)
+  ) {
+    return {
+      eligible: false,
+      code: "AIRCRAFT_STATUS_NOT_ELIGIBLE",
+      message:
+        "Aircraft status does not permit a new sale listing."
+    };
+  }
+
+  if (
+    [
+      "IN_FLIGHT",
+      "FLYING"
+    ].includes(operationalStatus)
+  ) {
+    return {
+      eligible: false,
+      code: "AIRCRAFT_IN_FLIGHT",
+      message:
+        "Aircraft cannot be listed while a flight is in progress."
+    };
+  }
+
+  if (
+    cCheckStatus === "IN_PROGRESS" ||
+    dCheckStatus === "IN_PROGRESS"
+  ) {
+    return {
+      eligible: false,
+      code: "HEAVY_MAINTENANCE_IN_PROGRESS",
+      message:
+        "Aircraft cannot be listed during an active C or D Check."
+    };
+  }
+
+  return {
+    eligible: true,
+    code: "SALE_ELIGIBLE",
+    message:
+      "Aircraft is eligible for an ACS Used Market sale listing."
+  };
+}
+
+function ACS_calculateAircraftSaleQuote(
+  aircraft
+) {
+  const baseValue =
+    ACS_saleResolveBaseValue(aircraft);
+
+  if (baseValue <= 0) {
+    return {
+      ok: false,
+      error: "SALE_VALUATION_UNAVAILABLE",
+      details:
+        "Aircraft has no valid current, purchase, or catalog value."
+    };
+  }
+
+  const conditionPct =
+    ACS_saleClamp(
+      aircraft.condition_pct,
+      1,
+      100
+    );
+
+  const totalHours = Math.max(
+    0,
+    Number(aircraft.total_hours) || 0
+  );
+
+  const totalCycles = Math.max(
+    0,
+    Number(aircraft.total_cycles) || 0
+  );
+
+  const aircraftAge = Math.max(
+    0,
+    Number(aircraft.aircraft_age) || 0
+  );
+
+  /*
+    General age calculation is capped at 20 years.
+    The special ACS rule for aircraft over 20 years
+    will be implemented after the Sell system works.
+  */
+
+  const valuationAge = Math.min(
+    aircraftAge,
+    ACS_AIRCRAFT_SALE_POLICY
+      .maximumGeneralAgeYears
+  );
+
+  /*
+    Condition factor:
+    1% condition  = approximately 65.35%
+    100% condition = 100%
+  */
+
+  const conditionFactor =
+    0.65 + (
+      conditionPct / 100
+    ) * 0.35;
+
+  const ageFactor =
+    1 - (
+      valuationAge *
+      ACS_AIRCRAFT_SALE_POLICY
+        .annualAgeAdjustment
+    );
+
+  const hoursPenalty = Math.min(
+    ACS_AIRCRAFT_SALE_POLICY
+      .maximumHoursPenalty,
+
+    (
+      totalHours /
+      ACS_AIRCRAFT_SALE_POLICY
+        .hoursPenaltyReference
+    ) *
+    ACS_AIRCRAFT_SALE_POLICY
+      .maximumHoursPenalty
+  );
+
+  const cyclesPenalty = Math.min(
+    ACS_AIRCRAFT_SALE_POLICY
+      .maximumCyclesPenalty,
+
+    (
+      totalCycles /
+      ACS_AIRCRAFT_SALE_POLICY
+        .cyclesPenaltyReference
+    ) *
+    ACS_AIRCRAFT_SALE_POLICY
+      .maximumCyclesPenalty
+  );
+
+  const cCheckStatus =
+    ACS_saleNormalizeStatus(
+      aircraft.c_check_status
+    );
+
+  const dCheckStatus =
+    ACS_saleNormalizeStatus(
+      aircraft.d_check_status
+    );
+
+  const maintenanceControlStatus =
+    ACS_saleNormalizeStatus(
+      aircraft.maintenance_control_status
+    );
+
+  let maintenanceFactor = 1;
+
+  if (
+    cCheckStatus === "OVERDUE" ||
+    dCheckStatus === "OVERDUE"
+  ) {
+    maintenanceFactor = 0.92;
+  } else if (
+    maintenanceControlStatus ===
+      "MAINTENANCE_REQUIRED"
+  ) {
+    maintenanceFactor = 0.97;
+  }
+
+  const utilizationFactor =
+    Math.max(
+      0.70,
+      1 - hoursPenalty - cyclesPenalty
+    );
+
+  const rawSuggestedPrice =
+    baseValue *
+    conditionFactor *
+    ageFactor *
+    utilizationFactor *
+    maintenanceFactor;
+
+  const suggestedPrice =
+    ACS_saleRoundMoney(
+      rawSuggestedPrice
+    );
+
+  const minimumPrice =
+    ACS_saleRoundMoney(
+      suggestedPrice *
+      ACS_AIRCRAFT_SALE_POLICY
+        .minimumMarketMultiplier
+    );
+
+  const maximumPrice =
+    ACS_saleRoundMoney(
+      suggestedPrice *
+      ACS_AIRCRAFT_SALE_POLICY
+        .maximumMarketMultiplier
+    );
+
+  const lowestAllowedPrice =
+    ACS_saleRoundMoney(
+      minimumPrice *
+      (
+        1 -
+        ACS_AIRCRAFT_SALE_POLICY
+          .lowestAllowedDiscount
+      )
+    );
+
+  if (
+    lowestAllowedPrice <= 0 ||
+    minimumPrice <= 0 ||
+    suggestedPrice <= 0 ||
+    maximumPrice <= 0
+  ) {
+    return {
+      ok: false,
+      error: "INVALID_SALE_VALUATION",
+      details:
+        "ACS could not establish a positive aircraft valuation."
+    };
+  }
+
+  const suggestedBrokerCommission =
+    ACS_saleRoundMoney(
+      suggestedPrice *
+      ACS_AIRCRAFT_SALE_POLICY
+        .brokerCommissionRate
+    );
+
+  const suggestedNetProceeds =
+    Math.max(
+      0,
+      suggestedPrice -
+      suggestedBrokerCommission
+    );
+
+  return {
+    ok: true,
+
+    currency:
+      aircraft.currency || "USD",
+
+    base_value:
+      ACS_saleRoundMoney(baseValue),
+
+    lowest_allowed_price:
+      lowestAllowedPrice,
+
+    minimum_price:
+      minimumPrice,
+
+    suggested_price:
+      suggestedPrice,
+
+    maximum_price:
+      maximumPrice,
+
+    broker_commission_rate:
+      ACS_AIRCRAFT_SALE_POLICY
+        .brokerCommissionRate,
+
+    suggested_broker_commission:
+      suggestedBrokerCommission,
+
+    suggested_net_proceeds:
+      suggestedNetProceeds,
+
+    factors: {
+      aircraft_age: aircraftAge,
+      general_age_used: valuationAge,
+
+      condition_pct: conditionPct,
+      condition_factor:
+        Number(conditionFactor.toFixed(4)),
+
+      age_factor:
+        Number(ageFactor.toFixed(4)),
+
+      hours_penalty:
+        Number(hoursPenalty.toFixed(4)),
+
+      cycles_penalty:
+        Number(cyclesPenalty.toFixed(4)),
+
+      utilization_factor:
+        Number(utilizationFactor.toFixed(4)),
+
+      maintenance_factor:
+        Number(maintenanceFactor.toFixed(4))
+    }
+  };
+}
+
+router.get(
+  "/aircraft/fleet/:id/sale/quote",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const airlineId =
+        Number(req.airline_id);
+
+      const aircraftId =
+        Number(req.params.id);
+
+      if (
+        !Number.isInteger(aircraftId) ||
+        aircraftId <= 0
+      ) {
+        return res.status(400).json({
+          ok: false,
+          error: "INVALID_AIRCRAFT_ID"
+        });
+      }
+
+      if (
+        !Number.isInteger(airlineId) ||
+        airlineId <= 0
+      ) {
+        return res.status(401).json({
+          ok: false,
+          error: "NO_AIRLINE_SESSION"
+        });
+      }
+
+      const result = await pool.query(
+        `
+        SELECT
+          af.id,
+          af.aircraft_uid,
+          af.airline_id,
+          af.ownership_type,
+          af.status,
+          af.operational_status,
+          af.maintenance_status,
+
+          af.manufacturer,
+          af.model_key,
+          af.aircraft_name,
+          af.registration,
+
+          af.year_built,
+          af.condition_pct,
+          af.total_hours,
+          af.total_cycles,
+
+          af.purchase_price,
+          af.current_value,
+          af.currency,
+
+          ac.aircraft_name
+            AS catalog_aircraft_name,
+
+          ac.price_acs_usd,
+
+          ams.c_check_status,
+          ams.d_check_status,
+
+          ams.maintenance_control_status,
+          ams.maintenance_control_reason,
+
+          acs_get_current_sim_time()
+            AS current_sim_time,
+
+          GREATEST(
+            0,
+            EXTRACT(
+              YEAR FROM AGE(
+                acs_get_current_sim_time(),
+                MAKE_DATE(
+                  COALESCE(
+                    af.year_built,
+                    EXTRACT(
+                      YEAR FROM
+                      acs_get_current_sim_time()
+                    )::INTEGER
+                  ),
+                  1,
+                  1
+                )
+              )
+            )::INTEGER
+          ) AS aircraft_age
+
+        FROM public.aircraft_fleet af
+
+        LEFT JOIN public.aircraft_catalog ac
+          ON ac.model_key = af.model_key
+
+        LEFT JOIN
+          public.aircraft_maintenance_status ams
+          ON ams.aircraft_id = af.id
+
+        WHERE af.id = $1
+          AND af.airline_id = $2
+
+        LIMIT 1
+        `,
+        [
+          aircraftId,
+          airlineId
+        ]
+      );
+
+      if (!result.rows.length) {
+        return res.status(404).json({
+          ok: false,
+          error: "AIRCRAFT_NOT_FOUND"
+        });
+      }
+
+      const aircraft =
+        result.rows[0];
+
+      const eligibility =
+        ACS_saleResolveEligibility(
+          aircraft
+        );
+
+      if (!eligibility.eligible) {
+        return res.status(409).json({
+          ok: false,
+          error: eligibility.code,
+          details: eligibility.message,
+          eligibility
+        });
+      }
+
+      const quote =
+        ACS_calculateAircraftSaleQuote(
+          aircraft
+        );
+
+      if (!quote.ok) {
+        return res.status(422).json(
+          quote
+        );
+      }
+
+      return res.json({
+        ok: true,
+
+        endpoint:
+          "ACS_AIRCRAFT_SALE_QUOTE",
+
+        version:
+          "ACS_AIRCRAFT_SALE_QUOTE_V1_0",
+
+        airline_id:
+          airlineId,
+
+        aircraft: {
+          id: aircraft.id,
+
+          aircraft_uid:
+            aircraft.aircraft_uid,
+
+          aircraft_name:
+            aircraft.catalog_aircraft_name ||
+            aircraft.aircraft_name,
+
+          registration:
+            aircraft.registration,
+
+          model_key:
+            aircraft.model_key,
+
+          ownership_type:
+            aircraft.ownership_type,
+
+          year_built:
+            aircraft.year_built,
+
+          condition_pct:
+            aircraft.condition_pct,
+
+          total_hours:
+            aircraft.total_hours,
+
+          total_cycles:
+            aircraft.total_cycles
+        },
+
+        eligibility,
+
+        quote
+      });
+
+    } catch (error) {
+      console.error(
+        "ACS AIRCRAFT SALE QUOTE ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        ok: false,
+        error:
+          "AIRCRAFT_SALE_QUOTE_FAILED",
+        details:
+          error.message
+      });
+    }
+  }
+);
+
+/* ============================================================
    🟦 ACS MAINTENANCE QUOTE — SERVICE C & D CONTROL v1.0
    ------------------------------------------------------------
    Route:
