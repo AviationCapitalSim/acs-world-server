@@ -6523,15 +6523,17 @@ ACS_unassignAircraftForCommercialAction(
 
       removed_future_occurrences_count: 0,
 
-      unassigned_slot_bookings_count: 0,
+      released_slot_bookings_count: 0,
 
-      preserved_slot_bookings: true,
+      preserved_slot_bookings: false,
+
+      slots_must_be_purchased_again: false,
 
       route_plans: [],
 
       schedule_items: [],
 
-      slot_bookings: []
+      released_slot_bookings: []
     };
   }
 
