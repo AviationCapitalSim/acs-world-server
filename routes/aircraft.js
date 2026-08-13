@@ -6695,6 +6695,354 @@ const systemRefresh = {
 });
 
 /* ============================================================
+   🟨 ACS AIRCRAFT MARKET LISTING — CANCEL OFFER v1.0
+   ------------------------------------------------------------
+   Route:
+   POST /v1/aircraft/market-listings/:id/cancel
+
+   SALE  → CANCEL SALE
+   LEASE → CANCEL LEASE
+   ============================================================ */
+
+router.post(
+  "/aircraft/market-listings/:id/cancel",
+  requireAuth,
+  async (req, res) => {
+    const client = await pool.connect();
+
+    try {
+      const airlineId =
+        Number(req.airline_id);
+
+      const listingId =
+        Number(req.params.id);
+
+      if (
+        !Number.isInteger(airlineId) ||
+        airlineId <= 0
+      ) {
+        return res.status(401).json({
+          ok: false,
+          error: "NO_AIRLINE_SESSION"
+        });
+      }
+
+      if (
+        !Number.isInteger(listingId) ||
+        listingId <= 0
+      ) {
+        return res.status(400).json({
+          ok: false,
+          error: "INVALID_MARKET_LISTING_ID"
+        });
+      }
+
+      await client.query("BEGIN");
+
+      /*
+        Lock the listing and its aircraft.
+        Only the airline that created the offer
+        can cancel it.
+      */
+
+      const listingResult =
+        await client.query(
+          `
+          SELECT
+            aml.id,
+            aml.aircraft_id,
+            aml.seller_airline_id,
+            aml.listing_type,
+            aml.status,
+            aml.registration
+              AS previous_registration,
+
+            af.status
+              AS aircraft_status,
+
+            af.operational_status,
+            af.ownership_type,
+            af.base_icao,
+            af.current_airport
+
+          FROM public.aircraft_market_listings aml
+
+          INNER JOIN public.aircraft_fleet af
+            ON af.id = aml.aircraft_id
+
+          WHERE aml.id = $1
+            AND aml.seller_airline_id = $2
+
+          FOR UPDATE OF aml, af
+          `,
+          [
+            listingId,
+            airlineId
+          ]
+        );
+
+      if (!listingResult.rows.length) {
+        await client.query("ROLLBACK");
+
+        return res.status(404).json({
+          ok: false,
+          error: "MARKET_LISTING_NOT_FOUND"
+        });
+      }
+
+      const listing =
+        listingResult.rows[0];
+
+      const listingType =
+        String(
+          listing.listing_type || ""
+        )
+          .trim()
+          .toUpperCase();
+
+      if (
+        listingType !== "SALE" &&
+        listingType !== "LEASE"
+      ) {
+        await client.query("ROLLBACK");
+
+        return res.status(409).json({
+          ok: false,
+          error: "INVALID_MARKET_LISTING_TYPE"
+        });
+      }
+
+      if (
+        ![
+          "ACTIVE",
+          "OFFER_RECEIVED",
+          "SALE_PENDING"
+        ].includes(
+          String(listing.status || "")
+            .trim()
+            .toUpperCase()
+        )
+      ) {
+        await client.query("ROLLBACK");
+
+        return res.status(409).json({
+          ok: false,
+          error: "MARKET_LISTING_NOT_ACTIVE",
+          listing_status: listing.status
+        });
+      }
+
+      const expectedAircraftStatus =
+        listingType === "SALE"
+          ? "FOR_SALE"
+          : "FOR_LEASE";
+
+      if (
+        String(
+          listing.aircraft_status || ""
+        )
+          .trim()
+          .toUpperCase() !==
+        expectedAircraftStatus
+      ) {
+        await client.query("ROLLBACK");
+
+        return res.status(409).json({
+          ok: false,
+          error:
+            "AIRCRAFT_MARKET_STATUS_MISMATCH",
+          expected_status:
+            expectedAircraftStatus,
+          aircraft_status:
+            listing.aircraft_status
+        });
+      }
+
+      if (
+        String(
+          listing.ownership_type || ""
+        )
+          .trim()
+          .toUpperCase() !== "OWNED"
+      ) {
+        await client.query("ROLLBACK");
+
+        return res.status(409).json({
+          ok: false,
+          error: "AIRCRAFT_NOT_OWNED"
+        });
+      }
+
+      /*
+        Registration Authority assigns a new
+        registration when the aircraft returns
+        from the market.
+      */
+
+      const baseIcao =
+        listing.base_icao ||
+        listing.current_airport ||
+        null;
+
+      if (!baseIcao) {
+        await client.query("ROLLBACK");
+
+        return res.status(409).json({
+          ok: false,
+          error:
+            "REGISTRATION_BASE_ICAO_REQUIRED"
+        });
+      }
+
+      const registrationRule =
+        await ACS_RA_resolveRegistrationRule(
+          client,
+          baseIcao
+        );
+
+      const newRegistration =
+        await ACS_RA_generateUniqueRegistration(
+          client,
+          registrationRule
+        );
+
+      /*
+        Cancel the commercial offer.
+      */
+
+      const cancelledListingResult =
+        await client.query(
+          `
+          UPDATE public.aircraft_market_listings
+          SET
+            status = 'CANCELLED',
+            updated_at = NOW(),
+            version = version + 1
+          WHERE id = $1
+            AND seller_airline_id = $2
+          RETURNING
+            id,
+            aircraft_id,
+            seller_airline_id,
+            listing_type,
+            status,
+            updated_at,
+            version
+          `,
+          [
+            listingId,
+            airlineId
+          ]
+        );
+
+      /*
+        Return aircraft to the airline fleet.
+
+        Operational and maintenance conditions
+        remain unchanged. Only the commercial
+        market hold is removed.
+      */
+
+      const aircraftResult =
+        await client.query(
+          `
+          UPDATE public.aircraft_fleet
+          SET
+            status = 'ACTIVE',
+            registration = $3,
+            updated_at = NOW()
+          WHERE id = $1
+            AND airline_id = $2
+            AND ownership_type = 'OWNED'
+            AND status = $4
+          RETURNING
+            id,
+            airline_id,
+            ownership_type,
+            status,
+            operational_status,
+            maintenance_status,
+            registration,
+            base_icao,
+            current_airport,
+            updated_at
+          `,
+          [
+            listing.aircraft_id,
+            airlineId,
+            newRegistration,
+            expectedAircraftStatus
+          ]
+        );
+
+      if (!aircraftResult.rows.length) {
+        throw new Error(
+          "AIRCRAFT_MARKET_RETURN_FAILED"
+        );
+      }
+
+      await client.query("COMMIT");
+
+      const actionLabel =
+        listingType === "SALE"
+          ? "CANCEL SALE"
+          : "CANCEL LEASE";
+
+      return res.json({
+        ok: true,
+
+        endpoint:
+          "ACS_AIRCRAFT_MARKET_CANCEL",
+
+        version: "v1.0",
+
+        action: actionLabel,
+
+        listing:
+          cancelledListingResult.rows[0],
+
+        aircraft:
+          aircraftResult.rows[0],
+
+        registration: {
+          previous:
+            listing.previous_registration ||
+            null,
+
+          current:
+            newRegistration
+        },
+
+        route_policy: {
+          previous_routes_restored: false,
+          previous_slots_restored: false,
+          aircraft_available_for_new_assignment:
+            true
+        }
+      });
+
+    } catch (error) {
+      await client.query("ROLLBACK");
+
+      console.error(
+        "ACS AIRCRAFT MARKET CANCEL ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        ok: false,
+        error:
+          "AIRCRAFT_MARKET_CANCEL_FAILED",
+        details: error.message
+      });
+
+    } finally {
+      client.release();
+    }
+  }
+);
+
+/* ============================================================
    🟦 ACS USED AIRCRAFT PURCHASE — BACKEND AUTHORITY v1.0
    ------------------------------------------------------------
    Route:
