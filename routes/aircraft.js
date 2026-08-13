@@ -2164,6 +2164,54 @@ const scheduleUnassignment =
         "ACS_AIRCRAFT_SALE_LISTING"
     }
   );
+
+     /*
+  Withdraw the aircraft from active airline service.
+
+  The previous registration remains preserved in the
+  listing snapshot through aircraft.registration.
+*/
+
+const marketHoldResult =
+  await client.query(
+    `
+    UPDATE public.aircraft_fleet
+    SET
+      status = 'FOR_SALE',
+      registration = NULL,
+      updated_at = NOW()
+
+    WHERE id = $1
+      AND airline_id = $2
+      AND ownership_type = 'OWNED'
+
+    RETURNING
+      id,
+      status,
+      operational_status,
+      registration,
+      updated_at
+    `,
+    [
+      aircraftId,
+      airlineId
+    ]
+  );
+
+if (!marketHoldResult.rows.length) {
+  const error =
+    new Error(
+      "AIRCRAFT_MARKET_HOLD_FAILED"
+    );
+
+  error.code =
+    "AIRCRAFT_MARKET_HOLD_FAILED";
+
+  throw error;
+}
+
+const marketAircraft =
+  marketHoldResult.rows[0];
        
       const aircraftName =
         String(
@@ -2359,7 +2407,7 @@ const scheduleUnassignment =
         .removed_future_occurrences_count,
 
       scheduleUnassignment
-        .unassigned_slot_bookings_count,
+        .released_slot_bookings_count,
 
       aircraft.current_sim_time
     ]
@@ -2396,23 +2444,28 @@ const scheduleUnassignment =
           "Aircraft sale listing created successfully.",
 
         aircraft: {
-          id: aircraft.id,
+  id: aircraft.id,
 
-          aircraft_uid:
-            aircraft.aircraft_uid,
+  aircraft_uid:
+    aircraft.aircraft_uid,
 
-          aircraft_name:
-            aircraftName,
+  aircraft_name:
+    aircraftName,
 
-          registration:
-            aircraft.registration,
+  registration: null,
 
-          model_key:
-            aircraft.model_key,
+  previous_registration:
+    aircraft.registration,
 
-          ownership_type:
-            aircraft.ownership_type
-        },
+  model_key:
+    aircraft.model_key,
+
+  ownership_type:
+    aircraft.ownership_type,
+
+  status:
+    marketAircraft.status
+},
 
         quote,
 
