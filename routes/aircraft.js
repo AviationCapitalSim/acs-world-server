@@ -1413,6 +1413,148 @@ router.get(
 );
 
 /* ============================================================
+   ACS OCC — AIRCRAFT SALE SCHEDULE EXPOSURE
+   ------------------------------------------------------------
+   Schedule authority:
+   - Future operations produce a confirmation warning.
+   - An operation IN_PROGRESS blocks the listing.
+   - Publishing never cancels scheduled operations.
+   ============================================================ */
+
+async function ACS_getAircraftSaleScheduleExposure(
+  db,
+  airlineId,
+  aircraftId
+) {
+  const result = await db.query(
+    `
+    WITH acs_clock AS (
+      SELECT
+        acs_get_current_sim_time()
+          AS current_sim_time
+    )
+
+    SELECT
+      acs_clock.current_sim_time,
+
+      COUNT(fo.id) FILTER (
+        WHERE
+          fo.scheduled_departure_at >=
+            acs_clock.current_sim_time
+
+          AND COALESCE(
+            UPPER(fo.operational_status),
+            'SCHEDULED'
+          ) <> 'CANCELLED'
+      )::INTEGER
+        AS future_occurrences_count,
+
+      COUNT(DISTINCT fo.schedule_item_id)
+        FILTER (
+          WHERE
+            fo.scheduled_departure_at >=
+              acs_clock.current_sim_time
+
+            AND COALESCE(
+              UPPER(fo.operational_status),
+              'SCHEDULED'
+            ) <> 'CANCELLED'
+        )::INTEGER
+        AS scheduled_routes_count,
+
+      MIN(fo.scheduled_departure_at)
+        FILTER (
+          WHERE
+            fo.scheduled_departure_at >=
+              acs_clock.current_sim_time
+
+            AND COALESCE(
+              UPPER(fo.operational_status),
+              'SCHEDULED'
+            ) <> 'CANCELLED'
+        )
+        AS next_scheduled_departure,
+
+      COUNT(fo.id) FILTER (
+        WHERE
+          UPPER(
+            COALESCE(
+              fo.operational_status,
+              ''
+            )
+          ) = 'IN_PROGRESS'
+      )::INTEGER
+        AS active_occurrences_count
+
+    FROM acs_clock
+
+    LEFT JOIN public.flight_occurrences fo
+      ON fo.airline_id = $1
+      AND fo.aircraft_id = $2
+    `,
+    [
+      airlineId,
+      aircraftId
+    ]
+  );
+
+  const row =
+    result.rows[0] || {};
+
+  const futureOccurrencesCount =
+    Math.max(
+      0,
+      Number(
+        row.future_occurrences_count
+      ) || 0
+    );
+
+  const scheduledRoutesCount =
+    Math.max(
+      0,
+      Number(
+        row.scheduled_routes_count
+      ) || 0
+    );
+
+  const activeOccurrencesCount =
+    Math.max(
+      0,
+      Number(
+        row.active_occurrences_count
+      ) || 0
+    );
+
+  return {
+    has_scheduled_operations:
+      futureOccurrencesCount > 0,
+
+    requires_confirmation:
+      futureOccurrencesCount > 0,
+
+    has_active_operation:
+      activeOccurrencesCount > 0,
+
+    future_occurrences_count:
+      futureOccurrencesCount,
+
+    scheduled_routes_count:
+      scheduledRoutesCount,
+
+    active_occurrences_count:
+      activeOccurrencesCount,
+
+    next_scheduled_departure:
+      row.next_scheduled_departure ||
+      null,
+
+    current_sim_time:
+      row.current_sim_time ||
+      null
+  };
+}
+
+/* ============================================================
    🟨 ACS AIRCRAFT SALE LISTING — BACKEND AUTHORITY v1.0
    ------------------------------------------------------------
    Route:
