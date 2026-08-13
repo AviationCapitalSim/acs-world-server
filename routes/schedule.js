@@ -6812,49 +6812,50 @@ ACS_unassignAircraftForCommercialAction(
     The route retains the slot. The aircraft does not.
   */
 
-  const unassignedSlotBookingsResult =
-    await client.query(
-      `
-      UPDATE public.airport_slot_bookings
-      SET
-        aircraft_id = NULL,
-        registration = NULL,
+  const releasedSlotBookingsResult =
+  await client.query(
+    `
+    UPDATE public.airport_slot_bookings
+    SET
+      slot_status = 'CANCELLED',
 
-        source =
-          'ACS_COMMERCIAL_AIRCRAFT_UNASSIGN',
+      source =
+        'ACS_COMMERCIAL_AIRCRAFT_SLOT_RELEASE',
 
-        updated_at = NOW()
+      updated_at = NOW()
 
-      WHERE airline_id = $1
+    WHERE airline_id = $1
 
-        AND route_plan_id =
-          ANY($2::BIGINT[])
+      AND route_plan_id =
+        ANY($2::BIGINT[])
 
-        AND aircraft_id = $3
+      AND aircraft_id = $3
 
-        AND UPPER(
-          COALESCE(
-            slot_status,
-            'RESERVED'
-          )
-        ) = 'RESERVED'
+      AND UPPER(
+        COALESCE(
+          slot_status,
+          'RESERVED'
+        )
+      ) = 'RESERVED'
 
-      RETURNING
-        id,
-        route_plan_id,
-        airport_icao,
-        movement_type,
-        weekday,
-        time_local,
-        slot_status
-      `,
-      [
-        normalizedAirlineId,
-        routePlanIds,
-        normalizedAircraftId
-      ]
-    );
-
+    RETURNING
+      id,
+      route_plan_id,
+      aircraft_id,
+      registration,
+      airport_icao,
+      movement_type,
+      weekday,
+      time_local,
+      slot_status
+    `,
+    [
+      normalizedAirlineId,
+      routePlanIds,
+      normalizedAircraftId
+    ]
+  );
+   
   /*
     Remove future generated occurrences belonging
     to the old aircraft assignment.
@@ -6917,10 +6918,12 @@ ACS_unassignAircraftForCommercialAction(
     removed_future_occurrences_count:
       removedOccurrencesResult.rowCount,
 
-    unassigned_slot_bookings_count:
-      unassignedSlotBookingsResult.rowCount,
+    released_slot_bookings_count:
+      releasedSlotBookingsResult.rowCount,
 
-    preserved_slot_bookings: true,
+    preserved_slot_bookings: false,
+
+    slots_must_be_purchased_again: true,
 
     route_plans:
       unassignedRoutePlansResult.rows,
@@ -6928,8 +6931,8 @@ ACS_unassignAircraftForCommercialAction(
     schedule_items:
       unassignedScheduleItemsResult.rows,
 
-    slot_bookings:
-      unassignedSlotBookingsResult.rows
+    released_slot_bookings:
+      releasedSlotBookingsResult.rows
   };
 }
 
@@ -6944,6 +6947,7 @@ ACS_unassignAircraftForCommercialAction(
    ============================================================ */
 
 router.post("/schedule/assign-aircraft", requireAuth, async (req, res) => {
+   
   const airlineId = ACS_airlineId(req);
   const routePlanId = ACS_positiveBigInt(req.body?.route_plan_id);
   const aircraftId = ACS_positiveBigInt(req.body?.aircraft_id);
