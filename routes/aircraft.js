@@ -1334,19 +1334,39 @@ router.get(
           eligibility
         });
       }
+const quote =
+  ACS_calculateAircraftSaleQuote(
+    aircraft
+  );
 
-      const quote =
-        ACS_calculateAircraftSaleQuote(
-          aircraft
-        );
+if (!quote.ok) {
+  return res.status(422).json(
+    quote
+  );
+}
 
-      if (!quote.ok) {
-        return res.status(422).json(
-          quote
-        );
-      }
+const schedule =
+  await ACS_getAircraftSaleScheduleExposure(
+    pool,
+    airlineId,
+    aircraftId
+  );
 
-      return res.json({
+if (schedule.has_active_operation) {
+  return res.status(409).json({
+    ok: false,
+
+    error:
+      "AIRCRAFT_OPERATION_IN_PROGRESS",
+
+    details:
+      "Aircraft cannot be listed while a flight operation is in progress.",
+
+    schedule
+  });
+}
+
+return res.json({
         ok: true,
 
         endpoint:
@@ -1391,6 +1411,8 @@ router.get(
         },
 
         eligibility,
+
+        schedule,
 
         quote
       });
@@ -1641,6 +1663,11 @@ router.post(
       const askingPrice =
         Number(req.body?.asking_price);
 
+      const scheduledOperationsConfirmed =
+      req.body
+      ?.confirm_scheduled_operations ===
+      true;
+       
       if (
         !Number.isInteger(airlineId) ||
         airlineId <= 0
@@ -1871,17 +1898,66 @@ router.post(
       */
 
       const quote =
-        ACS_calculateAircraftSaleQuote(
-          aircraft
-        );
+  ACS_calculateAircraftSaleQuote(
+    aircraft
+  );
 
-      if (!quote.ok) {
-        await client.query("ROLLBACK");
+if (!quote.ok) {
+  await client.query("ROLLBACK");
 
-        return res.status(422).json(
-          quote
-        );
-      }
+  return res.status(422).json(
+    quote
+  );
+}
+
+/*
+  Schedule must be rechecked inside the same
+  publication transaction.
+
+  The quote shown in the browser is not authority.
+*/
+
+const schedule =
+  await ACS_getAircraftSaleScheduleExposure(
+    client,
+    airlineId,
+    aircraftId
+  );
+
+if (schedule.has_active_operation) {
+  await client.query("ROLLBACK");
+
+  return res.status(409).json({
+    ok: false,
+
+    error:
+      "AIRCRAFT_OPERATION_IN_PROGRESS",
+
+    details:
+      "Aircraft cannot be listed while a flight operation is in progress.",
+
+    schedule
+  });
+}
+
+if (
+  schedule.requires_confirmation &&
+  !scheduledOperationsConfirmed
+) {
+  await client.query("ROLLBACK");
+
+  return res.status(409).json({
+    ok: false,
+
+    error:
+      "SCHEDULED_OPERATIONS_CONFIRMATION_REQUIRED",
+
+    details:
+      "Aircraft has scheduled operations. Explicit confirmation is required before publication.",
+
+    schedule
+  });
+}
 
       const lowestAllowedPrice =
         Number(
@@ -1994,6 +2070,10 @@ router.post(
             total_cycles,
             current_airport,
 
+            scheduled_occurrences_count,
+            next_scheduled_departure,
+            schedule_warning_confirmed,
+
             listed_sim_time,
 
             created_at,
@@ -2034,11 +2114,15 @@ router.post(
             $20,
             $21,
 
-            $22,
+$22,
+$23,
+$24,
 
-            NOW(),
-            NOW(),
-            1
+$25,
+
+NOW(),
+NOW(),
+1
           )
           RETURNING
             id,
@@ -2084,10 +2168,18 @@ router.post(
             aircraft.total_hours ?? null,
             aircraft.total_cycles ?? null,
             aircraft.current_airport ||
-              aircraft.base_icao ||
-              null,
+  aircraft.base_icao ||
+  null,
 
-            aircraft.current_sim_time
+schedule.future_occurrences_count,
+
+schedule.next_scheduled_departure,
+
+schedule.requires_confirmation
+  ? scheduledOperationsConfirmed
+  : false,
+
+aircraft.current_sim_time
           ]
         );
 
