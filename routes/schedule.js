@@ -6395,6 +6395,543 @@ export function stopMaintenanceScheduler() {
   return true;
 }
        
+/* ============================================================
+   ACS OCC — COMMERCIAL AIRCRAFT UNASSIGN AUTHORITY v1.0
+   ------------------------------------------------------------
+   Used by:
+   - Sell Aircraft
+   - Lease Aircraft (future)
+
+   Authority:
+   - Caller provides an active PostgreSQL transaction.
+   - Locks affected Schedule records.
+   - Blocks operations IN_PROGRESS.
+   - Preserves routes and airport slots.
+   - Removes the aircraft from planning and slots.
+   - Removes future generated flight occurrences.
+   - Preserves completed operational history.
+   ============================================================ */
+
+export async function
+ACS_unassignAircraftForCommercialAction(
+  client,
+  {
+    airlineId,
+    aircraftId,
+    source = "ACS_COMMERCIAL_ACTION"
+  }
+) {
+  const normalizedAirlineId =
+    Number(airlineId);
+
+  const normalizedAircraftId =
+    Number(aircraftId);
+
+  if (
+    !Number.isInteger(normalizedAirlineId) ||
+    normalizedAirlineId <= 0
+  ) {
+    const error =
+      new Error("NO_AIRLINE_SESSION");
+
+    error.code =
+      "NO_AIRLINE_SESSION";
+
+    throw error;
+  }
+
+  if (
+    !Number.isInteger(normalizedAircraftId) ||
+    normalizedAircraftId <= 0
+  ) {
+    const error =
+      new Error("AIRCRAFT_NOT_FOUND");
+
+    error.code =
+      "AIRCRAFT_NOT_FOUND";
+
+    throw error;
+  }
+
+  /*
+    Serialize this operation against the standard
+    Schedule aircraft-assignment endpoint.
+  */
+
+  await client.query(
+    `
+    SELECT pg_advisory_xact_lock(
+      hashtext($1)
+    )
+    `,
+    [
+      `ACS_SCHEDULE_ASSIGN|` +
+      `${normalizedAirlineId}|` +
+      `${normalizedAircraftId}`
+    ]
+  );
+
+  /*
+    Lock every active route currently assigned
+    to the aircraft.
+  */
+
+  const routePlansResult =
+    await client.query(
+      `
+      SELECT
+        id,
+        route_uid,
+        origin,
+        destination,
+        route_state,
+        aircraft_id,
+        registration
+      FROM public.route_plans
+      WHERE airline_id = $1
+        AND aircraft_id = $2
+
+        AND UPPER(
+          COALESCE(
+            route_state,
+            'ACTIVE'
+          )
+        ) <> 'CANCELLED'
+
+      ORDER BY id
+
+      FOR UPDATE
+      `,
+      [
+        normalizedAirlineId,
+        normalizedAircraftId
+      ]
+    );
+
+  const assignedRoutePlans =
+    routePlansResult.rows;
+
+  if (!assignedRoutePlans.length) {
+    return {
+      had_assigned_routes: false,
+
+      assigned_routes_count: 0,
+
+      unassigned_route_plans_count: 0,
+
+      unassigned_schedule_items_count: 0,
+
+      removed_future_occurrences_count: 0,
+
+      unassigned_slot_bookings_count: 0,
+
+      preserved_slot_bookings: true,
+
+      route_plans: [],
+
+      schedule_items: [],
+
+      slot_bookings: []
+    };
+  }
+
+  const routePlanIds =
+    assignedRoutePlans.map(
+      route => Number(route.id)
+    );
+
+  /*
+    Route-level operation guard.
+  */
+
+  const activeRoute =
+    assignedRoutePlans.find(
+      route =>
+        ACS_text(
+          route.route_state
+        ).toUpperCase() ===
+        "IN_PROGRESS"
+    );
+
+  if (activeRoute) {
+    const error =
+      new Error(
+        "AIRCRAFT_OPERATION_IN_PROGRESS"
+      );
+
+    error.code =
+      "AIRCRAFT_OPERATION_IN_PROGRESS";
+
+    error.route_plan =
+      activeRoute;
+
+    throw error;
+  }
+
+  /*
+    Schedule-item operation guard.
+
+    Completed rows remain historical and do not
+    prevent future planning from being unassigned.
+  */
+
+  const activeScheduleItemResult =
+    await client.query(
+      `
+      SELECT
+        id,
+        route_plan_id,
+        route_uid,
+        flight_number,
+        selected_day,
+        departure,
+        arrival,
+        status
+      FROM public.schedule_items
+      WHERE airline_id = $1
+
+        AND route_plan_id =
+          ANY($2::BIGINT[])
+
+        AND aircraft_id = $3
+
+        AND item_type = 'flight'
+
+        AND UPPER(
+          COALESCE(
+            status,
+            ''
+          )
+        ) = 'IN_PROGRESS'
+
+      ORDER BY id
+
+      LIMIT 1
+
+      FOR UPDATE
+      `,
+      [
+        normalizedAirlineId,
+        routePlanIds,
+        normalizedAircraftId
+      ]
+    );
+
+  if (
+    activeScheduleItemResult.rows.length
+  ) {
+    const error =
+      new Error(
+        "AIRCRAFT_OPERATION_IN_PROGRESS"
+      );
+
+    error.code =
+      "AIRCRAFT_OPERATION_IN_PROGRESS";
+
+    error.schedule_item =
+      activeScheduleItemResult.rows[0];
+
+    throw error;
+  }
+
+  /*
+    Flight-occurrence operation guard.
+  */
+
+  const activeOccurrenceResult =
+    await client.query(
+      `
+      SELECT
+        id,
+        route_plan_id,
+        schedule_item_id,
+        scheduled_departure_at,
+        scheduled_arrival_at,
+        operational_status
+      FROM public.flight_occurrences
+      WHERE airline_id = $1
+        AND aircraft_id = $2
+
+        AND UPPER(
+          COALESCE(
+            operational_status,
+            ''
+          )
+        ) = 'IN_PROGRESS'
+
+      ORDER BY scheduled_departure_at
+
+      LIMIT 1
+
+      FOR UPDATE
+      `,
+      [
+        normalizedAirlineId,
+        normalizedAircraftId
+      ]
+    );
+
+  if (
+    activeOccurrenceResult.rows.length
+  ) {
+    const error =
+      new Error(
+        "AIRCRAFT_OPERATION_IN_PROGRESS"
+      );
+
+    error.code =
+      "AIRCRAFT_OPERATION_IN_PROGRESS";
+
+    error.flight_occurrence =
+      activeOccurrenceResult.rows[0];
+
+    throw error;
+  }
+
+  /*
+    Unassign the aircraft from Route Plans.
+
+    Routes remain active and retain their operational
+    identity, selected days, flight numbers and slots.
+  */
+
+  const unassignedRoutePlansResult =
+    await client.query(
+      `
+      UPDATE public.route_plans
+      SET
+        aircraft_id = NULL,
+        registration = NULL,
+        aircraft = NULL,
+        updated_at = NOW()
+
+      WHERE airline_id = $1
+
+        AND id =
+          ANY($2::BIGINT[])
+
+        AND aircraft_id = $3
+
+      RETURNING
+        id,
+        route_uid,
+        origin,
+        destination,
+        route_state
+      `,
+      [
+        normalizedAirlineId,
+        routePlanIds,
+        normalizedAircraftId
+      ]
+    );
+
+  /*
+    Unassign editable Schedule items.
+
+    Completed and cancelled history is preserved.
+  */
+
+  const unassignedScheduleItemsResult =
+    await client.query(
+      `
+      UPDATE public.schedule_items
+      SET
+        aircraft_id = NULL,
+        aircraft_registration = NULL,
+        aircraft = NULL,
+
+        status = CASE
+          WHEN LOWER(
+            COALESCE(
+              status,
+              'planned'
+            )
+          ) = 'assigned'
+            THEN 'planned'
+
+          ELSE status
+        END,
+
+        notes = jsonb_build_object(
+          'source',
+          $4::TEXT,
+
+          'action',
+          'AIRCRAFT_UNASSIGNED',
+
+          'previous_aircraft_id',
+          $3::BIGINT,
+
+          'unassigned_at',
+          NOW()
+        )::TEXT,
+
+        updated_at = NOW()
+
+      WHERE airline_id = $1
+
+        AND route_plan_id =
+          ANY($2::BIGINT[])
+
+        AND aircraft_id = $3
+
+        AND item_type = 'flight'
+
+        AND LOWER(
+          COALESCE(
+            status,
+            'planned'
+          )
+        ) NOT IN (
+          'cancelled',
+          'completed',
+          'in_progress'
+        )
+
+      RETURNING
+        id,
+        route_plan_id,
+        route_uid,
+        flight_number,
+        selected_day,
+        status
+      `,
+      [
+        normalizedAirlineId,
+        routePlanIds,
+        normalizedAircraftId,
+        source
+      ]
+    );
+
+  /*
+    Preserve each slot reservation but detach the
+    aircraft identity from it.
+
+    The route retains the slot. The aircraft does not.
+  */
+
+  const unassignedSlotBookingsResult =
+    await client.query(
+      `
+      UPDATE public.airport_slot_bookings
+      SET
+        aircraft_id = NULL,
+        registration = NULL,
+
+        source =
+          'ACS_COMMERCIAL_AIRCRAFT_UNASSIGN',
+
+        updated_at = NOW()
+
+      WHERE airline_id = $1
+
+        AND route_plan_id =
+          ANY($2::BIGINT[])
+
+        AND aircraft_id = $3
+
+        AND UPPER(
+          COALESCE(
+            slot_status,
+            'RESERVED'
+          )
+        ) = 'RESERVED'
+
+      RETURNING
+        id,
+        route_plan_id,
+        airport_icao,
+        movement_type,
+        weekday,
+        time_local,
+        slot_status
+      `,
+      [
+        normalizedAirlineId,
+        routePlanIds,
+        normalizedAircraftId
+      ]
+    );
+
+  /*
+    Remove future generated occurrences belonging
+    to the old aircraft assignment.
+
+    ACS Flight Runtime will not regenerate them while
+    the Schedule items remain without aircraft_id.
+
+    Completed and cancelled history is preserved.
+  */
+
+  const removedOccurrencesResult =
+    await client.query(
+      `
+      DELETE FROM public.flight_occurrences
+      WHERE airline_id = $1
+        AND aircraft_id = $2
+
+        AND route_plan_id =
+          ANY($3::BIGINT[])
+
+        AND scheduled_departure_at >=
+          acs_get_current_sim_time()
+
+        AND UPPER(
+          COALESCE(
+            operational_status,
+            'SCHEDULED'
+          )
+        ) NOT IN (
+          'IN_PROGRESS',
+          'COMPLETED',
+          'CANCELLED'
+        )
+
+      RETURNING
+        id,
+        route_plan_id,
+        schedule_item_id,
+        scheduled_departure_at
+      `,
+      [
+        normalizedAirlineId,
+        normalizedAircraftId,
+        routePlanIds
+      ]
+    );
+
+  return {
+    had_assigned_routes: true,
+
+    assigned_routes_count:
+      assignedRoutePlans.length,
+
+    unassigned_route_plans_count:
+      unassignedRoutePlansResult.rowCount,
+
+    unassigned_schedule_items_count:
+      unassignedScheduleItemsResult.rowCount,
+
+    removed_future_occurrences_count:
+      removedOccurrencesResult.rowCount,
+
+    unassigned_slot_bookings_count:
+      unassignedSlotBookingsResult.rowCount,
+
+    preserved_slot_bookings: true,
+
+    route_plans:
+      unassignedRoutePlansResult.rows,
+
+    schedule_items:
+      unassignedScheduleItemsResult.rows,
+
+    slot_bookings:
+      unassignedSlotBookingsResult.rows
+  };
+}
 
 /* ============================================================
    POST /v1/schedule/assign-aircraft
