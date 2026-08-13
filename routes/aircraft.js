@@ -1458,117 +1458,235 @@ async function ACS_getAircraftSaleScheduleExposure(
       SELECT
         acs_get_current_sim_time()
           AS current_sim_time
+    ),
+
+    assigned_routes AS (
+      SELECT
+        rp.id,
+        rp.route_uid,
+        rp.origin,
+        rp.destination,
+        rp.route_state
+      FROM public.route_plans rp
+      WHERE rp.airline_id = $1
+        AND rp.aircraft_id = $2
+
+        AND UPPER(
+          COALESCE(
+            rp.route_state,
+            'ACTIVE'
+          )
+        ) <> 'CANCELLED'
+    ),
+
+    assigned_items AS (
+      SELECT
+        si.id,
+        si.route_plan_id,
+        si.status
+      FROM public.schedule_items si
+      WHERE si.airline_id = $1
+        AND si.aircraft_id = $2
+        AND si.item_type = 'flight'
+
+        AND LOWER(
+          COALESCE(
+            si.status,
+            'planned'
+          )
+        ) NOT IN (
+          'cancelled',
+          'completed'
+        )
     )
 
     SELECT
       acs_clock.current_sim_time,
 
-      COUNT(fo.id) FILTER (
-        WHERE
-          fo.scheduled_departure_at >=
-            acs_clock.current_sim_time
+      (
+        SELECT COUNT(*)::INTEGER
+        FROM assigned_routes
+      ) AS assigned_routes_count,
 
-          AND COALESCE(
-            UPPER(fo.operational_status),
-            'SCHEDULED'
-          ) <> 'CANCELLED'
-      )::INTEGER
-        AS future_occurrences_count,
+      (
+        SELECT COUNT(*)::INTEGER
+        FROM assigned_items
+      ) AS assigned_schedule_items_count,
 
-      COUNT(DISTINCT fo.schedule_item_id)
-        FILTER (
-          WHERE
-            fo.scheduled_departure_at >=
-              acs_clock.current_sim_time
+      (
+        SELECT COUNT(*)::INTEGER
+        FROM assigned_routes
+        WHERE UPPER(
+          COALESCE(
+            route_state,
+            ''
+          )
+        ) = 'IN_PROGRESS'
+      ) AS active_routes_count,
 
-            AND COALESCE(
-              UPPER(fo.operational_status),
-              'SCHEDULED'
-            ) <> 'CANCELLED'
-        )::INTEGER
-        AS scheduled_routes_count,
+      (
+        SELECT COUNT(*)::INTEGER
+        FROM assigned_items
+        WHERE UPPER(
+          COALESCE(
+            status,
+            ''
+          )
+        ) = 'IN_PROGRESS'
+      ) AS active_schedule_items_count,
 
-      MIN(fo.scheduled_departure_at)
-        FILTER (
-          WHERE
-            fo.scheduled_departure_at >=
-              acs_clock.current_sim_time
+      (
+        SELECT COUNT(*)::INTEGER
+        FROM public.flight_occurrences fo
+        WHERE fo.airline_id = $1
+          AND fo.aircraft_id = $2
 
-            AND COALESCE(
-              UPPER(fo.operational_status),
-              'SCHEDULED'
-            ) <> 'CANCELLED'
-        )
-        AS next_scheduled_departure,
-
-      COUNT(fo.id) FILTER (
-        WHERE
-          UPPER(
+          AND UPPER(
             COALESCE(
               fo.operational_status,
               ''
             )
           ) = 'IN_PROGRESS'
-      )::INTEGER
-        AS active_occurrences_count
+      ) AS active_occurrences_count,
+
+      (
+        SELECT COUNT(*)::INTEGER
+        FROM public.flight_occurrences fo
+        WHERE fo.airline_id = $1
+          AND fo.aircraft_id = $2
+
+          AND fo.scheduled_departure_at >=
+            acs_clock.current_sim_time
+
+          AND UPPER(
+            COALESCE(
+              fo.operational_status,
+              'SCHEDULED'
+            )
+          ) NOT IN (
+            'CANCELLED',
+            'COMPLETED'
+          )
+      ) AS future_occurrences_count,
+
+      (
+        SELECT MIN(
+          fo.scheduled_departure_at
+        )
+        FROM public.flight_occurrences fo
+        WHERE fo.airline_id = $1
+          AND fo.aircraft_id = $2
+
+          AND fo.scheduled_departure_at >=
+            acs_clock.current_sim_time
+
+          AND UPPER(
+            COALESCE(
+              fo.operational_status,
+              'SCHEDULED'
+            )
+          ) NOT IN (
+            'CANCELLED',
+            'COMPLETED'
+          )
+      ) AS next_scheduled_departure,
+
+      COALESCE(
+        (
+          SELECT jsonb_agg(
+            jsonb_build_object(
+              'route_plan_id',
+                assigned_routes.id,
+
+              'route_uid',
+                assigned_routes.route_uid,
+
+              'origin',
+                assigned_routes.origin,
+
+              'destination',
+                assigned_routes.destination,
+
+              'route_state',
+                assigned_routes.route_state
+            )
+            ORDER BY assigned_routes.id
+          )
+          FROM assigned_routes
+        ),
+        '[]'::JSONB
+      ) AS assigned_routes
 
     FROM acs_clock
-
-    LEFT JOIN public.flight_occurrences fo
-      ON fo.airline_id = $1
-      AND fo.aircraft_id = $2
     `,
     [
-      airlineId,
-      aircraftId
+      Number(airlineId),
+      Number(aircraftId)
     ]
   );
 
   const row =
     result.rows[0] || {};
 
-  const futureOccurrencesCount =
+  const assignedRoutesCount =
     Math.max(
       0,
       Number(
-        row.future_occurrences_count
+        row.assigned_routes_count
       ) || 0
     );
 
-  const scheduledRoutesCount =
+  const assignedScheduleItemsCount =
     Math.max(
       0,
       Number(
-        row.scheduled_routes_count
+        row.assigned_schedule_items_count
       ) || 0
     );
 
-  const activeOccurrencesCount =
-    Math.max(
-      0,
+  const activeOperationsCount =
+    (
+      Number(
+        row.active_routes_count
+      ) || 0
+    ) +
+    (
+      Number(
+        row.active_schedule_items_count
+      ) || 0
+    ) +
+    (
       Number(
         row.active_occurrences_count
       ) || 0
     );
 
   return {
-    has_scheduled_operations:
-      futureOccurrencesCount > 0,
+    has_assigned_routes:
+      assignedRoutesCount > 0,
 
     requires_confirmation:
-      futureOccurrencesCount > 0,
+      assignedRoutesCount > 0,
 
     has_active_operation:
-      activeOccurrencesCount > 0,
+      activeOperationsCount > 0,
+
+    assigned_routes_count:
+      assignedRoutesCount,
+
+    assigned_schedule_items_count:
+      assignedScheduleItemsCount,
 
     future_occurrences_count:
-      futureOccurrencesCount,
+      Math.max(
+        0,
+        Number(
+          row.future_occurrences_count
+        ) || 0
+      ),
 
-    scheduled_routes_count:
-      scheduledRoutesCount,
-
-    active_occurrences_count:
-      activeOccurrencesCount,
+    active_operations_count:
+      activeOperationsCount,
 
     next_scheduled_departure:
       row.next_scheduled_departure ||
@@ -1576,7 +1694,14 @@ async function ACS_getAircraftSaleScheduleExposure(
 
     current_sim_time:
       row.current_sim_time ||
-      null
+      null,
+
+    assigned_routes:
+      Array.isArray(
+        row.assigned_routes
+      )
+        ? row.assigned_routes
+        : []
   };
 }
 
@@ -2021,6 +2146,25 @@ if (
           quote
         );
 
+      /*
+  The player accepted the warning.
+
+  Schedule unassignment and Used Market listing
+  creation share this same PostgreSQL transaction.
+*/
+
+const scheduleUnassignment =
+  await ACS_unassignAircraftForCommercialAction(
+    client,
+    {
+      airlineId,
+      aircraftId,
+
+      source:
+        "ACS_AIRCRAFT_SALE_LISTING"
+    }
+  );
+       
       const aircraftName =
         String(
           aircraft.catalog_aircraft_name ||
@@ -2037,156 +2181,190 @@ if (
           .toUpperCase();
 
       const listingResult =
-        await client.query(
-          `
-          INSERT INTO
-            public.aircraft_market_listings
-          (
-            aircraft_id,
-            seller_airline_id,
+  await client.query(
+    `
+    INSERT INTO
+      public.aircraft_market_listings
+    (
+      aircraft_id,
+      seller_airline_id,
 
-            listing_type,
-            listing_source,
-            status,
+      listing_type,
+      listing_source,
+      status,
 
-            currency,
+      currency,
 
-            base_value,
-            lowest_allowed_price,
-            minimum_market_price,
-            suggested_market_price,
-            maximum_market_price,
+      base_value,
+      lowest_allowed_price,
+      minimum_market_price,
+      suggested_market_price,
+      maximum_market_price,
 
-            asking_price,
+      asking_price,
 
-            broker_commission_rate,
-            broker_commission_amount,
-            estimated_net_proceeds,
+      broker_commission_rate,
+      broker_commission_amount,
+      estimated_net_proceeds,
 
-            market_position,
+      market_position,
 
-            aircraft_name,
-            registration,
-            model_key,
-            year_built,
-            condition_pct,
-            total_hours,
-            total_cycles,
-            current_airport,
+      aircraft_name,
+      registration,
+      model_key,
+      year_built,
+      condition_pct,
+      total_hours,
+      total_cycles,
+      current_airport,
 
-            scheduled_occurrences_count,
-            next_scheduled_departure,
-            schedule_warning_confirmed,
+      scheduled_occurrences_count,
+      next_scheduled_departure,
+      schedule_warning_confirmed,
 
-            listed_sim_time,
+      assigned_routes_count,
+      unassigned_schedule_items_count,
+      removed_future_occurrences_count,
+      affected_slot_bookings_count,
 
-            created_at,
-            updated_at,
-            version
-          )
-          VALUES
-          (
-            $1,
-            $2,
+      listed_sim_time,
 
-            'SALE',
-            'AIRLINE',
-            'ACTIVE',
+      created_at,
+      updated_at,
+      version
+    )
+    VALUES
+    (
+      $1,
+      $2,
 
-            $3,
+      'SALE',
+      'AIRLINE',
+      'ACTIVE',
 
-            $4,
-            $5,
-            $6,
-            $7,
-            $8,
+      $3,
 
-            $9,
+      $4,
+      $5,
+      $6,
+      $7,
+      $8,
 
-            $10,
-            $11,
-            $12,
+      $9,
 
-            $13,
+      $10,
+      $11,
+      $12,
 
-            $14,
-            $15,
-            $16,
-            $17,
-            $18,
-            $19,
-            $20,
-            $21,
+      $13,
 
-$22,
-$23,
-$24,
+      $14,
+      $15,
+      $16,
+      $17,
+      $18,
+      $19,
+      $20,
+      $21,
 
-$25,
+      $22,
+      $23,
+      $24,
 
-NOW(),
-NOW(),
-1
-          )
-          RETURNING
-            id,
-            aircraft_id,
-            seller_airline_id,
-            listing_type,
-            listing_source,
-            status,
-            currency,
-            asking_price,
-            broker_commission_amount,
-            estimated_net_proceeds,
-            market_position,
-            listed_sim_time,
-            version,
-            created_at
-          `,
-          [
-            aircraft.id,
-            airlineId,
+      $25,
+      $26,
+      $27,
+      $28,
 
-            currency,
+      $29,
 
-            quote.base_value,
-            quote.lowest_allowed_price,
-            quote.minimum_price,
-            quote.suggested_price,
-            quote.maximum_price,
+      NOW(),
+      NOW(),
+      1
+    )
+    RETURNING
+      id,
+      aircraft_id,
+      seller_airline_id,
 
-            askingPrice,
+      listing_type,
+      listing_source,
+      status,
 
-            commissionRate,
-            brokerCommission,
-            estimatedNetProceeds,
+      currency,
+      asking_price,
 
-            marketPosition,
+      broker_commission_amount,
+      estimated_net_proceeds,
 
-            aircraftName,
-            aircraft.registration || null,
-            aircraft.model_key || null,
-            aircraft.year_built || null,
-            aircraft.condition_pct ?? null,
-            aircraft.total_hours ?? null,
-            aircraft.total_cycles ?? null,
-            aircraft.current_airport ||
-  aircraft.base_icao ||
-  null,
+      market_position,
 
-schedule.future_occurrences_count,
+      scheduled_occurrences_count,
+      assigned_routes_count,
+      unassigned_schedule_items_count,
+      removed_future_occurrences_count,
+      affected_slot_bookings_count,
 
-schedule.next_scheduled_departure,
+      listed_sim_time,
+      version,
+      created_at
+    `,
+    [
+      aircraft.id,
+      airlineId,
 
-schedule.requires_confirmation
-  ? scheduledOperationsConfirmed
-  : false,
+      currency,
 
-aircraft.current_sim_time
-          ]
-        );
+      quote.base_value,
+      quote.lowest_allowed_price,
+      quote.minimum_price,
+      quote.suggested_price,
+      quote.maximum_price,
 
+      askingPrice,
+
+      commissionRate,
+      brokerCommission,
+      estimatedNetProceeds,
+
+      marketPosition,
+
+      aircraftName,
+      aircraft.registration || null,
+      aircraft.model_key || null,
+      aircraft.year_built || null,
+      aircraft.condition_pct ?? null,
+      aircraft.total_hours ?? null,
+      aircraft.total_cycles ?? null,
+
+      aircraft.current_airport ||
+        aircraft.base_icao ||
+        null,
+
+      schedule.future_occurrences_count,
+
+      schedule.next_scheduled_departure,
+
+      schedule.requires_confirmation
+        ? scheduledOperationsConfirmed
+        : false,
+
+      scheduleUnassignment
+        .assigned_routes_count,
+
+      scheduleUnassignment
+        .unassigned_schedule_items_count,
+
+      scheduleUnassignment
+        .removed_future_occurrences_count,
+
+      scheduleUnassignment
+        .unassigned_slot_bookings_count,
+
+      aircraft.current_sim_time
+    ]
+  );
+       
       await client.query("COMMIT");
 
       const listing =
@@ -2239,6 +2417,9 @@ aircraft.current_sim_time
         quote,
 
         schedule,
+
+        schedule_unassignment:
+        scheduleUnassignment,
 
         listing
       });
