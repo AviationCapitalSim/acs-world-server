@@ -2234,6 +2234,8 @@ aircraft.current_sim_time
 
         quote,
 
+        schedule,
+
         listing
       });
 
