@@ -660,6 +660,29 @@ router.get("/aircraft/fleet", requireAuth, async (req, res) => {
         af.model_key,
         af.aircraft_name,
         af.registration,
+
+        CASE
+          WHEN af.status IN (
+            'FOR_SALE',
+            'FOR_LEASE'
+          )
+          THEN (
+            SELECT
+              arp.registration_prefix
+            FROM public.aircraft_registration_prefixes arp
+            WHERE arp.is_active = TRUE
+              AND COALESCE(
+                af.base_icao,
+                af.current_airport,
+                ''
+              ) LIKE (arp.icao_prefix || '%')
+            ORDER BY
+              LENGTH(arp.icao_prefix) DESC
+            LIMIT 1
+          )
+          ELSE NULL
+        END AS market_registration_prefix,
+
         af.serial_number,
         af.line_number,
         af.new_aircraft_order_id,
