@@ -816,7 +816,7 @@ async function ACS_deliveryProcessOrder(orderId) {
           CASE
             WHEN $3 = 'OWNED'
               THEN ROUND(
-                $12::NUMERIC * 0.05
+                $12::INTEGER * 0.05
               )::BIGINT
             ELSE 0
           END,
