@@ -4586,9 +4586,39 @@ router.post("/aircraft/fleet/:id/registration/auto-assign", requireAuth, async (
       });
     }
 
-    const aircraft = aircraftResult.rows[0];
+        const aircraft = aircraftResult.rows[0];
 
-    const baseIcao =
+    const aircraftStatus =
+      String(aircraft.status || "")
+        .trim()
+        .toUpperCase();
+
+    const registrationBlockedStatuses =
+      new Set([
+        "FOR_SALE",
+        "FOR_LEASE",
+        "SOLD",
+        "RETIRED"
+      ]);
+
+    if (
+      registrationBlockedStatuses.has(
+        aircraftStatus
+      )
+    ) {
+      await client.query("ROLLBACK");
+
+      return res.status(409).json({
+        ok: false,
+        error:
+          "REGISTRATION_BLOCKED_BY_AIRCRAFT_STATUS",
+        aircraft_id: aircraft.id,
+        aircraft_status: aircraftStatus,
+        registration: null
+      });
+    }
+
+      const baseIcao =
       aircraft.base_icao ||
       aircraft.current_airport ||
       null;
