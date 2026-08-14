@@ -6829,7 +6829,14 @@ const systemRefresh = {
 
           ams.c_check_due_hours,
           ams.c_check_due_cycles,
+          ams.c_check_due_date,
+          ams.c_check_status,
+
           ams.d_check_due_date,
+          ams.d_check_status,
+
+          ams.maintenance_control_status,
+          ams.maintenance_control_reason,
 
           NULL::INTEGER
             AS reserved_by_airline_id,
