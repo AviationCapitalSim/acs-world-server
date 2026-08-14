@@ -6876,8 +6876,16 @@ const systemRefresh = {
           NULL::TEXT
             AS lessor_name,
 
-          'ACS OCC MARKET'
-            AS remarketing_agent,
+         COALESCE(
+            seller_airline.airline_name,
+            'AIRLINE SELLER'
+          ) AS remarketing_agent,
+
+          CASE
+            WHEN aml.listing_type = 'LEASE'
+              THEN 'DIRECT AIRLINE LEASE'
+            ELSE 'DIRECT AIRLINE SALE'
+          END AS market_display_source,
 
           (
             aml.listing_type = 'SALE'
@@ -6926,9 +6934,30 @@ const systemRefresh = {
           public.aircraft_catalog ac
           ON ac.model_key = af.model_key
 
-        LEFT JOIN
+         LEFT JOIN
           public.aircraft_maintenance_status ams
           ON ams.aircraft_id = af.id
+
+        LEFT JOIN
+          public.airlines seller_airline
+          ON seller_airline.airline_id =
+             aml.seller_airline_id
+
+        LEFT JOIN LATERAL (
+          SELECT
+            arp.registration_prefix
+          FROM public.aircraft_registration_prefixes arp
+          WHERE arp.is_active = TRUE
+            AND COALESCE(
+              af.base_icao,
+              af.current_airport,
+              ''
+            ) LIKE (arp.icao_prefix || '%')
+          ORDER BY
+            LENGTH(arp.icao_prefix) DESC
+          LIMIT 1
+        ) market_registration
+          ON TRUE
 
         WHERE aml.status IN (
           'ACTIVE',
