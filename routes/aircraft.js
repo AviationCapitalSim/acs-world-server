@@ -6774,14 +6774,21 @@ const systemRefresh = {
 
           af.serial_number,
 
-          aml.registration
+          market_registration.registration_prefix
             AS previous_registration,
 
-          'AIRLINE OPERATOR'
-            AS previous_operator,
+          market_registration.registration_prefix
+            AS market_registration_prefix,
 
-          'AIRLINE OPERATOR'
-            AS previous_operator_name,
+          COALESCE(
+            seller_airline.airline_name,
+            'AIRLINE SELLER'
+          ) AS previous_operator,
+
+          COALESCE(
+            seller_airline.airline_name,
+            'AIRLINE SELLER'
+          ) AS previous_operator_name,
 
           aml.year_built,
 
