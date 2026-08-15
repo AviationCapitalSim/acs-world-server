@@ -4578,6 +4578,17 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
 
             AND NOT EXISTS (
               SELECT 1
+              FROM public.aircraft_market_listings market_listing
+              WHERE market_listing.aircraft_id = si.aircraft_id
+                AND market_listing.status IN (
+                  'ACTIVE',
+                  'OFFER_RECEIVED',
+                  'SALE_PENDING'
+                )
+            )
+            
+            AND NOT EXISTS (
+              SELECT 1
               FROM public.aircraft_maintenance_events live_event
 
               WHERE live_event.airline_id = si.airline_id
