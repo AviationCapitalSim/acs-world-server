@@ -1391,6 +1391,41 @@ router.post(
         throw error;
       }
 
+           const activeCommercialListingResult =
+        await client.query(
+          `
+          SELECT
+            id,
+            listing_type,
+            status
+          FROM public.aircraft_market_listings
+          WHERE aircraft_id = $1
+            AND status IN (
+              'ACTIVE',
+              'OFFER_RECEIVED',
+              'SALE_PENDING'
+            )
+          ORDER BY id DESC
+          LIMIT 1
+          `,
+          [aircraftId]
+        );
+
+      if (activeCommercialListingResult.rows.length) {
+        const error =
+          new Error(
+            "AIRCRAFT_COMMERCIAL_HOLD"
+          );
+
+        error.code =
+          "AIRCRAFT_COMMERCIAL_HOLD";
+
+        error.listing =
+          activeCommercialListingResult.rows[0];
+
+        throw error;
+      }
+
       const aircraft =
         aircraftResult.rows[0];
 
