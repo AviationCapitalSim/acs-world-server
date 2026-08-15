@@ -502,7 +502,18 @@ router.get("/schedule/context", requireAuth, async (req, res) => {
     ON ams.aircraft_id = af.id
    AND ams.airline_id = af.airline_id
 
-  WHERE af.airline_id = $1
+    WHERE af.airline_id = $1
+
+    AND NOT EXISTS (
+      SELECT 1
+      FROM public.aircraft_market_listings market_listing
+      WHERE market_listing.aircraft_id = af.id
+        AND market_listing.status IN (
+          'ACTIVE',
+          'OFFER_RECEIVED',
+          'SALE_PENDING'
+        )
+    )
 
   ORDER BY
     af.registration NULLS LAST,
