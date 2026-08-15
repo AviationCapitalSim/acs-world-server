@@ -2524,6 +2524,41 @@ const marketAircraft =
         });
       }
 
+      if (
+        error?.code ===
+        "AIRCRAFT_MAINTENANCE_IN_PROGRESS"
+      ) {
+        return res.status(409).json({
+          ok: false,
+
+          error:
+            "AIRCRAFT_MAINTENANCE_IN_PROGRESS",
+
+          details:
+            "Aircraft cannot be listed while maintenance is in progress.",
+
+          maintenance_event:
+            error.maintenance_event || null,
+
+          maintenance_plan:
+            error.maintenance_plan || null
+        });
+      }
+
+      console.error(
+        "ACS CREATE SALE LISTING ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        ok: false,
+        error:
+          "AIRCRAFT_SALE_LISTING_FAILED",
+        details:
+          error?.message ||
+          "Aircraft sale listing failed."
+      });
+       
       console.error(
         "ACS AIRCRAFT SALE LISTING ERROR:",
         error
