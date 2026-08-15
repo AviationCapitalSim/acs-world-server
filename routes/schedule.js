@@ -6552,6 +6552,255 @@ ACS_unassignAircraftForCommercialAction(
     ]
   );
 
+    /*
+    Serialize commercial withdrawal against:
+
+    1. The airline A/B resolver.
+    2. Manual A/B programming for this aircraft.
+
+    This prevents a scheduled service from starting
+    while the aircraft is being published.
+  */
+
+  await client.query(
+    `
+    SELECT pg_advisory_xact_lock(
+      hashtext($1)
+    )
+    `,
+    [
+      `ACS_AB_MAINTENANCE_RESOLVER|` +
+      `${normalizedAirlineId}`
+    ]
+  );
+
+  await client.query(
+    `
+    SELECT pg_advisory_xact_lock(
+      hashtext($1)
+    )
+    `,
+    [
+      `ACS_SCHEDULE_MAINTENANCE|` +
+      `${normalizedAirlineId}|` +
+      `${normalizedAircraftId}`
+    ]
+  );
+
+  /*
+    An aircraft already undergoing maintenance
+    cannot physically leave for the market.
+  */
+
+  const activeMaintenanceEventResult =
+    await client.query(
+      `
+      SELECT
+        id,
+        check_type,
+        event_status,
+        started_at,
+        expected_completion_at
+      FROM public.aircraft_maintenance_events
+      WHERE airline_id = $1
+        AND aircraft_id = $2
+        AND event_status = 'IN_PROGRESS'
+      ORDER BY id
+      LIMIT 1
+      FOR UPDATE
+      `,
+      [
+        normalizedAirlineId,
+        normalizedAircraftId
+      ]
+    );
+
+  if (activeMaintenanceEventResult.rows.length) {
+    const error =
+      new Error(
+        "AIRCRAFT_MAINTENANCE_IN_PROGRESS"
+      );
+
+    error.code =
+      "AIRCRAFT_MAINTENANCE_IN_PROGRESS";
+
+    error.maintenance_event =
+      activeMaintenanceEventResult.rows[0];
+
+    throw error;
+  }
+
+  const activeMaintenancePlanResult =
+    await client.query(
+      `
+      SELECT
+        id,
+        service_type,
+        status
+      FROM public.schedule_items
+      WHERE airline_id = $1
+        AND aircraft_id = $2
+        AND LOWER(COALESCE(item_type, '')) = 'service'
+        AND UPPER(COALESCE(service_type, '')) IN (
+          'A',
+          'A_CHECK',
+          'B',
+          'B_CHECK'
+        )
+        AND LOWER(COALESCE(status, '')) = 'in_progress'
+      ORDER BY id
+      LIMIT 1
+      FOR UPDATE
+      `,
+      [
+        normalizedAirlineId,
+        normalizedAircraftId
+      ]
+    );
+
+  if (activeMaintenancePlanResult.rows.length) {
+    const error =
+      new Error(
+        "AIRCRAFT_MAINTENANCE_IN_PROGRESS"
+      );
+
+    error.code =
+      "AIRCRAFT_MAINTENANCE_IN_PROGRESS";
+
+    error.maintenance_plan =
+      activeMaintenancePlanResult.rows[0];
+
+    throw error;
+  }
+
+  /*
+    Cancel only pending A/B events.
+
+    COMPLETED history and C/D events remain untouched.
+    Scheduled A/B has not charged Finance.
+  */
+
+  await client.query(
+    `
+    UPDATE public.aircraft_maintenance_events
+    SET
+      event_status = 'CANCELLED',
+      updated_at =
+        (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+    WHERE airline_id = $1
+      AND aircraft_id = $2
+      AND check_type IN (
+        'A_CHECK',
+        'B_CHECK'
+      )
+      AND event_status = 'SCHEDULED'
+    `,
+    [
+      normalizedAirlineId,
+      normalizedAircraftId
+    ]
+  );
+
+  await client.query(
+    `
+    UPDATE public.schedule_items
+    SET
+      status = 'cancelled',
+
+      notes = jsonb_build_object(
+        'source',
+        $3::TEXT,
+
+        'action',
+        'COMMERCIAL_WITHDRAWAL',
+
+        'previous_aircraft_id',
+        $2::BIGINT,
+
+        'cancelled_at',
+        NOW()
+      )::TEXT,
+
+      updated_at = NOW()
+
+    WHERE airline_id = $1
+      AND aircraft_id = $2
+      AND LOWER(COALESCE(item_type, '')) = 'service'
+      AND UPPER(COALESCE(service_type, '')) IN (
+        'A',
+        'A_CHECK',
+        'B',
+        'B_CHECK'
+      )
+      AND LOWER(
+        COALESCE(
+          status,
+          'scheduled'
+        )
+      ) NOT IN (
+        'cancelled',
+        'completed',
+        'in_progress'
+      )
+    `,
+    [
+      normalizedAirlineId,
+      normalizedAircraftId,
+      source
+    ]
+  );
+
+  /*
+    Remove only the SCHEDULED label.
+
+    Due dates and completed maintenance history
+    remain preserved for a future return to service.
+  */
+
+  await client.query(
+    `
+    UPDATE public.aircraft_maintenance_status
+    SET
+      a_check_status = CASE
+        WHEN UPPER(COALESCE(a_check_status, '')) = 'SCHEDULED'
+          THEN 'OPEN'
+        ELSE a_check_status
+      END,
+
+      b_check_status = CASE
+        WHEN UPPER(COALESCE(b_check_status, '')) = 'SCHEDULED'
+          THEN 'OPEN'
+        ELSE b_check_status
+      END,
+
+      maintenance_control_status = CASE
+        WHEN UPPER(COALESCE(d_check_status, '')) = 'OVERDUE'
+          THEN 'MAINTENANCE_REQUIRED'
+        WHEN UPPER(COALESCE(c_check_status, '')) = 'OVERDUE'
+          THEN 'MAINTENANCE_REQUIRED'
+        ELSE 'SERVICEABLE'
+      END,
+
+      maintenance_control_reason = CASE
+        WHEN UPPER(COALESCE(d_check_status, '')) = 'OVERDUE'
+          THEN 'D_CHECK_OVERDUE'
+        WHEN UPPER(COALESCE(c_check_status, '')) = 'OVERDUE'
+          THEN 'C_CHECK_OVERDUE'
+        ELSE NULL
+      END,
+
+      updated_at =
+        (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+
+    WHERE airline_id = $1
+      AND aircraft_id = $2
+    `,
+    [
+      normalizedAirlineId,
+      normalizedAircraftId
+    ]
+  );
+
   /*
     Lock every active route currently assigned
     to the aircraft.
