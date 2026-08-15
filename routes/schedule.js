@@ -4881,11 +4881,23 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
           WHERE si.airline_id = $1
             AND si.aircraft_id IS NOT NULL
             AND LOWER(COALESCE(si.item_type, '')) = 'service'
+
             AND UPPER(COALESCE(si.service_type, ''))
                 IN ('A', 'A_CHECK', 'B', 'B_CHECK')
+
             AND LOWER(COALESCE(si.status, 'scheduled'))
                 NOT IN ('cancelled', 'completed')
 
+            AND NOT EXISTS (
+              SELECT 1
+              FROM public.aircraft_market_listings market_listing
+              WHERE market_listing.aircraft_id = si.aircraft_id
+                AND market_listing.status IN (
+                  'ACTIVE',
+                  'OFFER_RECEIVED',
+                  'SALE_PENDING'
+                )
+            )
           GROUP BY
             si.airline_id,
             si.aircraft_id
