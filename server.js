@@ -41,6 +41,10 @@ import flightSettlementRoutes, {
 } from "./routes/flight_settlement.js";
 import occAlertsRoutes from "./routes/occ_alerts.js";
 import guardianRoutes from "./routes/guardian.js";
+import {
+  startACSGuardianAlertSupervisor,
+  stopACSGuardianAlertSupervisor
+} from "./services/acs_guardian_alert_supervisor.js";
 
 import {
   registerACSRuntimeJobHandler,
@@ -409,6 +413,7 @@ const server = app.listen(PORT, "0.0.0.0", () => {
 
   startHRMoraleScheduler();
   startACSRuntimeSupervisor();
+  startACSGuardianAlertSupervisor();
 });
 
 /* ============================================================
@@ -432,6 +437,7 @@ function ACS_shutdown(signal) {
 
   stopMaintenanceScheduler();
   stopHRMoraleScheduler();
+  stopACSGuardianAlertSupervisor();
   stopACSRuntimeSupervisor();
   
   server.close(() => {
