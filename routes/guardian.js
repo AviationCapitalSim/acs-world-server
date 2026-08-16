@@ -308,11 +308,13 @@ router.get(
   async (_req, res) => {
     try {
       const [
-        storage,
-        diagnostics,
-        policiesResult,
-        alertsResult
-      ] = await Promise.all([
+  storage,
+  diagnostics,
+  policiesResult,
+  alertsResult,
+  supervisorResult
+] = await Promise.all([
+         
         ACS_getGuardianStorageSnapshot(),
 
         ACS_getGuardianDiagnostics(),
@@ -333,29 +335,52 @@ router.get(
         `),
 
         pool.query(`
-          SELECT
-            id,
-            alert_key,
-            severity,
-            title,
-            message,
-            action_type,
-            metrics,
-            status,
-            first_seen_at,
-            last_seen_at
-          FROM
-            public.acs_guardian_alerts
-          WHERE
-            status = 'OPEN'
-          ORDER BY
-            CASE severity
-              WHEN 'CRITICAL' THEN 1
-              WHEN 'WARNING' THEN 2
-              ELSE 3
-            END,
-            last_seen_at DESC
-        `)
+  SELECT
+    id,
+    alert_key,
+    severity,
+    title,
+    message,
+    action_type,
+    metrics,
+    status,
+    first_seen_at,
+    last_seen_at
+  FROM
+    public.acs_guardian_alerts
+  WHERE
+    status = 'OPEN'
+  ORDER BY
+    CASE severity
+      WHEN 'CRITICAL' THEN 1
+      WHEN 'WARNING' THEN 2
+      ELSE 3
+    END,
+    last_seen_at DESC
+`),
+
+pool.query(`
+  SELECT
+    supervisor_key,
+    enabled,
+    status,
+    scan_interval_seconds,
+    last_started_at,
+    last_completed_at,
+    last_success_at,
+    last_failure_at,
+    last_error,
+    active_alert_count,
+    last_opened_count,
+    last_resolved_count,
+    automatic_cleanup,
+    updated_at
+  FROM
+    public.acs_guardian_supervisor_state
+  WHERE
+    supervisor_key =
+      'GUARDIAN_ALERT_SCAN'
+`)
       ]);
 
       return res.json({
@@ -373,9 +398,14 @@ router.get(
           policiesResult.rows,
 
         alerts:
-          alertsResult.rows,
+  alertsResult.rows,
 
-        automaticCleanup: false
+supervisor:
+  supervisorResult.rows[0] ||
+  null,
+
+automaticCleanup: false
+         
       });
     } catch (error) {
       return ACS_sendGuardianError(
