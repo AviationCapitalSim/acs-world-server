@@ -1,47 +1,83 @@
 /* ============================================================
    ACS OCC — SYSTEM GUARDIAN
-   PRIVATE ACCESS SECURITY
-   ------------------------------------------------------------
-   Guardian requires:
-   1. A valid ACS session.
-   2. An explicitly authorized email address.
-   3. A fresh password verification.
-   4. A short-lived Guardian access token.
+   INDEPENDENT ADMINISTRATOR SECURITY
    ============================================================ */
 
 import crypto from "crypto";
 import bcrypt from "bcrypt";
-import { pool } from "../db/pool.js";
 
-const ACS_GUARDIAN_ACCESS_MINUTES = 30;
+import { pool }
+  from "../db/pool.js";
 
-function ACS_hashToken(rawToken) {
+const ACCESS_MINUTES = 30;
+const MAX_FAILED_LOGINS = 5;
+const LOCK_MINUTES = 15;
+
+function sha256(value) {
   return crypto
     .createHash("sha256")
-    .update(rawToken)
+    .update(String(value))
     .digest("hex");
 }
 
-function ACS_createRawToken() {
-  return crypto
-    .randomBytes(48)
-    .toString("base64url");
+function normalizeEmail(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase();
 }
 
-function ACS_getAllowedAdministratorEmails() {
-  return new Set(
-    String(
-      process.env.ACS_GUARDIAN_ADMIN_EMAILS || ""
+function validEmail(value) {
+  return (
+    value.length >= 3 &&
+    value.length <= 320 &&
+    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(
+      value
     )
-      .split(",")
-      .map((email) =>
-        email.trim().toLowerCase()
-      )
-      .filter(Boolean)
   );
 }
 
-function ACS_getRequestIP(req) {
+function validPassword(value) {
+  return (
+    typeof value === "string" &&
+    value.length >= 12 &&
+    value.length <= 200
+  );
+}
+
+function guardianError(
+  code,
+  statusCode
+) {
+  const error = new Error(code);
+
+  error.statusCode = statusCode;
+
+  return error;
+}
+
+function safeSecretEqual(
+  received,
+  configured
+) {
+  const left = Buffer.from(
+    String(received || "")
+  );
+
+  const right = Buffer.from(
+    String(configured || "")
+  );
+
+  return Boolean(
+    left.length &&
+    left.length === right.length &&
+    crypto.timingSafeEqual(
+      left,
+      right
+    )
+  );
+}
+
+export function ACS_getRequestIP(req) {
   return (
     req.headers["x-forwarded-for"]
       ?.split(",")[0]
@@ -51,7 +87,7 @@ function ACS_getRequestIP(req) {
   );
 }
 
-function ACS_readBearerToken(req) {
+export function ACS_readBearerToken(req) {
   const authorization = String(
     req.headers.authorization || ""
   ).trim();
@@ -63,24 +99,32 @@ function ACS_readBearerToken(req) {
   return match?.[1]?.trim() || null;
 }
 
-async function ACS_writeGuardianAudit({
-  userId = null,
+export async function ACS_writeGuardianAudit({
+  administratorId = null,
   eventType,
   actionId = null,
   sourceIP = null,
   details = {}
 }) {
   await pool.query(`
-    INSERT INTO public.acs_guardian_audit_log (
-      user_id,
-      event_type,
-      action_id,
-      source_ip,
-      details
+    INSERT INTO
+      public.acs_guardian_audit_log (
+        administrator_id,
+        event_type,
+        action_id,
+        source_ip,
+        details
+      )
+
+    VALUES (
+      $1,
+      $2,
+      $3,
+      $4,
+      $5::jsonb
     )
-    VALUES ($1, $2, $3, $4, $5::jsonb)
   `, [
-    userId,
+    administratorId,
     eventType,
     actionId,
     sourceIP,
@@ -88,86 +132,341 @@ async function ACS_writeGuardianAudit({
   ]);
 }
 
-async function ACS_getGuardianAdministrator(userId) {
-  const allowedEmails =
-    ACS_getAllowedAdministratorEmails();
+export async function ACS_getGuardianSetupStatus() {
+  const result = await pool.query(`
+    SELECT
+      COUNT(*)::integer
+        AS administrator_count
 
-  if (!allowedEmails.size) {
-    const error = new Error(
-      "GUARDIAN_ADMIN_EMAILS_NOT_CONFIGURED"
+    FROM
+      public.acs_guardian_administrators
+
+    WHERE active = true
+  `);
+
+  const administratorCount = Number(
+    result.rows[0]
+      ?.administrator_count || 0
+  );
+
+  return {
+    ok: true,
+
+    setupRequired:
+      administratorCount === 0,
+
+    administratorCount
+  };
+}
+
+export async function ACS_createInitialGuardianAdministrator({
+  email,
+  displayName,
+  password,
+  setupKey,
+  sourceIP = null
+}) {
+  const configuredKey = String(
+    process.env
+      .ACS_GUARDIAN_SETUP_KEY || ""
+  );
+
+  if (configuredKey.length < 24) {
+    throw guardianError(
+      "GUARDIAN_SETUP_KEY_NOT_CONFIGURED",
+      503
     );
+  }
 
-    error.statusCode = 503;
+  if (
+    !safeSecretEqual(
+      setupKey,
+      configuredKey
+    )
+  ) {
+    throw guardianError(
+      "GUARDIAN_SETUP_KEY_INVALID",
+      403
+    );
+  }
+
+  const cleanEmail =
+    normalizeEmail(email);
+
+  const cleanName = String(
+    displayName || ""
+  ).trim();
+
+  if (!validEmail(cleanEmail)) {
+    throw guardianError(
+      "GUARDIAN_EMAIL_INVALID",
+      400
+    );
+  }
+
+  if (
+    cleanName.length < 2 ||
+    cleanName.length > 120
+  ) {
+    throw guardianError(
+      "GUARDIAN_DISPLAY_NAME_INVALID",
+      400
+    );
+  }
+
+  if (!validPassword(password)) {
+    throw guardianError(
+      "GUARDIAN_PASSWORD_REQUIRES_12_CHARACTERS",
+      400
+    );
+  }
+
+  const client =
+    await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    await client.query(`
+      SELECT pg_advisory_xact_lock(
+        hashtext(
+          'ACS_GUARDIAN_INITIAL_SETUP'
+        )
+      )
+    `);
+
+    const existing =
+      await client.query(`
+        SELECT
+          COUNT(*)::integer AS total
+        FROM
+          public.acs_guardian_administrators
+      `);
+
+    if (
+      Number(existing.rows[0].total) > 0
+    ) {
+      throw guardianError(
+        "GUARDIAN_SETUP_ALREADY_COMPLETED",
+        409
+      );
+    }
+
+    const passwordHash =
+      await bcrypt.hash(
+        password,
+        12
+      );
+
+    const inserted =
+      await client.query(`
+        INSERT INTO
+          public.acs_guardian_administrators (
+            email,
+            display_name,
+            password_hash
+          )
+
+        VALUES (
+          $1,
+          $2,
+          $3
+        )
+
+        RETURNING
+          id,
+          email,
+          display_name,
+          created_at
+      `, [
+        cleanEmail,
+        cleanName,
+        passwordHash
+      ]);
+
+    const administrator =
+      inserted.rows[0];
+
+    await client.query(`
+      INSERT INTO
+        public.acs_guardian_audit_log (
+          administrator_id,
+          event_type,
+          source_ip,
+          details
+        )
+
+      VALUES (
+        $1,
+        'GUARDIAN_INITIAL_ADMIN_CREATED',
+        $2,
+        $3::jsonb
+      )
+    `, [
+      administrator.id,
+      sourceIP,
+
+      JSON.stringify({
+        email:
+          administrator.email,
+
+        displayName:
+          administrator.display_name
+      })
+    ]);
+
+    await client.query("COMMIT");
+
+    return {
+      ok: true,
+
+      administrator: {
+        id:
+          administrator.id,
+
+        email:
+          administrator.email,
+
+        displayName:
+          administrator.display_name,
+
+        createdAt:
+          administrator.created_at
+      }
+    };
+
+  } catch (error) {
+    await client.query("ROLLBACK");
     throw error;
+
+  } finally {
+    client.release();
+  }
+}
+
+async function registerFailedLogin(
+  administrator,
+  sourceIP
+) {
+  const attempts =
+    Number(
+      administrator
+        .failed_login_attempts || 0
+    ) + 1;
+
+  const lock =
+    attempts >= MAX_FAILED_LOGINS;
+
+  await pool.query(`
+    UPDATE
+      public.acs_guardian_administrators
+
+    SET
+      failed_login_attempts = $2,
+
+      locked_until =
+        CASE
+          WHEN $3
+          THEN
+            CURRENT_TIMESTAMP +
+            ($4 * INTERVAL '1 minute')
+          ELSE locked_until
+        END,
+
+      updated_at =
+        CURRENT_TIMESTAMP
+
+    WHERE id = $1
+  `, [
+    administrator.id,
+    lock ? 0 : attempts,
+    lock,
+    LOCK_MINUTES
+  ]);
+
+  await ACS_writeGuardianAudit({
+    administratorId:
+      administrator.id,
+
+    eventType:
+      "GUARDIAN_LOGIN_REJECTED",
+
+    sourceIP,
+
+    details: {
+      reason:
+        "INVALID_CREDENTIALS",
+
+      accountLocked:
+        lock
+    }
+  });
+}
+
+export async function ACS_issueGuardianAccess({
+  email,
+  password,
+  sourceIP = null
+}) {
+  const cleanEmail =
+    normalizeEmail(email);
+
+  if (
+    !validEmail(cleanEmail) ||
+    typeof password !== "string" ||
+    !password.length ||
+    password.length > 200
+  ) {
+    throw guardianError(
+      "GUARDIAN_CREDENTIALS_INVALID",
+      401
+    );
   }
 
   const result = await pool.query(`
     SELECT
-      users.user_id,
-      LOWER(users.email) AS email,
-      users_auth.password_hash
+      id,
+      email,
+      display_name,
+      password_hash,
+      active,
+      failed_login_attempts,
+      locked_until
 
-    FROM public.users
+    FROM
+      public.acs_guardian_administrators
 
-    JOIN public.users_auth
-      ON users_auth.user_id =
-         users.user_id
-
-    WHERE users.user_id = $1
+    WHERE LOWER(email) = $1
 
     LIMIT 1
-  `, [userId]);
-
-  if (!result.rows.length) {
-    const error = new Error(
-      "GUARDIAN_USER_NOT_FOUND"
-    );
-
-    error.statusCode = 403;
-    throw error;
-  }
+  `, [
+    cleanEmail
+  ]);
 
   const administrator =
     result.rows[0];
 
   if (
-    !allowedEmails.has(
-      administrator.email
-    )
+    !administrator ||
+    !administrator.active
   ) {
-    const error = new Error(
-      "GUARDIAN_ACCESS_FORBIDDEN"
+    throw guardianError(
+      "GUARDIAN_CREDENTIALS_INVALID",
+      401
     );
-
-    error.statusCode = 403;
-    throw error;
   }
 
-  return administrator;
-}
-
-export async function ACS_issueGuardianAccess({
-  userId,
-  password,
-  sourceIP = null
-}) {
   if (
-    typeof password !== "string" ||
-    password.length < 1 ||
-    password.length > 200
+    administrator.locked_until &&
+    new Date(
+      administrator.locked_until
+    ) > new Date()
   ) {
-    const error = new Error(
-      "GUARDIAN_PASSWORD_REQUIRED"
+    throw guardianError(
+      "GUARDIAN_ACCOUNT_TEMPORARILY_LOCKED",
+      423
     );
-
-    error.statusCode = 400;
-    throw error;
   }
-
-  const administrator =
-    await ACS_getGuardianAdministrator(
-      userId
-    );
 
   const passwordMatches =
     await bcrypt.compare(
@@ -176,29 +475,23 @@ export async function ACS_issueGuardianAccess({
     );
 
   if (!passwordMatches) {
-    await ACS_writeGuardianAudit({
-      userId,
-      eventType:
-        "GUARDIAN_ACCESS_DENIED",
-      sourceIP,
-      details: {
-        reason: "WRONG_PASSWORD"
-      }
-    });
-
-    const error = new Error(
-      "GUARDIAN_REAUTHENTICATION_FAILED"
+    await registerFailedLogin(
+      administrator,
+      sourceIP
     );
 
-    error.statusCode = 401;
-    throw error;
+    throw guardianError(
+      "GUARDIAN_CREDENTIALS_INVALID",
+      401
+    );
   }
 
-  const rawToken =
-    ACS_createRawToken();
+  const rawToken = crypto
+    .randomBytes(48)
+    .toString("base64url");
 
   const tokenHash =
-    ACS_hashToken(rawToken);
+    sha256(rawToken);
 
   const client =
     await pool.connect();
@@ -206,28 +499,42 @@ export async function ACS_issueGuardianAccess({
   try {
     await client.query("BEGIN");
 
-    /*
-      Only one active Guardian access
-      token per administrator.
-    */
+    await client.query(`
+      UPDATE
+        public.acs_guardian_administrators
+
+      SET
+        failed_login_attempts = 0,
+        locked_until = NULL,
+        last_login_at =
+          CURRENT_TIMESTAMP,
+        updated_at =
+          CURRENT_TIMESTAMP
+
+      WHERE id = $1
+    `, [
+      administrator.id
+    ]);
 
     await client.query(`
-      UPDATE public.acs_guardian_access_tokens
+      UPDATE
+        public.acs_guardian_access_tokens
 
-      SET revoked_at =
-        CURRENT_TIMESTAMP
+      SET
+        revoked_at =
+          CURRENT_TIMESTAMP
 
-      WHERE user_id = $1
+      WHERE administrator_id = $1
         AND revoked_at IS NULL
-        AND expires_at >
-            CURRENT_TIMESTAMP
-    `, [userId]);
+    `, [
+      administrator.id
+    ]);
 
-    const inserted =
+    const tokenResult =
       await client.query(`
         INSERT INTO
           public.acs_guardian_access_tokens (
-            user_id,
+            administrator_id,
             token_hash,
             expires_at
           )
@@ -236,20 +543,20 @@ export async function ACS_issueGuardianAccess({
           $1,
           $2,
           CURRENT_TIMESTAMP +
-            ($3 * INTERVAL '1 minute')
+          ($3 * INTERVAL '1 minute')
         )
 
         RETURNING expires_at
       `, [
-        userId,
+        administrator.id,
         tokenHash,
-        ACS_GUARDIAN_ACCESS_MINUTES
+        ACCESS_MINUTES
       ]);
 
     await client.query(`
       INSERT INTO
         public.acs_guardian_audit_log (
-          user_id,
+          administrator_id,
           event_type,
           source_ip,
           details
@@ -259,15 +566,11 @@ export async function ACS_issueGuardianAccess({
         $1,
         'GUARDIAN_ACCESS_GRANTED',
         $2,
-        $3::jsonb
+        '{}'::jsonb
       )
     `, [
-      userId,
-      sourceIP,
-      JSON.stringify({
-        expiresAt:
-          inserted.rows[0].expires_at
-      })
+      administrator.id,
+      sourceIP
     ]);
 
     await client.query("COMMIT");
@@ -277,14 +580,25 @@ export async function ACS_issueGuardianAccess({
       accessToken: rawToken,
 
       expiresAt:
-        inserted.rows[0].expires_at,
+        tokenResult.rows[0]
+          .expires_at,
 
-      expiresInMinutes:
-        ACS_GUARDIAN_ACCESS_MINUTES
+      administrator: {
+        id:
+          administrator.id,
+
+        email:
+          administrator.email,
+
+        displayName:
+          administrator.display_name
+      }
     };
+
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
+
   } finally {
     client.release();
   }
@@ -296,16 +610,6 @@ export async function ACS_requireGuardianAccess(
   next
 ) {
   try {
-    /*
-      Confirm that the current ACS user
-      is still an authorized Guardian
-      administrator.
-    */
-
-    await ACS_getGuardianAdministrator(
-      req.user_id
-    );
-
     const rawToken =
       ACS_readBearerToken(req);
 
@@ -317,27 +621,37 @@ export async function ACS_requireGuardianAccess(
       });
     }
 
-    const tokenHash =
-      ACS_hashToken(rawToken);
-
     const result = await pool.query(`
       SELECT
-        id,
-        expires_at
+        token.id AS access_id,
+        token.expires_at,
+
+        administrator.id
+          AS administrator_id,
+
+        administrator.email,
+        administrator.display_name
 
       FROM
         public.acs_guardian_access_tokens
+          token
 
-      WHERE user_id = $1
-        AND token_hash = $2
-        AND revoked_at IS NULL
-        AND expires_at >
+      JOIN
+        public.acs_guardian_administrators
+          administrator
+
+        ON administrator.id =
+           token.administrator_id
+
+      WHERE token.token_hash = $1
+        AND token.revoked_at IS NULL
+        AND token.expires_at >
             CURRENT_TIMESTAMP
+        AND administrator.active = true
 
       LIMIT 1
     `, [
-      req.user_id,
-      tokenHash
+      sha256(rawToken)
     ]);
 
     if (!result.rows.length) {
@@ -348,33 +662,44 @@ export async function ACS_requireGuardianAccess(
       });
     }
 
+    const access =
+      result.rows[0];
+
     req.guardian_access_id =
-      result.rows[0].id;
+      access.access_id;
 
     req.guardian_access_expires_at =
-      result.rows[0].expires_at;
+      access.expires_at;
+
+    req.guardian_administrator = {
+      id:
+        access.administrator_id,
+
+      email:
+        access.email,
+
+      displayName:
+        access.display_name
+    };
 
     return next();
+
   } catch (error) {
     console.error(
-      "[ACS Guardian] Access validation error:",
+      "[ACS Guardian] Access validation failed:",
       error.message
     );
 
-    return res
-      .status(error.statusCode || 500)
-      .json({
-        ok: false,
-
-        error:
-          error.message ||
-          "GUARDIAN_ACCESS_ERROR"
-      });
+    return res.status(500).json({
+      ok: false,
+      error:
+        "GUARDIAN_ACCESS_VALIDATION_FAILED"
+    });
   }
 }
 
 export async function ACS_revokeGuardianAccess({
-  userId,
+  administratorId,
   rawToken,
   sourceIP = null
 }) {
@@ -382,34 +707,32 @@ export async function ACS_revokeGuardianAccess({
     return;
   }
 
-  const tokenHash =
-    ACS_hashToken(rawToken);
-
   await pool.query(`
-    UPDATE public.acs_guardian_access_tokens
+    UPDATE
+      public.acs_guardian_access_tokens
 
-    SET revoked_at =
-      CURRENT_TIMESTAMP
+    SET
+      revoked_at =
+        CURRENT_TIMESTAMP
 
-    WHERE user_id = $1
+    WHERE administrator_id = $1
       AND token_hash = $2
       AND revoked_at IS NULL
   `, [
-    userId,
-    tokenHash
+    administratorId,
+    sha256(rawToken)
   ]);
 
   await ACS_writeGuardianAudit({
-    userId,
+    administratorId,
+
     eventType:
       "GUARDIAN_ACCESS_REVOKED",
+
     sourceIP,
     details: {}
   });
 }
 
-export {
-  ACS_getRequestIP,
-  ACS_readBearerToken,
-  ACS_writeGuardianAudit
-};
+export const ACS_hashGuardianValue =
+  sha256;
