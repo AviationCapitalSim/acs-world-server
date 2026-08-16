@@ -3453,20 +3453,13 @@ const financeAfterResult = await client.query(
       }
     });
 
-  } catch (err) {
-  try {
-    await client.query("ROLLBACK");
-   } catch (err) {
+    } catch (err) {
     try {
-      await client.query(
-        "ROLLBACK"
-      );
-       
+      await client.query("ROLLBACK");
     } catch (_) {}
 
     if (
-      err?.message ===
-        "AIRCRAFT_COMMERCIAL_HOLD" ||
+      err?.message === "AIRCRAFT_COMMERCIAL_HOLD" ||
       (
         err?.code === "23514" &&
         String(
