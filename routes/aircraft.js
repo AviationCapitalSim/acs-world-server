@@ -2201,6 +2201,7 @@ const marketHoldResult =
     UPDATE public.aircraft_fleet
     SET
       status = 'FOR_SALE',
+      operational_status = 'UNAVAILABLE',
       registration = NULL,
       updated_at = NOW()
 
@@ -2212,6 +2213,7 @@ const marketHoldResult =
       id,
       status,
       operational_status,
+      maintenance_status,
       registration,
       updated_at
     `,
@@ -2560,19 +2562,20 @@ const marketAircraft =
       });
        
       console.error(
-        "ACS AIRCRAFT SALE LISTING ERROR:",
-        error
-      );
+  "ACS AIRCRAFT SALE LISTING ERROR:",
+  error
+);
 
-      return res.status(500).json({
-        ok: false,
+return res.status(500).json({
+  ok: false,
 
-        error:
-          "AIRCRAFT_SALE_LISTING_FAILED",
+  error:
+    "AIRCRAFT_SALE_LISTING_FAILED",
 
-        details:
-          error.message
-      });
+  details:
+    error?.message ||
+    "Aircraft sale listing failed."
+});
 
     } finally {
       client.release();
@@ -2984,6 +2987,63 @@ async function ACS_startCDMaintenance(req, res) {
 
     const aircraft = aircraftResult.rows[0];
 
+    /*
+  ACS COMMERCIAL AUTHORITY
+
+  C/D dates and technical statuses continue advancing,
+  but no maintenance event may start while the aircraft
+  is listed for sale or lease.
+*/
+
+const commercialListingResult =
+  await client.query(
+    `
+    SELECT
+      id,
+      listing_type,
+      status
+    FROM public.aircraft_market_listings
+    WHERE aircraft_id = $1
+      AND seller_airline_id = $2
+      AND status IN (
+        'ACTIVE',
+        'OFFER_RECEIVED',
+        'SALE_PENDING'
+      )
+    ORDER BY id DESC
+    LIMIT 1
+    FOR UPDATE
+    `,
+    [
+      aircraftId,
+      airlineId
+    ]
+  );
+
+if (
+  commercialListingResult.rows.length
+) {
+  await client.query("ROLLBACK");
+
+  const listing =
+    commercialListingResult.rows[0];
+
+  return res.status(409).json({
+    ok: false,
+    error:
+      "AIRCRAFT_COMMERCIAL_HOLD",
+    message:
+      listing.listing_type === "LEASE"
+        ? "C or D maintenance cannot be started while the aircraft is ON LEASE."
+        : "C or D maintenance cannot be started while the aircraft is ON SALE.",
+    commercial_status:
+      listing.listing_type === "LEASE"
+        ? "ON_LEASE"
+        : "ON_SALE",
+    listing
+  });
+}
+     
     const aircraftStatus = String(aircraft.status || "").toUpperCase();
     const operationalStatus = String(aircraft.operational_status || "").toUpperCase();
 
@@ -3392,13 +3452,43 @@ const financeAfterResult = await client.query(
         usage_factor: usageFactor
       }
     });
-
-  } catch (err) {
+} catch (err) {
+  try {
     await client.query("ROLLBACK");
+  } catch (_) {}
 
-    console.error("ACS START MAINTENANCE ERROR:", err);
+  if (
+    err?.message ===
+      "AIRCRAFT_COMMERCIAL_HOLD" ||
+    err?.code === "23514"
+  ) {
+    return res.status(409).json({
+      ok: false,
+      error:
+        "AIRCRAFT_COMMERCIAL_HOLD",
+      message:
+        "Maintenance cannot be started while the aircraft is ON SALE or ON LEASE."
+    });
+  }
 
-    return res.status(500).json({
+  console.error(
+    "ACS START MAINTENANCE ERROR:",
+    err
+  );
+
+  return res.status(500).json({
+    ok: false,
+    error:
+      "START_MAINTENANCE_FAILED",
+    details:
+      err?.message ||
+      "Maintenance could not be started."
+  });
+
+} finally {
+  client.release();
+}
+   
       ok: false,
       error: "START_MAINTENANCE_FAILED",
       details: err.message
@@ -7110,6 +7200,802 @@ const systemRefresh = {
 });
 
 /* ============================================================
+   ACS AIRLINE AIRCRAFT SALE — TRANSACTION AUTHORITY v1.0
+   ------------------------------------------------------------
+   Route:
+   POST /v1/aircraft/market-listings/:id/buy
+
+   Transaction:
+   - Locks listing, aircraft and both Finance accounts.
+   - Charges buyer.
+   - Pays seller net proceeds.
+   - Marks listing SOLD.
+   - Transfers the same aircraft asset.
+   - Transfers technical maintenance authority.
+   - Assigns buyer registration.
+   - Creates buyer and seller OCC alerts.
+   ============================================================ */
+
+router.post(
+  "/aircraft/market-listings/:id/buy",
+  requireAuth,
+  async (req, res) => {
+    const client =
+      await pool.connect();
+
+    let transactionStarted = false;
+
+    try {
+      const buyerAirlineId =
+        Number(req.airline_id);
+
+      const buyerUserId =
+        req.user_id || null;
+
+      const listingId =
+        Number(req.params.id);
+
+      if (
+        !Number.isInteger(buyerAirlineId) ||
+        buyerAirlineId <= 0
+      ) {
+        return res.status(401).json({
+          ok: false,
+          error: "NO_AIRLINE_SESSION"
+        });
+      }
+
+      if (
+        !Number.isInteger(listingId) ||
+        listingId <= 0
+      ) {
+        return res.status(400).json({
+          ok: false,
+          error:
+            "INVALID_MARKET_LISTING_ID"
+        });
+      }
+
+      await client.query("BEGIN");
+      transactionStarted = true;
+
+      const listingResult =
+        await client.query(
+          `
+          SELECT
+            aml.id,
+            aml.aircraft_id,
+            aml.seller_airline_id,
+            aml.listing_type,
+            aml.status,
+            aml.currency,
+            aml.asking_price,
+            aml.broker_commission_amount,
+            aml.estimated_net_proceeds,
+            aml.registration
+              AS previous_registration,
+
+            af.aircraft_name,
+            af.model_key,
+            af.serial_number,
+            af.ownership_type,
+            af.status
+              AS aircraft_status,
+
+            ams.maintenance_control_status,
+            ams.maintenance_control_reason,
+            ams.c_check_status,
+            ams.d_check_status,
+
+            seller.airline_name
+              AS seller_airline_name,
+
+            buyer.airline_name
+              AS buyer_airline_name,
+
+            acs_get_current_sim_time()
+              AS current_sim_time
+
+          FROM public.aircraft_market_listings aml
+
+          INNER JOIN public.aircraft_fleet af
+            ON af.id = aml.aircraft_id
+           AND af.airline_id =
+               aml.seller_airline_id
+
+          LEFT JOIN
+            public.aircraft_maintenance_status ams
+            ON ams.aircraft_id = af.id
+           AND ams.airline_id = af.airline_id
+
+          LEFT JOIN public.airlines seller
+            ON seller.airline_id =
+               aml.seller_airline_id
+
+          LEFT JOIN public.airlines buyer
+            ON buyer.airline_id = $2
+
+          WHERE aml.id = $1
+
+          FOR UPDATE OF aml, af
+          `,
+          [
+            listingId,
+            buyerAirlineId
+          ]
+        );
+
+      if (!listingResult.rows.length) {
+        await client.query("ROLLBACK");
+        transactionStarted = false;
+
+        return res.status(404).json({
+          ok: false,
+          error:
+            "MARKET_LISTING_NOT_FOUND"
+        });
+      }
+
+      const listing =
+        listingResult.rows[0];
+
+      const sellerAirlineId =
+        Number(
+          listing.seller_airline_id
+        );
+
+      if (
+        sellerAirlineId ===
+        buyerAirlineId
+      ) {
+        await client.query("ROLLBACK");
+        transactionStarted = false;
+
+        return res.status(409).json({
+          ok: false,
+          error:
+            "AIRLINE_CANNOT_BUY_OWN_AIRCRAFT"
+        });
+      }
+
+      if (
+        String(
+          listing.listing_type || ""
+        ).toUpperCase() !== "SALE"
+      ) {
+        await client.query("ROLLBACK");
+        transactionStarted = false;
+
+        return res.status(409).json({
+          ok: false,
+          error:
+            "MARKET_LISTING_NOT_FOR_SALE"
+        });
+      }
+
+      if (
+        ![
+          "ACTIVE",
+          "OFFER_RECEIVED",
+          "SALE_PENDING"
+        ].includes(
+          String(
+            listing.status || ""
+          ).toUpperCase()
+        )
+      ) {
+        await client.query("ROLLBACK");
+        transactionStarted = false;
+
+        return res.status(409).json({
+          ok: false,
+          error:
+            "MARKET_LISTING_NOT_ACTIVE",
+          listing_status:
+            listing.status
+        });
+      }
+
+      const inProgressResult =
+        await client.query(
+          `
+          SELECT
+            id,
+            check_type,
+            event_status
+          FROM public.aircraft_maintenance_events
+          WHERE aircraft_id = $1
+            AND event_status = 'IN_PROGRESS'
+          LIMIT 1
+          FOR UPDATE
+          `,
+          [
+            listing.aircraft_id
+          ]
+        );
+
+      if (inProgressResult.rows.length) {
+        await client.query("ROLLBACK");
+        transactionStarted = false;
+
+        return res.status(409).json({
+          ok: false,
+          error:
+            "AIRCRAFT_MAINTENANCE_IN_PROGRESS"
+        });
+      }
+
+      const buyerBaseResult =
+        await client.query(
+          `
+          SELECT
+            base_icao
+          FROM public.users
+          WHERE user_id = $1
+          LIMIT 1
+          `,
+          [
+            buyerUserId
+          ]
+        );
+
+      const buyerBaseIcao =
+        buyerBaseResult.rows[0]
+          ?.base_icao || null;
+
+      if (!buyerBaseIcao) {
+        await client.query("ROLLBACK");
+        transactionStarted = false;
+
+        return res.status(409).json({
+          ok: false,
+          error:
+            "BUYER_BASE_ICAO_REQUIRED"
+        });
+      }
+
+      const registrationRule =
+        await ACS_RA_resolveRegistrationRule(
+          client,
+          buyerBaseIcao
+        );
+
+      const newRegistration =
+        await ACS_RA_generateUniqueRegistration(
+          client,
+          registrationRule
+        );
+
+      const purchasePrice =
+        Math.round(
+          Number(
+            listing.asking_price || 0
+          )
+        );
+
+      const commissionAmount =
+        Math.max(
+          0,
+          Math.round(
+            Number(
+              listing
+                .broker_commission_amount ||
+              0
+            )
+          )
+        );
+
+      const sellerNetProceeds =
+        Math.max(
+          0,
+          Math.round(
+            Number(
+              listing
+                .estimated_net_proceeds ||
+              purchasePrice -
+                commissionAmount
+            )
+          )
+        );
+
+      if (purchasePrice <= 0) {
+        throw new Error(
+          "INVALID_MARKET_PURCHASE_PRICE"
+        );
+      }
+
+      /*
+        Create both Finance authorities, then lock
+        them in deterministic order.
+      */
+
+      await client.query(
+        `
+        INSERT INTO public.company_finance (
+          airline_id,
+          capital
+        )
+        VALUES
+          ($1, 700000),
+          ($2, 700000)
+        ON CONFLICT (airline_id)
+        DO NOTHING
+        `,
+        [
+          buyerAirlineId,
+          sellerAirlineId
+        ]
+      );
+
+      const financeLockResult =
+        await client.query(
+          `
+          SELECT
+            airline_id,
+            capital
+          FROM public.company_finance
+          WHERE airline_id =
+            ANY($1::INTEGER[])
+          ORDER BY airline_id
+          FOR UPDATE
+          `,
+          [[
+            buyerAirlineId,
+            sellerAirlineId
+          ]]
+        );
+
+      const buyerFinance =
+        financeLockResult.rows.find(
+          row =>
+            Number(row.airline_id) ===
+            buyerAirlineId
+        );
+
+      const buyerCapital =
+        Math.round(
+          Number(
+            buyerFinance?.capital || 0
+          )
+        );
+
+      if (
+        buyerCapital <
+        purchasePrice
+      ) {
+        await client.query("ROLLBACK");
+        transactionStarted = false;
+
+        return res.status(409).json({
+          ok: false,
+          error:
+            "INSUFFICIENT_CAPITAL",
+          capital:
+            buyerCapital,
+          required:
+            purchasePrice
+        });
+      }
+
+      /*
+        The listing stops being active before aircraft
+        transfer. This releases the PostgreSQL commercial
+        hold trigger inside this same transaction.
+      */
+
+      const soldListingResult =
+        await client.query(
+          `
+          UPDATE public.aircraft_market_listings
+          SET
+            status = 'SOLD',
+            updated_at = NOW(),
+            version = version + 1
+          WHERE id = $1
+            AND status IN (
+              'ACTIVE',
+              'OFFER_RECEIVED',
+              'SALE_PENDING'
+            )
+          RETURNING *
+          `,
+          [
+            listingId
+          ]
+        );
+
+      if (
+        !soldListingResult.rows.length
+      ) {
+        throw new Error(
+          "MARKET_LISTING_SALE_TRANSITION_FAILED"
+        );
+      }
+
+      const technicalControl =
+        String(
+          listing
+            .maintenance_control_status ||
+          "SERVICEABLE"
+        ).toUpperCase();
+
+      const buyerFleetStatus =
+        technicalControl ===
+          "MAINTENANCE_REQUIRED"
+          ? "GROUNDED"
+          : "ACTIVE";
+
+      const buyerOperationalStatus =
+        technicalControl ===
+          "MAINTENANCE_REQUIRED"
+          ? "UNAVAILABLE"
+          : "AVAILABLE";
+
+      const buyerMaintenanceStatus =
+        technicalControl ===
+          "MAINTENANCE_REQUIRED"
+          ? "CHECK_REQUIRED"
+          : "SERVICEABLE";
+
+      const transferredAircraftResult =
+        await client.query(
+          `
+          UPDATE public.aircraft_fleet
+          SET
+            airline_id = $2,
+            ownership_type = 'OWNED',
+
+            status = $3,
+            operational_status = $4,
+            maintenance_status = $5,
+
+            registration = $6,
+            base_icao = $7,
+            current_airport = $7,
+
+            source = 'USED MARKET',
+            purchase_price = $8,
+            current_value = $8,
+
+            delivery_date = $9,
+            entry_into_service_date = $9,
+
+            updated_at = NOW()
+
+          WHERE id = $1
+            AND airline_id = $10
+            AND ownership_type = 'OWNED'
+
+          RETURNING *
+          `,
+          [
+            listing.aircraft_id,
+            buyerAirlineId,
+
+            buyerFleetStatus,
+            buyerOperationalStatus,
+            buyerMaintenanceStatus,
+
+            newRegistration,
+            buyerBaseIcao,
+            purchasePrice,
+            listing.current_sim_time,
+
+            sellerAirlineId
+          ]
+        );
+
+      if (
+        !transferredAircraftResult
+          .rows.length
+      ) {
+        throw new Error(
+          "AIRCRAFT_OWNERSHIP_TRANSFER_FAILED"
+        );
+      }
+
+      /*
+        Technical aircraft history follows the aircraft.
+      */
+
+      await client.query(
+        `
+        UPDATE public.aircraft_maintenance_status
+        SET
+          airline_id = $2,
+          registration = $3,
+          updated_at = NOW()
+        WHERE aircraft_id = $1
+          AND airline_id = $4
+        `,
+        [
+          listing.aircraft_id,
+          buyerAirlineId,
+          newRegistration,
+          sellerAirlineId
+        ]
+      );
+
+      await client.query(
+        `
+        UPDATE public.aircraft_maintenance_events
+        SET
+          airline_id = $2,
+          updated_at = NOW()
+        WHERE aircraft_id = $1
+          AND airline_id = $3
+        `,
+        [
+          listing.aircraft_id,
+          buyerAirlineId,
+          sellerAirlineId
+        ]
+      );
+
+      /*
+        Buyer payment and seller proceeds.
+      */
+
+      await client.query(
+        `
+        UPDATE public.company_finance
+        SET
+          capital =
+            COALESCE(capital, 0) - $2,
+
+          cost_used_aircraft_purchase =
+            COALESCE(
+              cost_used_aircraft_purchase,
+              0
+            ) + $2,
+
+          profit =
+            COALESCE(profit, 0) - $2,
+
+          updated_at = NOW()
+
+        WHERE airline_id = $1
+        `,
+        [
+          buyerAirlineId,
+          purchasePrice
+        ]
+      );
+
+      await client.query(
+        `
+        UPDATE public.company_finance
+        SET
+          capital =
+            COALESCE(capital, 0) + $2,
+
+          profit =
+            COALESCE(profit, 0) + $2,
+
+          updated_at = NOW()
+
+        WHERE airline_id = $1
+        `,
+        [
+          sellerAirlineId,
+          sellerNetProceeds
+        ]
+      );
+
+      const aircraftName =
+        String(
+          listing.aircraft_name ||
+          listing.model_key ||
+          "Aircraft"
+        ).trim();
+
+      const buyerAirlineName =
+        String(
+          listing.buyer_airline_name ||
+          "Purchasing airline"
+        ).trim();
+
+      const sellerAirlineName =
+        String(
+          listing.seller_airline_name ||
+          "Selling airline"
+        ).trim();
+
+      const simTimestamp =
+        Math.floor(
+          new Date(
+            listing.current_sim_time
+          ).getTime()
+        );
+
+      await client.query(
+        `
+        INSERT INTO public.finance_log (
+          airline_id,
+          type,
+          source,
+          amount,
+          timestamp,
+          created_at
+        )
+        VALUES
+          (
+            $1,
+            'INVESTMENT',
+            $2,
+            $3,
+            $7,
+            NOW()
+          ),
+          (
+            $4,
+            'INCOME',
+            $5,
+            $6,
+            $7,
+            NOW()
+          )
+        `,
+        [
+          buyerAirlineId,
+          `USED MARKET PURCHASE — ${aircraftName}`,
+          purchasePrice,
+
+          sellerAirlineId,
+          `AIRCRAFT SALE — ${aircraftName} TO ${buyerAirlineName}`,
+          sellerNetProceeds,
+
+          simTimestamp
+        ]
+      );
+
+      /*
+        Alerts are part of the transaction.
+        No successful transfer means no alert.
+      */
+
+      await client.query(
+        `
+        INSERT INTO public.occ_alerts (
+          airline_id,
+          alert_key,
+          category,
+          level,
+          title,
+          message,
+          source,
+          source_ref,
+          event_sim_time,
+          created_at,
+          updated_at
+        )
+        VALUES
+          (
+            $1,
+            $2,
+            'aircraft',
+            'info',
+            'AIRCRAFT ACQUIRED',
+            $3,
+            'aircraft_market_listings',
+            $4,
+            $5,
+            NOW(),
+            NOW()
+          ),
+          (
+            $6,
+            $7,
+            'aircraft',
+            'info',
+            'SALE COMPLETED',
+            $8,
+            'aircraft_market_listings',
+            $4,
+            $5,
+            NOW(),
+            NOW()
+          )
+        ON CONFLICT (
+          airline_id,
+          alert_key
+        )
+        WHERE deleted_at IS NULL
+        DO NOTHING
+        `,
+        [
+          buyerAirlineId,
+
+          `AIRCRAFT_PURCHASE:${listingId}:${buyerAirlineId}`,
+
+          `Your company acquired ${aircraftName} from ${sellerAirlineName} for ${listing.currency} ${purchasePrice.toLocaleString("en-US")}.`,
+
+          String(listingId),
+          listing.current_sim_time,
+
+          sellerAirlineId,
+
+          `AIRCRAFT_SALE:${listingId}:${buyerAirlineId}`,
+
+          `${buyerAirlineName} purchased your ${aircraftName} for ${listing.currency} ${purchasePrice.toLocaleString("en-US")}.`
+        ]
+      );
+
+      await client.query("COMMIT");
+      transactionStarted = false;
+
+      return res.status(201).json({
+        ok: true,
+
+        endpoint:
+          "ACS_AIRLINE_AIRCRAFT_SALE",
+
+        version: "v1.0",
+
+        listing:
+          soldListingResult.rows[0],
+
+        aircraft:
+          transferredAircraftResult
+            .rows[0],
+
+        transaction: {
+          seller_airline_id:
+            sellerAirlineId,
+
+          buyer_airline_id:
+            buyerAirlineId,
+
+          purchase_price:
+            purchasePrice,
+
+          broker_commission:
+            commissionAmount,
+
+          seller_net_proceeds:
+            sellerNetProceeds,
+
+          currency:
+            listing.currency,
+
+          previous_registration:
+            listing.previous_registration,
+
+          new_registration:
+            newRegistration
+        }
+      });
+
+    } catch (error) {
+      if (transactionStarted) {
+        try {
+          await client.query(
+            "ROLLBACK"
+          );
+        } catch (_) {}
+      }
+
+      console.error(
+        "ACS AIRLINE AIRCRAFT SALE ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        ok: false,
+        error:
+          "AIRLINE_AIRCRAFT_SALE_FAILED",
+        details:
+          error?.message ||
+          "Aircraft sale transaction failed."
+      });
+
+    } finally {
+      client.release();
+    }
+  }
+);
+
+/* ============================================================
    🟨 ACS AIRCRAFT MARKET LISTING — CANCEL OFFER v1.0
    ------------------------------------------------------------
    Route:
@@ -7359,42 +8245,111 @@ router.post(
       */
 
       const aircraftResult =
-        await client.query(
-          `
-          UPDATE public.aircraft_fleet
-          SET
-            status = 'ACTIVE',
-            registration = $3,
-            updated_at = NOW()
-          WHERE id = $1
-            AND airline_id = $2
-            AND ownership_type = 'OWNED'
-            AND status = $4
-          RETURNING
-            id,
-            airline_id,
-            ownership_type,
-            status,
-            operational_status,
-            maintenance_status,
-            registration,
-            base_icao,
-            current_airport,
-            updated_at
-          `,
-          [
-            listing.aircraft_id,
-            airlineId,
-            newRegistration,
-            expectedAircraftStatus
-          ]
-        );
+  await client.query(
+    `
+    UPDATE public.aircraft_fleet af
+    SET
+      status = CASE
+        WHEN EXISTS (
+          SELECT 1
+          FROM public.aircraft_maintenance_events ame
+          WHERE ame.aircraft_id = af.id
+            AND ame.event_status = 'IN_PROGRESS'
+        )
+          THEN 'MAINTENANCE'
 
-      if (!aircraftResult.rows.length) {
-        throw new Error(
-          "AIRCRAFT_MARKET_RETURN_FAILED"
-        );
-      }
+        WHEN COALESCE(
+          (
+            SELECT
+              ams.maintenance_control_status
+            FROM public.aircraft_maintenance_status ams
+            WHERE ams.aircraft_id = af.id
+              AND ams.airline_id = af.airline_id
+            LIMIT 1
+          ),
+          'SERVICEABLE'
+        ) = 'MAINTENANCE_REQUIRED'
+          THEN 'GROUNDED'
+
+        ELSE 'ACTIVE'
+      END,
+
+      operational_status = CASE
+        WHEN EXISTS (
+          SELECT 1
+          FROM public.aircraft_maintenance_events ame
+          WHERE ame.aircraft_id = af.id
+            AND ame.event_status = 'IN_PROGRESS'
+        )
+          THEN 'IN_MAINTENANCE'
+
+        WHEN COALESCE(
+          (
+            SELECT
+              ams.maintenance_control_status
+            FROM public.aircraft_maintenance_status ams
+            WHERE ams.aircraft_id = af.id
+              AND ams.airline_id = af.airline_id
+            LIMIT 1
+          ),
+          'SERVICEABLE'
+        ) = 'MAINTENANCE_REQUIRED'
+          THEN 'UNAVAILABLE'
+
+        ELSE 'AVAILABLE'
+      END,
+
+      maintenance_status = CASE
+        WHEN COALESCE(
+          (
+            SELECT
+              ams.maintenance_control_status
+            FROM public.aircraft_maintenance_status ams
+            WHERE ams.aircraft_id = af.id
+              AND ams.airline_id = af.airline_id
+            LIMIT 1
+          ),
+          'SERVICEABLE'
+        ) IN (
+          'MAINTENANCE_REQUIRED',
+          'IN_MAINTENANCE'
+        )
+          THEN 'CHECK_REQUIRED'
+
+        ELSE 'SERVICEABLE'
+      END,
+
+      registration = $3,
+      updated_at = NOW()
+
+    WHERE af.id = $1
+      AND af.airline_id = $2
+      AND af.ownership_type = 'OWNED'
+
+    RETURNING
+      af.id,
+      af.airline_id,
+      af.ownership_type,
+      af.status,
+      af.operational_status,
+      af.maintenance_status,
+      af.registration,
+      af.base_icao,
+      af.current_airport,
+      af.updated_at
+    `,
+    [
+      listing.aircraft_id,
+      airlineId,
+      newRegistration
+    ]
+  );
+
+if (!aircraftResult.rows.length) {
+  throw new Error(
+    "AIRCRAFT_MARKET_RETURN_FAILED"
+  );
+}
 
       await client.query("COMMIT");
 
