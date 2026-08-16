@@ -126,15 +126,26 @@ function ACS_buildDiagnostic({
       ),
 
       ...(
-        row.closed_flight_sets !== undefined
-          ? {
-              closedFlightSets:
-                ACS_toNumber(
-                  row.closed_flight_sets
-                )
-            }
-          : {}
-      )
+  row.closed_flight_sets !== undefined
+    ? {
+        closedFlightSets:
+          ACS_toNumber(
+            row.closed_flight_sets
+          )
+      }
+    : {}
+),
+
+...(
+  row.affected_airlines !== undefined
+    ? {
+        affectedAirlines:
+          ACS_toNumber(
+            row.affected_airlines
+          )
+      }
+    : {}
+)
     }
   };
 }
@@ -299,11 +310,12 @@ async function ACS_detectClosedFinanceDetail(
 ) {
   const result = await client.query(`
     WITH eligible AS MATERIALIZED (
-      SELECT
-        log.id,
-        log.timestamp,
-        log.reference_uid
-      FROM public.finance_log log
+     SELECT
+     log.id,
+     log.airline_id,
+     log.timestamp,
+     log.reference_uid
+     FROM public.finance_log log
       WHERE
         log.source = ANY(
           ARRAY[
@@ -383,12 +395,18 @@ async function ACS_detectClosedFinanceDetail(
       ) AS preview_fingerprint,
 
       COUNT(
-        DISTINCT SPLIT_PART(
-          reference_uid,
-          ':',
-          2
-        )
-      )::bigint AS closed_flight_sets,
+  DISTINCT LEFT(
+    reference_uid,
+    LENGTH(reference_uid) -
+    POSITION(
+      ':' IN REVERSE(reference_uid)
+    )
+  )
+)::bigint AS closed_flight_sets,
+
+COUNT(
+  DISTINCT airline_id
+)::bigint AS affected_airlines,
 
       PG_RELATION_SIZE(
         'public.finance_log'::regclass
