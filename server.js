@@ -40,6 +40,8 @@ import flightSettlementRoutes, {
   ACS_runFlightSettlementRuntime
 } from "./routes/flight_settlement.js";
 import occAlertsRoutes from "./routes/occ_alerts.js";
+import guardianRoutes from "./routes/guardian.js";
+
 import {
   registerACSRuntimeJobHandler,
   startACSRuntimeSupervisor,
@@ -380,6 +382,7 @@ app.use("/v1", bankRoutes);
 app.use("/v1", usersRoutes);
 app.use("/v1", scheduleRoutes);
 app.use("/v1", occAlertsRoutes);
+app.use("/v1", guardianRoutes);
 app.use("/v1/skytrack", skytrackRoutes);
 app.use("/v1/skytrack", skytrackGlobalRoutes);
 app.use("/v1/skytrack", skytrackSnapshotRoutes);
