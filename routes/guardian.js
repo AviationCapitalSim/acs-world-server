@@ -1,17 +1,25 @@
 /* ============================================================
    ACS OCC — SYSTEM GUARDIAN
    PRIVATE API
+   ------------------------------------------------------------
+   - Independent Guardian administrator access
+   - PostgreSQL storage monitoring
+   - Read-only cleanup diagnostics
+   - No automatic cleanup
    ============================================================ */
 
 import express from "express";
 import rateLimit from "express-rate-limit";
 
-import { pool }
-  from "../db/pool.js";
+import { pool } from "../db/pool.js";
 
 import {
   ACS_getGuardianStorageSnapshot
 } from "../services/acs_guardian_storage.js";
+
+import {
+  ACS_getGuardianDiagnostics
+} from "../services/acs_guardian_diagnostics.js";
 
 import {
   ACS_createInitialGuardianAdministrator,
@@ -49,12 +57,15 @@ const credentialLimiter = rateLimit({
 
   message: {
     ok: false,
-    error:
-      "GUARDIAN_CREDENTIAL_RATE_LIMIT"
+    error: "GUARDIAN_CREDENTIAL_RATE_LIMIT"
   }
 });
 
-function sendError(
+/* ============================================================
+   ERROR RESPONSE
+   ============================================================ */
+
+function ACS_sendGuardianError(
   res,
   error,
   fallback
@@ -80,21 +91,19 @@ router.use(
 );
 
 /* ============================================================
-   INITIAL SETUP STATUS
+   PUBLIC — INITIAL SETUP STATUS
    ============================================================ */
 
 router.get(
   "/guardian/setup-status",
-
   async (_req, res) => {
     try {
       const result =
         await ACS_getGuardianSetupStatus();
 
       return res.json(result);
-
     } catch (error) {
-      return sendError(
+      return ACS_sendGuardianError(
         res,
         error,
         "GUARDIAN_SETUP_STATUS_FAILED"
@@ -104,16 +113,12 @@ router.get(
 );
 
 /* ============================================================
-   CREATE FIRST GUARDIAN ADMINISTRATOR
-   ------------------------------------------------------------
-   Available only while no administrator exists.
-   Requires the temporary setup key.
+   PUBLIC — ONE-TIME ADMINISTRATOR SETUP
    ============================================================ */
 
 router.post(
   "/guardian/setup",
   credentialLimiter,
-
   async (req, res) => {
     try {
       const result =
@@ -137,9 +142,8 @@ router.post(
       return res
         .status(201)
         .json(result);
-
     } catch (error) {
-      return sendError(
+      return ACS_sendGuardianError(
         res,
         error,
         "GUARDIAN_SETUP_FAILED"
@@ -149,13 +153,12 @@ router.post(
 );
 
 /* ============================================================
-   GUARDIAN LOGIN
+   PUBLIC — GUARDIAN ACCESS
    ============================================================ */
 
 router.post(
   "/guardian/access",
   credentialLimiter,
-
   async (req, res) => {
     try {
       const result =
@@ -171,9 +174,8 @@ router.post(
         });
 
       return res.json(result);
-
     } catch (error) {
-      return sendError(
+      return ACS_sendGuardianError(
         res,
         error,
         "GUARDIAN_ACCESS_FAILED"
@@ -183,9 +185,7 @@ router.post(
 );
 
 /* ============================================================
-   PROTECTED ROUTES
-   ------------------------------------------------------------
-   Every route below requires a valid temporary Guardian token.
+   ALL ROUTES BELOW REQUIRE GUARDIAN ADMINISTRATOR ACCESS
    ============================================================ */
 
 router.use(
@@ -194,12 +194,11 @@ router.use(
 );
 
 /* ============================================================
-   CURRENT GUARDIAN SESSION
+   PRIVATE — CURRENT SESSION
    ============================================================ */
 
 router.get(
   "/guardian/session",
-
   async (req, res) => {
     return res.json({
       ok: true,
@@ -214,12 +213,11 @@ router.get(
 );
 
 /* ============================================================
-   GUARDIAN LOGOUT
+   PRIVATE — LOGOUT
    ============================================================ */
 
 router.post(
   "/guardian/logout",
-
   async (req, res) => {
     try {
       await ACS_revokeGuardianAccess({
@@ -238,9 +236,8 @@ router.post(
         status:
           "GUARDIAN_ACCESS_CLOSED"
       });
-
     } catch (error) {
-      return sendError(
+      return ACS_sendGuardianError(
         res,
         error,
         "GUARDIAN_LOGOUT_FAILED"
@@ -250,21 +247,19 @@ router.post(
 );
 
 /* ============================================================
-   STORAGE MONITOR
+   PRIVATE — STORAGE SNAPSHOT
    ============================================================ */
 
 router.get(
   "/guardian/storage",
-
   async (_req, res) => {
     try {
-      const snapshot =
+      const storage =
         await ACS_getGuardianStorageSnapshot();
 
-      return res.json(snapshot);
-
+      return res.json(storage);
     } catch (error) {
-      return sendError(
+      return ACS_sendGuardianError(
         res,
         error,
         "GUARDIAN_STORAGE_FAILED"
@@ -274,22 +269,53 @@ router.get(
 );
 
 /* ============================================================
-   GUARDIAN DASHBOARD
+   PRIVATE — READ-ONLY CLEANUP DIAGNOSTICS
    ------------------------------------------------------------
-   Read-only. No cleanup action is executed here.
+   This endpoint identifies eligible historical rows.
+
+   It does not:
+   - delete rows
+   - truncate tables
+   - vacuum tables
+   - reindex tables
+   - create cleanup actions
+   ============================================================ */
+
+router.get(
+  "/guardian/diagnostics",
+  async (_req, res) => {
+    try {
+      const diagnostics =
+        await ACS_getGuardianDiagnostics();
+
+      return res.json(diagnostics);
+    } catch (error) {
+      return ACS_sendGuardianError(
+        res,
+        error,
+        "GUARDIAN_DIAGNOSTICS_FAILED"
+      );
+    }
+  }
+);
+
+/* ============================================================
+   PRIVATE — COMPLETE GUARDIAN DASHBOARD
    ============================================================ */
 
 router.get(
   "/guardian/dashboard",
-
   async (_req, res) => {
     try {
       const [
         storage,
+        diagnostics,
         policiesResult,
         alertsResult
       ] = await Promise.all([
         ACS_getGuardianStorageSnapshot(),
+
+        ACS_getGuardianDiagnostics(),
 
         pool.query(`
           SELECT
@@ -300,10 +326,8 @@ router.get(
             warning_volume_percent,
             critical_volume_percent,
             updated_at
-
           FROM
             public.acs_guardian_cleanup_policies
-
           ORDER BY
             action_type
         `),
@@ -320,12 +344,10 @@ router.get(
             status,
             first_seen_at,
             last_seen_at
-
           FROM
             public.acs_guardian_alerts
-
-          WHERE status = 'OPEN'
-
+          WHERE
+            status = 'OPEN'
           ORDER BY
             CASE severity
               WHEN 'CRITICAL' THEN 1
@@ -344,6 +366,9 @@ router.get(
 
         storage,
 
+        diagnostics:
+          diagnostics.diagnostics,
+
         policies:
           policiesResult.rows,
 
@@ -352,9 +377,8 @@ router.get(
 
         automaticCleanup: false
       });
-
     } catch (error) {
-      return sendError(
+      return ACS_sendGuardianError(
         res,
         error,
         "GUARDIAN_DASHBOARD_FAILED"
@@ -364,12 +388,11 @@ router.get(
 );
 
 /* ============================================================
-   GUARDIAN AUDIT
+   PRIVATE — GUARDIAN AUDIT
    ============================================================ */
 
 router.get(
   "/guardian/audit",
-
   async (_req, res) => {
     try {
       const result =
@@ -384,21 +407,16 @@ router.get(
             audit.source_ip,
             audit.details,
             audit.created_at
-
           FROM
-            public.acs_guardian_audit_log
-              audit
-
+            public.acs_guardian_audit_log audit
           LEFT JOIN
             public.acs_guardian_administrators
               administrator
-
-            ON administrator.id =
-               audit.administrator_id
-
+            ON
+              administrator.id =
+                audit.administrator_id
           ORDER BY
             audit.created_at DESC
-
           LIMIT 100
         `);
 
@@ -406,9 +424,8 @@ router.get(
         ok: true,
         audit: result.rows
       });
-
     } catch (error) {
-      return sendError(
+      return ACS_sendGuardianError(
         res,
         error,
         "GUARDIAN_AUDIT_FAILED"
