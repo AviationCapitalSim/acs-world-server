@@ -1,9 +1,6 @@
 /* ============================================================
    ACS OCC — SYSTEM GUARDIAN
-   PRIVATE API ROUTES
-   ------------------------------------------------------------
-   Final route prefix after server registration:
-   /v1/guardian
+   PRIVATE API
    ============================================================ */
 
 import express from "express";
@@ -12,10 +9,13 @@ import rateLimit from "express-rate-limit";
 import { pool }
   from "../db/pool.js";
 
-import { requireAuth }
-  from "../middleware/auth.js";
+import {
+  ACS_getGuardianStorageSnapshot
+} from "../services/acs_guardian_storage.js";
 
 import {
+  ACS_createInitialGuardianAdministrator,
+  ACS_getGuardianSetupStatus,
   ACS_getRequestIP,
   ACS_issueGuardianAccess,
   ACS_readBearerToken,
@@ -23,35 +23,44 @@ import {
   ACS_revokeGuardianAccess
 } from "../services/acs_guardian_security.js";
 
-import {
-  ACS_getGuardianStorageSnapshot
-} from "../services/acs_guardian_storage.js";
-
 const router = express.Router();
 
 /* ============================================================
-   GUARDIAN ACCESS RATE LIMIT
+   RATE LIMITS
    ============================================================ */
 
-const guardianAccessLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 5,
+const generalLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
   standardHeaders: true,
   legacyHeaders: false,
 
   message: {
     ok: false,
-    error: "GUARDIAN_ACCESS_RATE_LIMIT"
+    error: "GUARDIAN_RATE_LIMIT"
   }
 });
 
-function ACS_guardianErrorResponse(
+const credentialLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+
+  message: {
+    ok: false,
+    error:
+      "GUARDIAN_CREDENTIAL_RATE_LIMIT"
+  }
+});
+
+function sendError(
   res,
   error,
-  fallbackCode
+  fallback
 ) {
   console.error(
-    `[ACS Guardian] ${fallbackCode}:`,
+    `[ACS Guardian] ${fallback}:`,
     error.message
   );
 
@@ -61,27 +70,98 @@ function ACS_guardianErrorResponse(
       ok: false,
       error:
         error.message ||
-        fallbackCode
+        fallback
     });
 }
 
+router.use(
+  "/guardian",
+  generalLimiter
+);
+
 /* ============================================================
-   REAUTHENTICATE AND OPEN GUARDIAN
+   INITIAL SETUP STATUS
+   ============================================================ */
+
+router.get(
+  "/guardian/setup-status",
+
+  async (_req, res) => {
+    try {
+      const result =
+        await ACS_getGuardianSetupStatus();
+
+      return res.json(result);
+
+    } catch (error) {
+      return sendError(
+        res,
+        error,
+        "GUARDIAN_SETUP_STATUS_FAILED"
+      );
+    }
+  }
+);
+
+/* ============================================================
+   CREATE FIRST GUARDIAN ADMINISTRATOR
    ------------------------------------------------------------
-   A valid ACS session is required before checking the password.
-   The returned Guardian token expires after 30 minutes.
+   Available only while no administrator exists.
+   Requires the temporary setup key.
+   ============================================================ */
+
+router.post(
+  "/guardian/setup",
+  credentialLimiter,
+
+  async (req, res) => {
+    try {
+      const result =
+        await ACS_createInitialGuardianAdministrator({
+          email:
+            req.body?.email,
+
+          displayName:
+            req.body?.displayName,
+
+          password:
+            req.body?.password,
+
+          setupKey:
+            req.body?.setupKey,
+
+          sourceIP:
+            ACS_getRequestIP(req)
+        });
+
+      return res
+        .status(201)
+        .json(result);
+
+    } catch (error) {
+      return sendError(
+        res,
+        error,
+        "GUARDIAN_SETUP_FAILED"
+      );
+    }
+  }
+);
+
+/* ============================================================
+   GUARDIAN LOGIN
    ============================================================ */
 
 router.post(
   "/guardian/access",
-  guardianAccessLimiter,
-  requireAuth,
+  credentialLimiter,
 
   async (req, res) => {
     try {
       const result =
         await ACS_issueGuardianAccess({
-          userId: req.user_id,
+          email:
+            req.body?.email,
 
           password:
             req.body?.password,
@@ -90,12 +170,10 @@ router.post(
             ACS_getRequestIP(req)
         });
 
-      return res
-        .status(200)
-        .json(result);
+      return res.json(result);
 
     } catch (error) {
-      return ACS_guardianErrorResponse(
+      return sendError(
         res,
         error,
         "GUARDIAN_ACCESS_FAILED"
@@ -105,18 +183,48 @@ router.post(
 );
 
 /* ============================================================
-   CLOSE CURRENT GUARDIAN ACCESS
+   PROTECTED ROUTES
+   ------------------------------------------------------------
+   Every route below requires a valid temporary Guardian token.
+   ============================================================ */
+
+router.use(
+  "/guardian",
+  ACS_requireGuardianAccess
+);
+
+/* ============================================================
+   CURRENT GUARDIAN SESSION
+   ============================================================ */
+
+router.get(
+  "/guardian/session",
+
+  async (req, res) => {
+    return res.json({
+      ok: true,
+
+      administrator:
+        req.guardian_administrator,
+
+      expiresAt:
+        req.guardian_access_expires_at
+    });
+  }
+);
+
+/* ============================================================
+   GUARDIAN LOGOUT
    ============================================================ */
 
 router.post(
   "/guardian/logout",
-  requireAuth,
-  ACS_requireGuardianAccess,
 
   async (req, res) => {
     try {
       await ACS_revokeGuardianAccess({
-        userId: req.user_id,
+        administratorId:
+          req.guardian_administrator.id,
 
         rawToken:
           ACS_readBearerToken(req),
@@ -125,14 +233,14 @@ router.post(
           ACS_getRequestIP(req)
       });
 
-      return res.status(200).json({
+      return res.json({
         ok: true,
         status:
           "GUARDIAN_ACCESS_CLOSED"
       });
 
     } catch (error) {
-      return ACS_guardianErrorResponse(
+      return sendError(
         res,
         error,
         "GUARDIAN_LOGOUT_FAILED"
@@ -142,25 +250,21 @@ router.post(
 );
 
 /* ============================================================
-   READ-ONLY STORAGE SNAPSHOT
+   STORAGE MONITOR
    ============================================================ */
 
 router.get(
   "/guardian/storage",
-  requireAuth,
-  ACS_requireGuardianAccess,
 
   async (_req, res) => {
     try {
       const snapshot =
         await ACS_getGuardianStorageSnapshot();
 
-      return res
-        .status(200)
-        .json(snapshot);
+      return res.json(snapshot);
 
     } catch (error) {
-      return ACS_guardianErrorResponse(
+      return sendError(
         res,
         error,
         "GUARDIAN_STORAGE_FAILED"
@@ -170,16 +274,13 @@ router.get(
 );
 
 /* ============================================================
-   GUARDIAN DASHBOARD DATA
+   GUARDIAN DASHBOARD
    ------------------------------------------------------------
-   Combines storage, configured policies and active alerts.
-   It does not run cleanup actions.
+   Read-only. No cleanup action is executed here.
    ============================================================ */
 
 router.get(
   "/guardian/dashboard",
-  requireAuth,
-  ACS_requireGuardianAccess,
 
   async (_req, res) => {
     try {
@@ -235,21 +336,25 @@ router.get(
         `)
       ]);
 
-      return res.status(200).json({
+      return res.json({
         ok: true,
+
         capturedAt:
           storage.capturedAt,
 
         storage,
+
         policies:
           policiesResult.rows,
 
         alerts:
-          alertsResult.rows
+          alertsResult.rows,
+
+        automaticCleanup: false
       });
 
     } catch (error) {
-      return ACS_guardianErrorResponse(
+      return sendError(
         res,
         error,
         "GUARDIAN_DASHBOARD_FAILED"
@@ -259,43 +364,51 @@ router.get(
 );
 
 /* ============================================================
-   RECENT GUARDIAN AUDIT
+   GUARDIAN AUDIT
    ============================================================ */
 
 router.get(
   "/guardian/audit",
-  requireAuth,
-  ACS_requireGuardianAccess,
 
   async (_req, res) => {
     try {
       const result =
         await pool.query(`
           SELECT
-            id,
-            user_id,
-            event_type,
-            action_id,
-            source_ip,
-            details,
-            created_at
+            audit.id,
+            audit.administrator_id,
+            administrator.display_name,
+            administrator.email,
+            audit.event_type,
+            audit.action_id,
+            audit.source_ip,
+            audit.details,
+            audit.created_at
 
           FROM
             public.acs_guardian_audit_log
+              audit
+
+          LEFT JOIN
+            public.acs_guardian_administrators
+              administrator
+
+            ON administrator.id =
+               audit.administrator_id
 
           ORDER BY
-            created_at DESC
+            audit.created_at DESC
 
           LIMIT 100
         `);
 
-      return res.status(200).json({
+      return res.json({
         ok: true,
         audit: result.rows
       });
 
     } catch (error) {
-      return ACS_guardianErrorResponse(
+      return sendError(
         res,
         error,
         "GUARDIAN_AUDIT_FAILED"
