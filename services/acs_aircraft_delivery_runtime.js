@@ -792,8 +792,9 @@ async function ACS_deliveryProcessOrder(orderId) {
           0,
           100,
           'SERVICEABLE',
-          $12,
-          $12,
+                    
+          $12::BIGINT,
+          $12::BIGINT,
 
           CASE
             WHEN $3 = 'OWNED'
@@ -809,14 +810,15 @@ async function ACS_deliveryProcessOrder(orderId) {
 
           CASE
             WHEN $3 = 'OWNED'
-              THEN $12
+              THEN $12::BIGINT
             ELSE 0
           END,
 
           CASE
             WHEN $3 = 'OWNED'
               THEN ROUND(
-                $12::INTEGER * 0.05
+                ($12::BIGINT)::NUMERIC *
+                0.05::NUMERIC
               )::BIGINT
             ELSE 0
           END,
@@ -827,6 +829,20 @@ async function ACS_deliveryProcessOrder(orderId) {
             ELSE 0
           END,
 
+          CASE
+            WHEN $3 = 'OWNED'
+              THEN $11::TIMESTAMP
+            ELSE NULL
+          END,
+
+          0,
+
+          CASE
+            WHEN $3 = 'OWNED'
+              THEN $12::BIGINT
+            ELSE 0
+          END,
+          
           CASE
             WHEN $3 = 'OWNED'
               THEN $11::TIMESTAMP
