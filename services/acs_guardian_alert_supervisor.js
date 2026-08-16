@@ -39,6 +39,7 @@ const ACS_GUARDIAN_ALERT_KEYS =
 
 let ACS_guardianAlertTimer = null;
 let ACS_guardianAlertScanRunning = false;
+let ACS_guardianAlertIntervalSeconds = 900;
 
 function ACS_toNumber(
   value,
@@ -135,6 +136,105 @@ async function ACS_readVolumeThresholds(
         90
       )
   };
+}
+
+async function ACS_markSupervisorRunning(
+  client
+) {
+  await client.query(
+    `
+    UPDATE
+      public.acs_guardian_supervisor_state
+    SET
+      enabled = TRUE,
+      status = 'RUNNING',
+      scan_interval_seconds = $2,
+      last_started_at =
+        CURRENT_TIMESTAMP,
+      last_error = NULL,
+      automatic_cleanup = FALSE,
+      updated_at =
+        CURRENT_TIMESTAMP
+    WHERE
+      supervisor_key = $1
+    `,
+    [
+      "GUARDIAN_ALERT_SCAN",
+      ACS_guardianAlertIntervalSeconds
+    ]
+  );
+}
+
+async function ACS_markSupervisorSuccess(
+  client,
+  activeAlertCount,
+  transitions
+) {
+  await client.query(
+    `
+    UPDATE
+      public.acs_guardian_supervisor_state
+    SET
+      enabled = TRUE,
+      status = 'SUCCESS',
+      scan_interval_seconds = $2,
+      last_completed_at =
+        CURRENT_TIMESTAMP,
+      last_success_at =
+        CURRENT_TIMESTAMP,
+      last_error = NULL,
+      active_alert_count = $3,
+      last_opened_count = $4,
+      last_resolved_count = $5,
+      automatic_cleanup = FALSE,
+      updated_at =
+        CURRENT_TIMESTAMP
+    WHERE
+      supervisor_key = $1
+    `,
+    [
+      "GUARDIAN_ALERT_SCAN",
+      ACS_guardianAlertIntervalSeconds,
+      activeAlertCount,
+      transitions.openedKeys.length,
+      transitions.resolvedKeys.length
+    ]
+  );
+}
+
+async function ACS_markSupervisorFailure(
+  client,
+  error
+) {
+  await client.query(
+    `
+    UPDATE
+      public.acs_guardian_supervisor_state
+    SET
+      enabled = TRUE,
+      status = 'FAILED',
+      last_completed_at =
+        CURRENT_TIMESTAMP,
+      last_failure_at =
+        CURRENT_TIMESTAMP,
+      last_error = $2,
+      automatic_cleanup = FALSE,
+      updated_at =
+        CURRENT_TIMESTAMP
+    WHERE
+      supervisor_key = $1
+    `,
+    [
+      "GUARDIAN_ALERT_SCAN",
+
+      String(
+        error?.stack ||
+        error?.message ||
+        error ||
+        "UNKNOWN_ERROR"
+      ).slice(0, 2000)
+    ]
+  );
 }
 
 async function ACS_publishGuardianAlerts(
@@ -356,6 +456,10 @@ ACS_runGuardianAlertScan() {
       };
     }
 
+    await ACS_markSupervisorRunning(
+     lockClient
+    );   
+     
     const [
       storage,
       diagnostics,
@@ -448,6 +552,12 @@ ACS_runGuardianAlertScan() {
 
     await lockClient.query("COMMIT");
 
+    await ACS_markSupervisorSuccess(
+    lockClient,
+    activeAlerts.length,
+    transitions
+    );
+
     const processedCount =
       transitions.openedKeys.length +
       transitions.resolvedKeys.length;
@@ -477,6 +587,20 @@ ACS_runGuardianAlertScan() {
       // Nothing else is modified.
     }
 
+     if (lockAcquired) {
+  try {
+    await ACS_markSupervisorFailure(
+      lockClient,
+      error
+    );
+  } catch (stateError) {
+    console.error(
+      "[ACS Guardian] Failed to publish supervisor state:",
+      stateError
+    );
+  }
+}
+   
     console.error(
       "[ACS Guardian] Alert scan failed:",
       error
@@ -536,6 +660,11 @@ startACSGuardianAlertSupervisor({
       ? Math.floor(intervalMs)
       : 900000;
 
+  ACS_guardianAlertIntervalSeconds =
+  Math.floor(
+    normalizedInterval / 1000
+  );
+   
   void ACS_runGuardianAlertScan()
     .catch(() => {});
 
