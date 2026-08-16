@@ -3452,49 +3452,58 @@ const financeAfterResult = await client.query(
         usage_factor: usageFactor
       }
     });
-} catch (err) {
+
+  } catch (err) {
   try {
     await client.query("ROLLBACK");
-  } catch (_) {}
+   } catch (err) {
+    try {
+      await client.query(
+        "ROLLBACK"
+      );
+       
+    } catch (_) {}
 
-  if (
-    err?.message ===
-      "AIRCRAFT_COMMERCIAL_HOLD" ||
-    err?.code === "23514"
-  ) {
-    return res.status(409).json({
+    if (
+      err?.message ===
+        "AIRCRAFT_COMMERCIAL_HOLD" ||
+      (
+        err?.code === "23514" &&
+        String(
+          err?.message || ""
+        ).includes(
+          "AIRCRAFT_COMMERCIAL_HOLD"
+        )
+      )
+    ) {
+      return res.status(409).json({
+        ok: false,
+
+        error:
+          "AIRCRAFT_COMMERCIAL_HOLD",
+
+        message:
+          "Maintenance cannot be started while the aircraft is ON SALE or ON LEASE."
+      });
+    }
+
+    console.error(
+      "ACS START MAINTENANCE ERROR:",
+      err
+    );
+
+    return res.status(500).json({
       ok: false,
+
       error:
-        "AIRCRAFT_COMMERCIAL_HOLD",
-      message:
-        "Maintenance cannot be started while the aircraft is ON SALE or ON LEASE."
-    });
-  }
+        "START_MAINTENANCE_FAILED",
 
-  console.error(
-    "ACS START MAINTENANCE ERROR:",
-    err
-  );
-
-  return res.status(500).json({
-    ok: false,
-    error:
-      "START_MAINTENANCE_FAILED",
-    details:
-      err?.message ||
-      "Maintenance could not be started."
-  });
-
-} finally {
-  client.release();
-}
-   
-      ok: false,
-      error: "START_MAINTENANCE_FAILED",
-      details: err.message
+      details:
+        err?.message ||
+        "Maintenance could not be started."
     });
 
-    } finally {
+  } finally {
     client.release();
   }
 }
