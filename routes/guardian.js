@@ -22,6 +22,10 @@ import {
 } from "../services/acs_guardian_diagnostics.js";
 
 import {
+  ACS_createGuardianActionPreview
+} from "../services/acs_guardian_action_preview.js";
+
+import {
   ACS_createInitialGuardianAdministrator,
   ACS_getGuardianSetupStatus,
   ACS_getRequestIP,
@@ -294,6 +298,42 @@ router.get(
         res,
         error,
         "GUARDIAN_DIAGNOSTICS_FAILED"
+      );
+    }
+  }
+);
+
+/* ============================================================
+   PRIVATE — SUPERVISED CLEANUP PREVIEW
+   ------------------------------------------------------------
+   Creates a temporary proposal only.
+   No cleanup execution exists in this route.
+   ============================================================ */
+
+router.post(
+  "/guardian/actions/preview",
+  async (req, res) => {
+    try {
+      const result =
+        await ACS_createGuardianActionPreview({
+          actionType:
+            req.body?.actionType,
+
+          administratorId:
+            req.guardian_administrator.id,
+
+          sourceIP:
+            ACS_getRequestIP(req)
+        });
+
+      return res
+        .status(201)
+        .json(result);
+    } catch (error) {
+      return ACS_sendGuardianError(
+        res,
+        error,
+        "GUARDIAN_ACTION_PREVIEW_FAILED"
       );
     }
   }
