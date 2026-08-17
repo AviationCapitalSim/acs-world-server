@@ -453,3 +453,185 @@ ACS_createGuardianActionPreview({
     client.release();
   }
 }
+
+/* ============================================================
+   CANCEL SUPERVISED ACTION PREVIEW
+   ------------------------------------------------------------
+   Cancels only a temporary Guardian preview.
+
+   It does not:
+   - execute cleanup
+   - delete operational rows
+   - modify ACS operational tables
+   ============================================================ */
+
+export async function ACS_cancelGuardianActionPreview({
+  actionId,
+  administratorId,
+  sourceIP = null
+}) {
+  const normalizedActionId = Number(actionId);
+  const normalizedAdministratorId = Number(
+    administratorId
+  );
+
+  if (
+    !Number.isSafeInteger(normalizedActionId) ||
+    normalizedActionId <= 0
+  ) {
+    throw ACS_previewError(
+      "GUARDIAN_ACTION_ID_INVALID",
+      400
+    );
+  }
+
+  if (
+    !Number.isSafeInteger(normalizedAdministratorId) ||
+    normalizedAdministratorId <= 0
+  ) {
+    throw ACS_previewError(
+      "GUARDIAN_ADMINISTRATOR_INVALID",
+      401
+    );
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const cancelled = await client.query(
+      `
+      UPDATE public.acs_guardian_actions
+      SET
+        status = 'CANCELLED'
+      WHERE
+        id = $1
+        AND requested_by_administrator_id = $2
+        AND status = 'PREVIEWED'
+        AND expires_at > CURRENT_TIMESTAMP
+      RETURNING
+        id,
+        action_type,
+        status,
+        expires_at,
+        created_at
+      `,
+      [
+        normalizedActionId,
+        normalizedAdministratorId
+      ]
+    );
+
+    if (!cancelled.rows.length) {
+      const current = await client.query(
+        `
+        SELECT
+          status,
+          expires_at
+        FROM
+          public.acs_guardian_actions
+        WHERE
+          id = $1
+          AND requested_by_administrator_id = $2
+        `,
+        [
+          normalizedActionId,
+          normalizedAdministratorId
+        ]
+      );
+
+      if (!current.rows.length) {
+        throw ACS_previewError(
+          "GUARDIAN_ACTION_NOT_FOUND",
+          404
+        );
+      }
+
+      if (
+        new Date(
+          current.rows[0].expires_at
+        ).getTime() <= Date.now()
+      ) {
+        throw ACS_previewError(
+          "GUARDIAN_ACTION_PREVIEW_EXPIRED",
+          409
+        );
+      }
+
+      throw ACS_previewError(
+        "GUARDIAN_ACTION_NOT_PREVIEWED",
+        409
+      );
+    }
+
+    const savedAction = cancelled.rows[0];
+
+    await client.query(
+      `
+      INSERT INTO public.acs_guardian_audit_log (
+        administrator_id,
+        event_type,
+        action_id,
+        source_ip,
+        details
+      )
+      VALUES (
+        $1,
+        'GUARDIAN_ACTION_PREVIEW_CANCELLED',
+        $2,
+        $3,
+        $4::jsonb
+      )
+      `,
+      [
+        normalizedAdministratorId,
+        savedAction.id,
+        sourceIP,
+        JSON.stringify({
+          actionType:
+            savedAction.action_type,
+
+          executionPerformed:
+            false,
+
+          automaticCleanup:
+            false
+        })
+      ]
+    );
+
+    await client.query("COMMIT");
+
+    return {
+      ok: true,
+
+      action: {
+        id:
+          savedAction.id,
+
+        actionType:
+          savedAction.action_type,
+
+        status:
+          savedAction.status,
+
+        expiresAt:
+          savedAction.expires_at,
+
+        executionPerformed:
+          false
+      }
+    };
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (_) {
+      // The original error is preserved.
+    }
+
+    throw error;
+  } finally {
+    client.release();
+  }
+}
