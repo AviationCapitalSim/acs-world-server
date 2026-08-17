@@ -22,6 +22,7 @@ import {
 } from "../services/acs_guardian_diagnostics.js";
 
 import {
+  ACS_cancelGuardianActionPreview,
   ACS_createGuardianActionPreview
 } from "../services/acs_guardian_action_preview.js";
 
@@ -334,6 +335,41 @@ router.post(
         res,
         error,
         "GUARDIAN_ACTION_PREVIEW_FAILED"
+      );
+    }
+  }
+);
+
+/* ============================================================
+   PRIVATE — CANCEL ACTION PREVIEW
+   ------------------------------------------------------------
+   Cancels a temporary supervised proposal.
+
+   It does not execute cleanup or modify operational ACS data.
+   ============================================================ */
+
+router.post(
+  "/guardian/actions/:actionId/cancel",
+  async (req, res) => {
+    try {
+      const result =
+        await ACS_cancelGuardianActionPreview({
+          actionId:
+            req.params.actionId,
+
+          administratorId:
+            req.guardian_administrator.id,
+
+          sourceIP:
+            ACS_getRequestIP(req)
+        });
+
+      return res.json(result);
+    } catch (error) {
+      return ACS_sendGuardianError(
+        res,
+        error,
+        "GUARDIAN_ACTION_CANCEL_FAILED"
       );
     }
   }
