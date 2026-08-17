@@ -2933,6 +2933,7 @@ async function ACS_startCDMaintenance(req, res) {
         af.manufacturer,
         af.model_key,
         af.source,
+        af.ownership_type,
         af.year_built,
         af.total_hours,
         af.total_cycles,
