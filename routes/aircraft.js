@@ -3336,6 +3336,7 @@ const financeAfterResult = await client.query(
         finance_charged,
         finance_log_id,
         notes,
+        start_source,
         created_at,
         updated_at
       )
@@ -3353,6 +3354,7 @@ const financeAfterResult = await client.query(
         TRUE,
         $7,
         $8,
+        $9,
         (CURRENT_TIMESTAMP AT TIME ZONE 'UTC'),
         (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
       )
@@ -3382,7 +3384,8 @@ const financeAfterResult = await client.query(
           cost_rate: costRate,
           condition_factor: conditionFactor,
           usage_factor: usageFactor
-        })
+        }),
+        startSource
       ]
     );
      
@@ -3424,19 +3427,36 @@ const financeAfterResult = await client.query(
   ]
 );
      
-    const updatedAircraftResult = await client.query(
+        const updatedAircraftResult = await client.query(
       `
-      UPDATE aircraft_fleet
+      UPDATE public.aircraft_fleet
       SET
-        status = 'MAINTENANCE',
-        operational_status = 'IN_MAINTENANCE',
+        status = CASE
+          WHEN $3::BOOLEAN = TRUE
+            THEN 'FOR_SALE'
+          ELSE 'MAINTENANCE'
+        END,
+
+        operational_status = CASE
+          WHEN $3::BOOLEAN = TRUE
+            THEN 'UNAVAILABLE'
+          ELSE 'IN_MAINTENANCE'
+        END,
+
         maintenance_status = 'CHECK_REQUIRED',
-        updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+        updated_at =
+          (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+
       WHERE id = $1
         AND airline_id = $2
+
       RETURNING *
       `,
-      [aircraftId, airlineId]
+      [
+        aircraftId,
+        airlineId,
+        isManualOnSaleCD
+      ]
     );
 
     await client.query("COMMIT");
