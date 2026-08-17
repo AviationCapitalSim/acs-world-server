@@ -7070,9 +7070,22 @@ const systemRefresh = {
           ams.maintenance_control_status,
           ams.maintenance_control_reason,
 
+          (
+            active_cd.id IS NOT NULL
+          ) AS active_cd_maintenance,
+
+          active_cd.check_type
+            AS active_cd_check_type,
+
+          CASE
+            WHEN active_cd.id IS NOT NULL
+              THEN 'TEMPORARILY UNAVAILABLE'
+            ELSE 'AVAILABLE'
+          END AS commercial_availability_status,
+
           NULL::INTEGER
             AS reserved_by_airline_id,
-
+           
           NULL::INTEGER
             AS sold_to_airline_id,
 
@@ -7121,10 +7134,10 @@ const systemRefresh = {
 
           (
             aml.listing_type = 'SALE'
-            AND
-            aml.seller_airline_id <> $1
+            AND aml.seller_airline_id <> $1
+            AND active_cd.id IS NULL
           ) AS available_for_purchase,
-
+          
           (
             aml.listing_type = 'LEASE'
             AND
@@ -7166,9 +7179,33 @@ const systemRefresh = {
           public.aircraft_catalog ac
           ON ac.model_key = af.model_key
 
-         LEFT JOIN
+                 LEFT JOIN
           public.aircraft_maintenance_status ams
           ON ams.aircraft_id = af.id
+         AND ams.airline_id = af.airline_id
+
+        LEFT JOIN LATERAL (
+          SELECT
+            ame.id,
+            ame.check_type
+          FROM public.aircraft_maintenance_events ame
+          WHERE ame.aircraft_id = af.id
+            AND ame.airline_id = af.airline_id
+            AND ame.event_status = 'IN_PROGRESS'
+            AND ame.check_type IN (
+              'C_CHECK',
+              'D_CHECK'
+            )
+          ORDER BY
+            CASE ame.check_type
+              WHEN 'D_CHECK' THEN 1
+              WHEN 'C_CHECK' THEN 2
+              ELSE 3
+            END,
+            ame.id DESC
+          LIMIT 1
+        ) active_cd
+          ON TRUE
 
         LEFT JOIN
           public.airlines seller_airline
