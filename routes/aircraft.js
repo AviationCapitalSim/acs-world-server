@@ -3811,23 +3811,60 @@ export async function ACS_runCDMaintenanceResolverForAirline(
         [airlineId, aircraftId]
       );
 
-      if (!remainingActiveResult.rows.length) {
+            if (!remainingActiveResult.rows.length) {
         await client.query(
           `
-          UPDATE public.aircraft_fleet
+          UPDATE public.aircraft_fleet af
           SET
-            status = 'ACTIVE',
-            operational_status = 'AVAILABLE',
+            status = CASE
+              WHEN EXISTS (
+                SELECT 1
+                FROM public.aircraft_market_listings aml
+                WHERE aml.aircraft_id = af.id
+                  AND aml.seller_airline_id = af.airline_id
+                  AND aml.listing_type = 'SALE'
+                  AND aml.status IN (
+                    'ACTIVE',
+                    'OFFER_RECEIVED',
+                    'SALE_PENDING'
+                  )
+              )
+                THEN 'FOR_SALE'
+              ELSE 'ACTIVE'
+            END,
+
+            operational_status = CASE
+              WHEN EXISTS (
+                SELECT 1
+                FROM public.aircraft_market_listings aml
+                WHERE aml.aircraft_id = af.id
+                  AND aml.seller_airline_id = af.airline_id
+                  AND aml.listing_type = 'SALE'
+                  AND aml.status IN (
+                    'ACTIVE',
+                    'OFFER_RECEIVED',
+                    'SALE_PENDING'
+                  )
+              )
+                THEN 'UNAVAILABLE'
+              ELSE 'AVAILABLE'
+            END,
+
             maintenance_status = 'SERVICEABLE',
+
             condition_pct = CASE
-              WHEN $3 = 'D_CHECK' THEN 100
-              WHEN $3 = 'C_CHECK' THEN GREATEST(condition_pct, 95)
+              WHEN $3 = 'D_CHECK'
+                THEN 100
+              WHEN $3 = 'C_CHECK'
+                THEN GREATEST(condition_pct, 95)
               ELSE condition_pct
             END,
-            updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
 
-          WHERE id = $1
-            AND airline_id = $2
+            updated_at =
+              (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+
+          WHERE af.id = $1
+            AND af.airline_id = $2
           `,
           [
             aircraftId,
@@ -3836,7 +3873,7 @@ export async function ACS_runCDMaintenanceResolverForAirline(
           ]
         );
       }
-
+       
       completedEvents.push({
         event_id: event.id,
         aircraft_id: aircraftId,
@@ -4263,21 +4300,54 @@ END AS c_overdue
       `
       UPDATE public.aircraft_fleet af
 
-      SET
+           SET
         status = CASE
-          WHEN ams.maintenance_control_status = 'IN_MAINTENANCE'
+          WHEN EXISTS (
+            SELECT 1
+            FROM public.aircraft_market_listings aml
+            WHERE aml.aircraft_id = af.id
+              AND aml.seller_airline_id = af.airline_id
+              AND aml.listing_type = 'SALE'
+              AND aml.status IN (
+                'ACTIVE',
+                'OFFER_RECEIVED',
+                'SALE_PENDING'
+              )
+          )
+            THEN 'FOR_SALE'
+
+          WHEN ams.maintenance_control_status =
+            'IN_MAINTENANCE'
             THEN 'MAINTENANCE'
+
           ELSE af.status
         END,
 
         operational_status = CASE
-          WHEN ams.maintenance_control_status = 'IN_MAINTENANCE'
-            THEN 'IN_MAINTENANCE'
-
-          WHEN ams.maintenance_control_status = 'MAINTENANCE_REQUIRED'
+          WHEN EXISTS (
+            SELECT 1
+            FROM public.aircraft_market_listings aml
+            WHERE aml.aircraft_id = af.id
+              AND aml.seller_airline_id = af.airline_id
+              AND aml.listing_type = 'SALE'
+              AND aml.status IN (
+                'ACTIVE',
+                'OFFER_RECEIVED',
+                'SALE_PENDING'
+              )
+          )
             THEN 'UNAVAILABLE'
 
-          WHEN ams.maintenance_control_status = 'SERVICEABLE'
+          WHEN ams.maintenance_control_status =
+            'IN_MAINTENANCE'
+            THEN 'IN_MAINTENANCE'
+
+          WHEN ams.maintenance_control_status =
+            'MAINTENANCE_REQUIRED'
+            THEN 'UNAVAILABLE'
+
+          WHEN ams.maintenance_control_status =
+            'SERVICEABLE'
             THEN 'AVAILABLE'
 
           ELSE af.operational_status
@@ -4290,11 +4360,13 @@ END AS c_overdue
           )
             THEN 'CHECK_REQUIRED'
 
-          WHEN ams.maintenance_control_status = 'SERVICEABLE'
+          WHEN ams.maintenance_control_status =
+            'SERVICEABLE'
             THEN 'SERVICEABLE'
 
           ELSE af.maintenance_status
         END,
+
 
         updated_at = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
 
