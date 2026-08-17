@@ -2988,62 +2988,74 @@ async function ACS_startCDMaintenance(req, res) {
     const aircraft = aircraftResult.rows[0];
 
     /*
-  ACS COMMERCIAL AUTHORITY
+      ACS ON SALE AUTHORITY
 
-  C/D dates and technical statuses continue advancing,
-  but no maintenance event may start while the aircraft
-  is listed for sale or lease.
-*/
+      The existing manual C/D flow remains available to the
+      seller while the aircraft is ON SALE.
 
-const commercialListingResult =
-  await client.query(
-    `
-    SELECT
-      id,
-      listing_type,
-      status
-    FROM public.aircraft_market_listings
-    WHERE aircraft_id = $1
-      AND seller_airline_id = $2
-      AND status IN (
-        'ACTIVE',
-        'OFFER_RECEIVED',
-        'SALE_PENDING'
-      )
-    ORDER BY id DESC
-    LIMIT 1
-    FOR UPDATE
-    `,
-    [
-      aircraftId,
-      airlineId
-    ]
-  );
+      Every other active commercial listing remains blocked.
+    */
 
-if (
-  commercialListingResult.rows.length
-) {
-  await client.query("ROLLBACK");
+    const commercialListingResult =
+      await client.query(
+        `
+        SELECT
+          id,
+          aircraft_id,
+          seller_airline_id,
+          listing_type,
+          status
+        FROM public.aircraft_market_listings
+        WHERE aircraft_id = $1
+          AND status IN (
+            'ACTIVE',
+            'OFFER_RECEIVED',
+            'SALE_PENDING'
+          )
+        ORDER BY id DESC
+        LIMIT 1
+        FOR UPDATE
+        `,
+        [aircraftId]
+      );
 
-  const listing =
-    commercialListingResult.rows[0];
+    const commercialListing =
+      commercialListingResult.rows[0] || null;
 
-  return res.status(409).json({
-    ok: false,
-    error:
-      "AIRCRAFT_COMMERCIAL_HOLD",
-    message:
-      listing.listing_type === "LEASE"
-        ? "C or D maintenance cannot be started while the aircraft is ON LEASE."
-        : "C or D maintenance cannot be started while the aircraft is ON SALE.",
-    commercial_status:
-      listing.listing_type === "LEASE"
-        ? "ON_LEASE"
-        : "ON_SALE",
-    listing
-  });
-}
-     
+    const isManualOnSaleCD =
+      startSource === "MANUAL" &&
+      commercialListing !== null &&
+      String(
+        commercialListing.listing_type || ""
+      ).trim().toUpperCase() === "SALE" &&
+      Number(
+        commercialListing.seller_airline_id
+      ) === airlineId &&
+      String(
+        aircraft.status || ""
+      ).trim().toUpperCase() === "FOR_SALE" &&
+      String(
+        aircraft.operational_status || ""
+      ).trim().toUpperCase() === "UNAVAILABLE" &&
+      String(
+        aircraft.ownership_type || ""
+      ).trim().toUpperCase() === "OWNED";
+
+    if (
+      commercialListing &&
+      !isManualOnSaleCD
+    ) {
+      await client.query("ROLLBACK");
+
+      return res.status(409).json({
+        ok: false,
+        error: "AIRCRAFT_COMMERCIAL_HOLD",
+        message:
+          "Maintenance cannot be started for this commercial aircraft state.",
+        listing: commercialListing
+      });
+    }
+  
     const aircraftStatus = String(aircraft.status || "").toUpperCase();
     const operationalStatus = String(aircraft.operational_status || "").toUpperCase();
 
