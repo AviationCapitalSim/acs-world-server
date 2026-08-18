@@ -1555,8 +1555,15 @@ if (
    D > C > B > A
    ======================================================== */
 
-const bCheckIsOverdue =
-  bCheckStatus === "OVERDUE";
+const requestedCheckIsOverdue =
+  (
+    checkType === "A_CHECK" &&
+    aCheckStatus === "OVERDUE"
+  ) ||
+  (
+    checkType === "B_CHECK" &&
+    bCheckStatus === "OVERDUE"
+  );
 
 const higherCheckBlocksImmediateStart =
   cCheckStatus === "OVERDUE" ||
@@ -1571,8 +1578,7 @@ const anotherCheckAlreadyInProgress =
   dCheckStatus === "IN_PROGRESS";
 
 const immediateStart =
-  checkType === "B_CHECK" &&
-  bCheckIsOverdue &&
+  requestedCheckIsOverdue &&
   !higherCheckBlocksImmediateStart &&
   !anotherCheckAlreadyInProgress;
 
