@@ -1348,6 +1348,7 @@ router.post(
 
             af.base_icao,
             af.current_airport,
+            af.year_built,
 
             af.total_hours,
             af.total_cycles,
