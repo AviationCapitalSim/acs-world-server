@@ -1754,44 +1754,38 @@ const immediateStart =
         throw error;
       }
 
-      const factors =
-        ACS_resolveMaintenanceFactors(
-          aircraft,
-          policy
-        );
+           let maintenancePricing;
 
-      const aircraftValue =
-        Math.round(
-          Number(
-            aircraft.current_value ||
-            aircraft.purchase_price ||
-            aircraft.price_acs_usd ||
-            0
-          )
-        );
-
-      const estimatedCost =
-        aircraftValue > 0
-          ? Math.round(
-              aircraftValue *
-              costRate *
-              factors.condition_factor *
-              factors.usage_factor
-            )
-          : 0;
-
-      if (estimatedCost <= 0) {
+      try {
+        maintenancePricing =
+          ACS_calculateMaintenancePrice({
+            aircraft,
+            policy,
+            checkType,
+            simTime:
+              aircraft.current_sim_time
+          });
+      } catch (pricingError) {
         const error =
           new Error(
-            "MAINTENANCE_COST_RATE_INVALID"
+            pricingError?.message ||
+            "MAINTENANCE_PRICING_FAILED"
           );
 
         error.code =
-          "MAINTENANCE_COST_RATE_INVALID";
+          pricingError?.message ||
+          "MAINTENANCE_PRICING_FAILED";
 
         throw error;
       }
 
+      const estimatedCost =
+        maintenancePricing.final_cost;
+
+      const aircraftValue =
+        maintenancePricing.calculation
+          .technical_value;
+       
       /* ========================================================
          WEEKLY SCHEDULE POSITION
          ======================================================== */
