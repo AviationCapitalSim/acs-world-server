@@ -3578,23 +3578,94 @@ const financeAfterResult = await client.query(
         serviceCost,
         currency,
         financeLogId,
+         
         JSON.stringify({
-          source:
-          startSource === "AUTOMATIC"
-          ? "ACS_AUTOMATIC_CD_MAINTENANCE_V1"
-          : "ACS_SERVICE_CD_CONTROL_START_V1",
+  source:
+    startSource === "AUTOMATIC"
+      ? "ACS_AUTOMATIC_CD_MAINTENANCE_V2"
+      : "ACS_SERVICE_CD_CONTROL_START_V2",
 
-          start_source: startSource,
-          policy_code: policy.policy_code,
-          size_class: sizeClass,
-          condition_pct: conditionPct,
-          total_hours: totalHours,
-          total_cycles: totalCycles,
-          aircraft_value: aircraftValue,
-          cost_rate: costRate,
-          condition_factor: conditionFactor,
-          usage_factor: usageFactor
-        }),
+  authority:
+    "ACS_OCC_MAINTENANCE_PRICING",
+
+  start_source:
+    startSource,
+
+  pricing_formula_version:
+    maintenancePricing
+      .pricing_formula_version,
+
+  policy_id:
+    policy.id,
+
+  policy_code:
+    policy.policy_code,
+
+  size_class:
+    sizeClass,
+
+  technical_value:
+    aircraftValue,
+
+  technical_value_source:
+    technicalValueSource,
+
+  year_built:
+    maintenancePricing.calculation
+      .year_built,
+
+  sim_year:
+    maintenancePricing.calculation
+      .sim_year,
+
+  aircraft_age:
+    maintenancePricing.calculation
+      .aircraft_age,
+
+  age_pressure:
+    maintenancePricing.calculation
+      .age_pressure,
+
+  age_curve_factor:
+    maintenancePricing.calculation
+      .age_curve_factor,
+
+  age_sensitivity:
+    maintenancePricing.calculation
+      .age_sensitivity,
+
+  age_factor:
+    ageFactor,
+
+  condition_pct:
+    conditionPct,
+
+  condition_level:
+    maintenancePricing.calculation
+      .condition_level,
+
+  condition_factor:
+    conditionFactor,
+
+  total_hours:
+    totalHours,
+
+  total_cycles:
+    totalCycles,
+
+  usage_level:
+    maintenancePricing.calculation
+      .usage_level,
+
+  usage_factor:
+    usageFactor,
+
+  cost_rate:
+    costRate,
+
+  final_cost:
+    serviceCost
+}),
         startSource
       ]
     );
@@ -3672,28 +3743,87 @@ const financeAfterResult = await client.query(
     await client.query("COMMIT");
 
     return res.json({
-      ok: true,
-      endpoint: "ACS_START_MAINTENANCE_EVENT",
-      version: "v1.0",
-      message: "MAINTENANCE_EVENT_STARTED",
-      check_type: checkType,
-      aircraft: updatedAircraftResult.rows[0],
-      event: eventResult.rows[0],
-      finance: {
-        before_capital: currentCapital,
-        charged_amount: serviceCost,
-        after: financeAfterResult.rows[0],
-        finance_log_id: financeLogId
-      },
-      policy: {
-        policy_code: policy.policy_code,
-        size_class: sizeClass,
-        duration_days: durationDays,
-        cost_rate: costRate,
-        condition_factor: conditionFactor,
-        usage_factor: usageFactor
-      }
-    });
+  ok: true,
+
+  endpoint:
+    "ACS_START_MAINTENANCE_EVENT",
+
+  version:
+    "v2.0",
+
+  authority:
+    "ACS_OCC_MAINTENANCE_PRICING",
+
+  message:
+    "MAINTENANCE_EVENT_STARTED",
+
+  check_type:
+    checkType,
+
+  aircraft:
+    updatedAircraftResult.rows[0],
+
+  event:
+    eventResult.rows[0],
+
+  finance: {
+    before_capital:
+      currentCapital,
+
+    charged_amount:
+      serviceCost,
+
+    after:
+      financeAfterResult.rows[0],
+
+    finance_log_id:
+      financeLogId
+  },
+
+  policy: {
+    id:
+      policy.id,
+
+    policy_code:
+      policy.policy_code,
+
+    size_class:
+      sizeClass,
+
+    duration_days:
+      durationDays,
+
+    pricing_formula_version:
+      maintenancePricing
+        .pricing_formula_version,
+
+    technical_value:
+      aircraftValue,
+
+    technical_value_source:
+      technicalValueSource,
+
+    cost_rate:
+      costRate,
+
+    aircraft_age:
+      maintenancePricing.calculation
+        .aircraft_age,
+
+    age_pressure:
+      maintenancePricing.calculation
+        .age_pressure,
+
+    age_factor:
+      ageFactor,
+
+    condition_factor:
+      conditionFactor,
+
+    usage_factor:
+      usageFactor
+  }
+});
 
     } catch (err) {
     try {
