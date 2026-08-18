@@ -842,20 +842,6 @@ async function ACS_deliveryProcessOrder(orderId) {
               THEN $12::BIGINT
             ELSE 0
           END,
-          
-          CASE
-            WHEN $3 = 'OWNED'
-              THEN $11::TIMESTAMP
-            ELSE NULL
-          END,
-
-          0,
-
-          CASE
-            WHEN $3 = 'OWNED'
-              THEN $12
-            ELSE 0
-          END,
 
           NULL,
 
