@@ -1,10 +1,12 @@
 /* ============================================================
-   ACS OCC —  SYSTEM GUARDIAN
+   ACS OCC — SYSTEM GUARDIAN
    PRIVATE API
    ------------------------------------------------------------
    - Independent Guardian administrator access
    - PostgreSQL storage monitoring
    - Read-only cleanup diagnostics
+   - Supervised cleanup proposals
+   - Execution only with explicit administrator authorization
    - No automatic cleanup
    ============================================================ */
 
@@ -25,6 +27,10 @@ import {
   ACS_cancelGuardianActionPreview,
   ACS_createGuardianActionPreview
 } from "../services/acs_guardian_action_preview.js";
+
+import {
+  ACS_executeGuardianAction
+} from "../services/acs_guardian_action_executor.js";
 
 import {
   ACS_createInitialGuardianAdministrator,
@@ -63,6 +69,18 @@ const credentialLimiter = rateLimit({
   message: {
     ok: false,
     error: "GUARDIAN_CREDENTIAL_RATE_LIMIT"
+  }
+});
+
+const executionLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+
+  message: {
+    ok: false,
+    error: "GUARDIAN_EXECUTION_RATE_LIMIT"
   }
 });
 
@@ -275,15 +293,6 @@ router.get(
 
 /* ============================================================
    PRIVATE — READ-ONLY CLEANUP DIAGNOSTICS
-   ------------------------------------------------------------
-   This endpoint identifies eligible historical rows.
-
-   It does not:
-   - delete rows
-   - truncate tables
-   - vacuum tables
-   - reindex tables
-   - create cleanup actions
    ============================================================ */
 
 router.get(
@@ -305,10 +314,15 @@ router.get(
 );
 
 /* ============================================================
-   PRIVATE — SUPERVISED CLEANUP PREVIEW
+   PRIVATE — CREATE SUPERVISED CLEANUP PROPOSAL
    ------------------------------------------------------------
    Creates a temporary proposal only.
-   No cleanup execution exists in this route.
+
+   It does not:
+   - delete rows
+   - truncate tables
+   - vacuum tables
+   - reindex tables
    ============================================================ */
 
 router.post(
@@ -341,11 +355,7 @@ router.post(
 );
 
 /* ============================================================
-   PRIVATE — CANCEL ACTION PREVIEW
-   ------------------------------------------------------------
-   Cancels a temporary supervised proposal.
-
-   It does not execute cleanup or modify operational ACS data.
+   PRIVATE — CANCEL CLEANUP PROPOSAL
    ============================================================ */
 
 router.post(
@@ -376,6 +386,53 @@ router.post(
 );
 
 /* ============================================================
+   PRIVATE — EXECUTE AUTHORIZED CLEANUP
+   ------------------------------------------------------------
+   Requires:
+   - Guardian administrator session
+   - Active proposal
+   - Correct temporary token
+   - Exact confirmation phrase
+   - Valid expiration
+   - Unchanged cleanup candidates
+   - Policy threshold still reached
+   ============================================================ */
+
+router.post(
+  "/guardian/actions/:actionId/execute",
+  executionLimiter,
+  async (req, res) => {
+    try {
+      const result =
+        await ACS_executeGuardianAction({
+          actionId:
+            req.params.actionId,
+
+          actionToken:
+            req.body?.actionToken,
+
+          confirmationPhrase:
+            req.body?.confirmationPhrase,
+
+          administratorId:
+            req.guardian_administrator.id,
+
+          sourceIP:
+            ACS_getRequestIP(req)
+        });
+
+      return res.json(result);
+    } catch (error) {
+      return ACS_sendGuardianError(
+        res,
+        error,
+        "GUARDIAN_ACTION_EXECUTION_FAILED"
+      );
+    }
+  }
+);
+
+/* ============================================================
    PRIVATE — COMPLETE GUARDIAN DASHBOARD
    ============================================================ */
 
@@ -384,13 +441,12 @@ router.get(
   async (_req, res) => {
     try {
       const [
-  storage,
-  diagnostics,
-  policiesResult,
-  alertsResult,
-  supervisorResult
-] = await Promise.all([
-         
+        storage,
+        diagnostics,
+        policiesResult,
+        alertsResult,
+        supervisorResult
+      ] = await Promise.all([
         ACS_getGuardianStorageSnapshot(),
 
         ACS_getGuardianDiagnostics(),
@@ -411,52 +467,52 @@ router.get(
         `),
 
         pool.query(`
-  SELECT
-    id,
-    alert_key,
-    severity,
-    title,
-    message,
-    action_type,
-    metrics,
-    status,
-    first_seen_at,
-    last_seen_at
-  FROM
-    public.acs_guardian_alerts
-  WHERE
-    status = 'OPEN'
-  ORDER BY
-    CASE severity
-      WHEN 'CRITICAL' THEN 1
-      WHEN 'WARNING' THEN 2
-      ELSE 3
-    END,
-    last_seen_at DESC
-`),
+          SELECT
+            id,
+            alert_key,
+            severity,
+            title,
+            message,
+            action_type,
+            metrics,
+            status,
+            first_seen_at,
+            last_seen_at
+          FROM
+            public.acs_guardian_alerts
+          WHERE
+            status = 'OPEN'
+          ORDER BY
+            CASE severity
+              WHEN 'CRITICAL' THEN 1
+              WHEN 'WARNING' THEN 2
+              ELSE 3
+            END,
+            last_seen_at DESC
+        `),
 
-pool.query(`
-  SELECT
-    supervisor_key,
-    enabled,
-    status,
-    scan_interval_seconds,
-    last_started_at,
-    last_completed_at,
-    last_success_at,
-    last_failure_at,
-    last_error,
-    active_alert_count,
-    last_opened_count,
-    last_resolved_count,
-    automatic_cleanup,
-    updated_at
-  FROM
-    public.acs_guardian_supervisor_state
-  WHERE
-    supervisor_key =
-      'GUARDIAN_ALERT_SCAN'
-`)
+        pool.query(`
+          SELECT
+            supervisor_key,
+            enabled,
+            status,
+            scan_interval_seconds,
+            last_started_at,
+            last_completed_at,
+            last_success_at,
+            last_failure_at,
+            last_error,
+            active_alert_count,
+            last_opened_count,
+            last_resolved_count,
+            automatic_cleanup,
+            updated_at
+          FROM
+            public.acs_guardian_supervisor_state
+          WHERE
+            supervisor_key =
+              'GUARDIAN_ALERT_SCAN'
+        `)
       ]);
 
       return res.json({
@@ -474,14 +530,14 @@ pool.query(`
           policiesResult.rows,
 
         alerts:
-  alertsResult.rows,
+          alertsResult.rows,
 
-supervisor:
-  supervisorResult.rows[0] ||
-  null,
+        supervisor:
+          supervisorResult.rows[0] ||
+          null,
 
-automaticCleanup: false
-         
+        automaticCleanup:
+          false
       });
     } catch (error) {
       return ACS_sendGuardianError(
