@@ -2723,23 +2723,39 @@ router.get("/aircraft/fleet/:id/maintenance/quote", requireAuth, async (req, res
 
     const policyResult = await pool.query(
       `
-      SELECT
-        policy_code,
-        aircraft_size_class,
-        aircraft_category,
-        era_start_year,
-        era_end_year,
-        c_check_duration_days,
-        d_check_duration_days,
-        c_check_cost_rate,
-        d_check_cost_rate,
-        condition_factor_low,
-        condition_factor_medium,
-        condition_factor_good,
-        usage_factor_high,
-        usage_factor_medium,
-        usage_factor_normal
-      FROM aircraft_maintenance_policy
+  SELECT
+  id,
+  policy_code,
+  aircraft_size_class,
+  aircraft_category,
+  era_start_year,
+  era_end_year,
+
+  c_check_duration_days,
+  d_check_duration_days,
+
+  c_check_cost_rate,
+  d_check_cost_rate,
+
+  condition_factor_low,
+  condition_factor_medium,
+  condition_factor_good,
+
+  usage_factor_high,
+  usage_factor_medium,
+  usage_factor_normal,
+
+  age_curve_ceiling,
+  age_curve_amplitude,
+  age_curve_rate,
+  age_curve_exponent,
+
+  ab_age_sensitivity,
+  cd_age_sensitivity,
+
+  pricing_formula_version
+
+FROM aircraft_maintenance_policy
       WHERE is_active = TRUE
         AND aircraft_size_class = $1
         AND aircraft_category = 'ANY'
@@ -3155,20 +3171,39 @@ async function ACS_startCDMaintenance(req, res) {
 
     const policyResult = await client.query(
       `
-      SELECT
-        policy_code,
-        aircraft_size_class,
-        c_check_duration_days,
-        d_check_duration_days,
-        c_check_cost_rate,
-        d_check_cost_rate,
-        condition_factor_low,
-        condition_factor_medium,
-        condition_factor_good,
-        usage_factor_high,
-        usage_factor_medium,
-        usage_factor_normal
-      FROM aircraft_maintenance_policy
+  SELECT
+  id,
+  policy_code,
+  aircraft_size_class,
+  aircraft_category,
+  era_start_year,
+  era_end_year,
+
+  c_check_duration_days,
+  d_check_duration_days,
+
+  c_check_cost_rate,
+  d_check_cost_rate,
+
+  condition_factor_low,
+  condition_factor_medium,
+  condition_factor_good,
+
+  usage_factor_high,
+  usage_factor_medium,
+  usage_factor_normal,
+
+  age_curve_ceiling,
+  age_curve_amplitude,
+  age_curve_rate,
+  age_curve_exponent,
+
+  ab_age_sensitivity,
+  cd_age_sensitivity,
+
+  pricing_formula_version
+
+FROM aircraft_maintenance_policy
       WHERE is_active = TRUE
         AND aircraft_size_class = $1
         AND aircraft_category = 'ANY'
