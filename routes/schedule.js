@@ -4883,6 +4883,159 @@ FROM inserted_events
         [airlineId]
       );
 
+      /* ========================================================
+         ACS OCC — RECALCULATE RECOVERED A/B OCCURRENCE PRICE
+         --------------------------------------------------------
+         Reprices only the new recovered A/B occurrence.
+         No schedule mutation.
+         No C/D mutation.
+         No finance mutation.
+         ======================================================== */
+
+      for (const recoveredEvent of orphanRecoveryResult.rows) {
+
+        const recoveredAircraftResult =
+          await client.query(
+            `
+            SELECT
+              af.id,
+              af.airline_id,
+              af.aircraft_name,
+              af.model_key,
+              af.year_built,
+              af.total_hours,
+              af.total_cycles,
+              af.condition_pct,
+              af.current_value,
+              af.purchase_price,
+              af.currency,
+
+              ac.aircraft_category,
+              ac.seats,
+              ac.price_acs_usd,
+
+              EXTRACT(
+                YEAR FROM acs_get_current_sim_time()
+              )::INTEGER AS sim_year,
+
+              acs_get_current_sim_time()
+                AS current_sim_time
+
+            FROM public.aircraft_fleet af
+
+            LEFT JOIN public.aircraft_catalog ac
+              ON ac.model_key = af.model_key
+
+            WHERE af.id = $1
+              AND af.airline_id = $2
+
+            LIMIT 1
+            `,
+            [
+              recoveredEvent.aircraft_id,
+              airlineId
+            ]
+          );
+
+        if (!recoveredAircraftResult.rows.length) {
+          const error =
+            new Error("AIRCRAFT_NOT_FOUND");
+
+          error.code =
+            "AIRCRAFT_NOT_FOUND";
+
+          throw error;
+        }
+
+        const recoveredAircraft =
+          recoveredAircraftResult.rows[0];
+
+        const recoveredSizeClass =
+          ACS_resolveAircraftSizeClass(
+            recoveredAircraft
+          );
+
+        const recoveredPolicyResult =
+          await client.query(
+            `
+            SELECT *
+            FROM public.aircraft_maintenance_policy
+
+            WHERE is_active = TRUE
+              AND aircraft_size_class = $1
+              AND aircraft_category = 'ANY'
+              AND era_start_year <= $2
+              AND era_end_year >= $2
+
+            ORDER BY era_start_year DESC
+            LIMIT 1
+            `,
+            [
+              recoveredSizeClass,
+              Number(recoveredAircraft.sim_year)
+            ]
+          );
+
+        if (!recoveredPolicyResult.rows.length) {
+          const error =
+            new Error(
+              "MAINTENANCE_POLICY_NOT_FOUND"
+            );
+
+          error.code =
+            "MAINTENANCE_POLICY_NOT_FOUND";
+
+          throw error;
+        }
+
+        const recoveredPolicy =
+          recoveredPolicyResult.rows[0];
+
+        const recoveredPricing =
+          ACS_calculateMaintenancePrice({
+            aircraft:
+              recoveredAircraft,
+
+            policy:
+              recoveredPolicy,
+
+            checkType:
+              recoveredEvent.check_type,
+
+            simTime:
+              recoveredAircraft.current_sim_time
+          });
+
+        await client.query(
+          `
+          UPDATE public.aircraft_maintenance_events
+
+          SET
+            estimated_cost = $1,
+            currency = $2,
+            updated_at =
+              (
+                CURRENT_TIMESTAMP
+                AT TIME ZONE 'UTC'
+              )
+
+          WHERE id = $3
+            AND airline_id = $4
+            AND aircraft_id = $5
+            AND check_type = $6
+            AND event_status = 'SCHEDULED'
+          `,
+          [
+            recoveredPricing.final_cost,
+            recoveredPricing.currency,
+            recoveredEvent.id,
+            airlineId,
+            recoveredEvent.aircraft_id,
+            recoveredEvent.check_type
+          ]
+        );
+      }
+       
       /*
        * Immediate A/B status synchronization after orphan recovery.
        * A/B planning suppresses A/B OVERDUE.
