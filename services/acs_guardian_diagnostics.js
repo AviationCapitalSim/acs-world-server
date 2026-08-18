@@ -4,37 +4,47 @@
    ------------------------------------------------------------
    Read-only detectors. They identify rows that are already
    represented by verified ACS history or were soft-deleted.
-
-   IMPORTANT:
-   - No rows are deleted.
-   - No tables are modified.
-   - No indexes are modified.
-   - No VACUUM or REINDEX is executed.
+   No cleanup action is executed from this service.
    ============================================================ */
 
 import { pool } from "../db/pool.js";
 
 const ACTIONS = Object.freeze({
-  FINANCE: "FINANCE_CLOSED_DETAIL_COMPACTION",
-  FLIGHTS: "FLIGHT_HISTORY_COMPACTION",
-  OCC_ALERTS: "OCC_DELETED_ALERTS_COMPACTION"
+  FINANCE:
+    "FINANCE_CLOSED_DETAIL_COMPACTION",
+
+  FLIGHTS:
+    "FLIGHT_HISTORY_COMPACTION",
+
+  OCC_ALERTS:
+    "OCC_DELETED_ALERTS_COMPACTION"
 });
 
 function ACS_toNumber(value) {
   const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : 0;
+
+  return Number.isFinite(parsed)
+    ? parsed
+    : 0;
 }
 
 function ACS_normalizePolicy(row) {
   return {
-    actionType: row.action_type,
-    enabled: row.enabled === true,
-    eligibleRowThreshold: ACS_toNumber(
-      row.eligible_row_threshold
-    ),
-    tableByteThreshold: ACS_toNumber(
-      row.table_byte_threshold
-    )
+    actionType:
+      row.action_type,
+
+    enabled:
+      row.enabled === true,
+
+    eligibleRowThreshold:
+      ACS_toNumber(
+        row.eligible_row_threshold
+      ),
+
+    tableByteThreshold:
+      ACS_toNumber(
+        row.table_byte_threshold
+      )
   };
 }
 
@@ -45,27 +55,25 @@ function ACS_buildDiagnostic({
   row,
   policy
 }) {
-  const eligibleRows = ACS_toNumber(
-    row.eligible_rows
-  );
+  const eligibleRows =
+    ACS_toNumber(row.eligible_rows);
 
-  const tableBytes = ACS_toNumber(
-    row.table_bytes
-  );
+  const tableBytes =
+    ACS_toNumber(row.table_bytes);
 
-  const totalBytes = ACS_toNumber(
-    row.total_bytes
-  );
+  const totalBytes =
+    ACS_toNumber(row.total_bytes);
 
-  const indexBytes = ACS_toNumber(
-    row.index_bytes
-  );
+  const indexBytes =
+    ACS_toNumber(row.index_bytes);
 
   const rowThresholdReached =
-    eligibleRows >= policy.eligibleRowThreshold;
+    eligibleRows >=
+    policy.eligibleRowThreshold;
 
   const tableThresholdReached =
-    totalBytes >= policy.tableByteThreshold;
+    totalBytes >=
+    policy.tableByteThreshold;
 
   const thresholdReached =
     policy.enabled &&
@@ -80,8 +88,11 @@ function ACS_buildDiagnostic({
     title,
     table,
 
-    readOnly: true,
-    automaticCleanup: false,
+    readOnly:
+      true,
+
+    automaticCleanup:
+      false,
 
     status:
       eligibleRows === 0
@@ -93,8 +104,11 @@ function ACS_buildDiagnostic({
     thresholdReached,
 
     reasons: {
-      eligibleRows: rowThresholdReached,
-      tableSize: tableThresholdReached
+      eligibleRows:
+        rowThresholdReached,
+
+      tableSize:
+        tableThresholdReached
     },
 
     policy,
@@ -106,16 +120,19 @@ function ACS_buildDiagnostic({
       indexBytes,
 
       firstEligibleAt:
-        row.first_eligible_at || null,
+        row.first_eligible_at ||
+        null,
 
       lastEligibleAt:
-        row.last_eligible_at || null,
+        row.last_eligible_at ||
+        null,
 
       fingerprint:
         row.preview_fingerprint,
 
       ...(
-        row.related_passenger_rows !== undefined
+        row.related_passenger_rows !==
+        undefined
           ? {
               relatedPassengerRows:
                 ACS_toNumber(
@@ -126,29 +143,35 @@ function ACS_buildDiagnostic({
       ),
 
       ...(
-  row.closed_flight_sets !== undefined
-    ? {
-        closedFlightSets:
-          ACS_toNumber(
-            row.closed_flight_sets
-          )
-      }
-    : {}
-),
+        row.closed_flight_sets !==
+        undefined
+          ? {
+              closedFlightSets:
+                ACS_toNumber(
+                  row.closed_flight_sets
+                )
+            }
+          : {}
+      ),
 
-...(
-  row.affected_airlines !== undefined
-    ? {
-        affectedAirlines:
-          ACS_toNumber(
-            row.affected_airlines
-          )
-      }
-    : {}
-)
+      ...(
+        row.affected_airlines !==
+        undefined
+          ? {
+              affectedAirlines:
+                ACS_toNumber(
+                  row.affected_airlines
+                )
+            }
+          : {}
+      )
     }
   };
 }
+
+/* ============================================================
+   CLEANUP POLICIES
+   ============================================================ */
 
 async function ACS_readPolicies(client) {
   const result = await client.query(
@@ -158,21 +181,28 @@ async function ACS_readPolicies(client) {
       enabled,
       eligible_row_threshold,
       table_byte_threshold
-    FROM public.acs_guardian_cleanup_policies
-    WHERE action_type = ANY($1::text[])
+    FROM
+      public.acs_guardian_cleanup_policies
+    WHERE
+      action_type = ANY($1::text[])
     `,
-    [Object.values(ACTIONS)]
+    [
+      Object.values(ACTIONS)
+    ]
   );
 
   const policies = new Map(
-    result.rows.map((row) => [
-      row.action_type,
-      ACS_normalizePolicy(row)
-    ])
+    result.rows.map(
+      (row) => [
+        row.action_type,
+        ACS_normalizePolicy(row)
+      ]
+    )
   );
 
   for (
-    const actionType of Object.values(ACTIONS)
+    const actionType
+    of Object.values(ACTIONS)
   ) {
     if (!policies.has(actionType)) {
       throw new Error(
@@ -187,16 +217,8 @@ async function ACS_readPolicies(client) {
 /* ============================================================
    CLOSED FLIGHT HISTORY
    ------------------------------------------------------------
-   Eligible only when:
-
-   - operational_status = ARRIVED
-   - dispatch_status = RELEASED
-   - flight was settled
-   - its financial month exists in finance_history
-   - the monthly close is MONTHLY_CLOSE / VERIFIED
-
-   Passenger results linked to those occurrences are counted,
-   but nothing is deleted here.
+   Only ARRIVED + RELEASED + settled flights represented by a
+   verified monthly finance close are eligible.
    ============================================================ */
 
 async function ACS_detectClosedFlightHistory(
@@ -208,15 +230,25 @@ async function ACS_detectClosedFlightHistory(
         occurrence.id,
         occurrence.scheduled_departure_at,
         occurrence.scheduled_arrival_at
-      FROM public.flight_occurrences occurrence
+      FROM
+        public.flight_occurrences
+          occurrence
       WHERE
-        occurrence.operational_status = 'ARRIVED'
-        AND occurrence.dispatch_status = 'RELEASED'
-        AND occurrence.settled_at IS NOT NULL
+        occurrence.operational_status =
+          'ARRIVED'
+
+        AND occurrence.dispatch_status =
+          'RELEASED'
+
+        AND occurrence.settled_at
+          IS NOT NULL
 
         AND EXISTS (
-          SELECT 1
-          FROM public.finance_history history
+          SELECT
+            1
+          FROM
+            public.finance_history
+              history
           WHERE
             history.airline_id =
               occurrence.airline_id
@@ -230,25 +262,26 @@ async function ACS_detectClosedFlightHistory(
             AND COALESCE(
               occurrence.arrived_at,
               occurrence.scheduled_arrival_at
-            ) >= history.period_start_sim
+            ) >=
+              history.period_start_sim
 
             AND COALESCE(
               occurrence.arrived_at,
               occurrence.scheduled_arrival_at
-            ) < history.period_end_sim
+            ) <
+              history.period_end_sim
         )
     )
 
     SELECT
-      COUNT(*)::bigint AS eligible_rows,
+      COUNT(*)::bigint
+        AS eligible_rows,
 
-      MIN(
-        scheduled_departure_at
-      ) AS first_eligible_at,
+      MIN(scheduled_departure_at)
+        AS first_eligible_at,
 
-      MAX(
-        scheduled_arrival_at
-      ) AS last_eligible_at,
+      MAX(scheduled_arrival_at)
+        AS last_eligible_at,
 
       MD5(
         COALESCE(
@@ -259,50 +292,53 @@ async function ACS_detectClosedFlightHistory(
           ),
           ''
         )
-      ) AS preview_fingerprint,
+      )
+        AS preview_fingerprint,
 
       (
-        SELECT COUNT(*)::bigint
+        SELECT
+          COUNT(*)::bigint
         FROM
           public.acs_passenger_flight_results
             passenger
-        JOIN eligible
-          ON eligible.id =
+        JOIN
+          eligible
+        ON
+          eligible.id =
             passenger.occurrence_id
-      ) AS related_passenger_rows,
+      )
+        AS related_passenger_rows,
 
       PG_RELATION_SIZE(
-        'public.flight_occurrences'::regclass
-      )::bigint AS table_bytes,
+        'public.flight_occurrences'
+          ::regclass
+      )::bigint
+        AS table_bytes,
 
       PG_TOTAL_RELATION_SIZE(
-        'public.flight_occurrences'::regclass
-      )::bigint AS total_bytes,
+        'public.flight_occurrences'
+          ::regclass
+      )::bigint
+        AS total_bytes,
 
       PG_INDEXES_SIZE(
-        'public.flight_occurrences'::regclass
-      )::bigint AS index_bytes
+        'public.flight_occurrences'
+          ::regclass
+      )::bigint
+        AS index_bytes
 
-    FROM eligible
+    FROM
+      eligible
   `);
 
   return result.rows[0];
 }
 
 /* ============================================================
-   CLOSED FINANCIAL FLIGHT DETAILS
+   CLOSED FINANCE DETAIL
    ------------------------------------------------------------
-   Only the six flight settlement entries created by ACS:
-
-   - FLIGHT_REVENUE
-   - FLIGHT_FUEL
-   - FLIGHT_HANDLING
-   - FLIGHT_LANDING
-   - FLIGHT_NAVIGATION
-   - FLIGHT_OVERFLIGHT
-
-   The corresponding month must already be closed and VERIFIED.
-   Current/open financial periods remain untouched.
+   Only the six exact flight-detail sources represented by a
+   verified monthly finance close are eligible.
    ============================================================ */
 
 async function ACS_detectClosedFinanceDetail(
@@ -310,12 +346,14 @@ async function ACS_detectClosedFinanceDetail(
 ) {
   const result = await client.query(`
     WITH eligible AS MATERIALIZED (
-     SELECT
-     log.id,
-     log.airline_id,
-     log.timestamp,
-     log.reference_uid
-     FROM public.finance_log log
+      SELECT
+        log.id,
+        log.airline_id,
+        log.timestamp,
+        log.reference_uid
+      FROM
+        public.finance_log
+          log
       WHERE
         log.source = ANY(
           ARRAY[
@@ -328,12 +366,15 @@ async function ACS_detectClosedFinanceDetail(
           ]::text[]
         )
 
-        AND log.reference_uid LIKE
-          'FLIGHT_OCCURRENCE:%'
+        AND log.reference_uid
+          LIKE 'FLIGHT_OCCURRENCE:%'
 
         AND EXISTS (
-          SELECT 1
-          FROM public.finance_history history
+          SELECT
+            1
+          FROM
+            public.finance_history
+              history
           WHERE
             history.airline_id =
               log.airline_id
@@ -344,44 +385,53 @@ async function ACS_detectClosedFinanceDetail(
             AND history.data_quality =
               'VERIFIED'
 
-            AND log.timestamp >= FLOOR(
-              EXTRACT(
-                EPOCH FROM
-                  history.period_start_sim
-              ) * 1000
-            )::bigint
+            AND log.timestamp >=
+              FLOOR(
+                EXTRACT(
+                  EPOCH FROM
+                    history.period_start_sim
+                ) * 1000
+              )::bigint
 
-            AND log.timestamp < FLOOR(
-              EXTRACT(
-                EPOCH FROM
-                  history.period_end_sim
-              ) * 1000
-            )::bigint
+            AND log.timestamp <
+              FLOOR(
+                EXTRACT(
+                  EPOCH FROM
+                    history.period_end_sim
+                ) * 1000
+              )::bigint
         )
     )
 
     SELECT
-      COUNT(*)::bigint AS eligible_rows,
+      COUNT(*)::bigint
+        AS eligible_rows,
 
       CASE
         WHEN MIN(timestamp) IS NULL
           THEN NULL
         ELSE
           TO_TIMESTAMP(
-            MIN(timestamp)::double precision
-            / 1000.0
-          ) AT TIME ZONE 'UTC'
-      END AS first_eligible_at,
+            MIN(timestamp)
+              ::double precision /
+            1000.0
+          )
+          AT TIME ZONE 'UTC'
+      END
+        AS first_eligible_at,
 
       CASE
         WHEN MAX(timestamp) IS NULL
           THEN NULL
         ELSE
           TO_TIMESTAMP(
-            MAX(timestamp)::double precision
-            / 1000.0
-          ) AT TIME ZONE 'UTC'
-      END AS last_eligible_at,
+            MAX(timestamp)
+              ::double precision /
+            1000.0
+          )
+          AT TIME ZONE 'UTC'
+      END
+        AS last_eligible_at,
 
       MD5(
         COALESCE(
@@ -392,45 +442,56 @@ async function ACS_detectClosedFinanceDetail(
           ),
           ''
         )
-      ) AS preview_fingerprint,
+      )
+        AS preview_fingerprint,
 
       COUNT(
-  DISTINCT LEFT(
-    reference_uid,
-    LENGTH(reference_uid) -
-    POSITION(
-      ':' IN REVERSE(reference_uid)
-    )
-  )
-)::bigint AS closed_flight_sets,
+        DISTINCT LEFT(
+          reference_uid,
 
-COUNT(
-  DISTINCT airline_id
-)::bigint AS affected_airlines,
+          LENGTH(reference_uid) -
+            POSITION(
+              ':' IN
+              REVERSE(reference_uid)
+            )
+        )
+      )::bigint
+        AS closed_flight_sets,
+
+      COUNT(
+        DISTINCT airline_id
+      )::bigint
+        AS affected_airlines,
 
       PG_RELATION_SIZE(
-        'public.finance_log'::regclass
-      )::bigint AS table_bytes,
+        'public.finance_log'
+          ::regclass
+      )::bigint
+        AS table_bytes,
 
       PG_TOTAL_RELATION_SIZE(
-        'public.finance_log'::regclass
-      )::bigint AS total_bytes,
+        'public.finance_log'
+          ::regclass
+      )::bigint
+        AS total_bytes,
 
       PG_INDEXES_SIZE(
-        'public.finance_log'::regclass
-      )::bigint AS index_bytes
+        'public.finance_log'
+          ::regclass
+      )::bigint
+        AS index_bytes
 
-    FROM eligible
+    FROM
+      eligible
   `);
 
   return result.rows[0];
 }
 
 /* ============================================================
-   DELETED OCC MESSAGES
+   PHYSICALLY DELETABLE OCC ALERTS
    ------------------------------------------------------------
-   OCC already hides these messages from players by setting
-   deleted_at. Guardian only counts the physically retained rows.
+   Only messages already soft-deleted by ACS are eligible.
    ============================================================ */
 
 async function ACS_detectDeletedOccAlerts(
@@ -441,20 +502,23 @@ async function ACS_detectDeletedOccAlerts(
       SELECT
         alert.id,
         alert.deleted_at
-      FROM public.occ_alerts alert
-      WHERE alert.deleted_at IS NOT NULL
+      FROM
+        public.occ_alerts
+          alert
+      WHERE
+        alert.deleted_at
+          IS NOT NULL
     )
 
     SELECT
-      COUNT(*)::bigint AS eligible_rows,
+      COUNT(*)::bigint
+        AS eligible_rows,
 
-      MIN(
-        deleted_at
-      ) AS first_eligible_at,
+      MIN(deleted_at)
+        AS first_eligible_at,
 
-      MAX(
-        deleted_at
-      ) AS last_eligible_at,
+      MAX(deleted_at)
+        AS last_eligible_at,
 
       MD5(
         COALESCE(
@@ -465,35 +529,41 @@ async function ACS_detectDeletedOccAlerts(
           ),
           ''
         )
-      ) AS preview_fingerprint,
+      )
+        AS preview_fingerprint,
 
       PG_RELATION_SIZE(
-        'public.occ_alerts'::regclass
-      )::bigint AS table_bytes,
+        'public.occ_alerts'
+          ::regclass
+      )::bigint
+        AS table_bytes,
 
       PG_TOTAL_RELATION_SIZE(
-        'public.occ_alerts'::regclass
-      )::bigint AS total_bytes,
+        'public.occ_alerts'
+          ::regclass
+      )::bigint
+        AS total_bytes,
 
       PG_INDEXES_SIZE(
-        'public.occ_alerts'::regclass
-      )::bigint AS index_bytes
+        'public.occ_alerts'
+          ::regclass
+      )::bigint
+        AS index_bytes
 
-    FROM eligible
+    FROM
+      eligible
   `);
 
   return result.rows[0];
 }
 
 /* ============================================================
-   COMPLETE GUARDIAN DIAGNOSTIC
-   ------------------------------------------------------------
-   A REPEATABLE READ / READ ONLY transaction guarantees that
-   every detector observes the same PostgreSQL snapshot.
+   COMPLETE READ-ONLY DIAGNOSTIC
    ============================================================ */
 
 export async function ACS_getGuardianDiagnostics() {
-  const client = await pool.connect();
+  const client =
+    await pool.connect();
 
   try {
     await client.query(`
@@ -505,25 +575,29 @@ export async function ACS_getGuardianDiagnostics() {
     const policies =
       await ACS_readPolicies(client);
 
-    const flights =
-      await ACS_detectClosedFlightHistory(
+    const [
+      flights,
+      finance,
+      occAlerts
+    ] = await Promise.all([
+      ACS_detectClosedFlightHistory(
         client
-      );
+      ),
 
-    const finance =
-      await ACS_detectClosedFinanceDetail(
+      ACS_detectClosedFinanceDetail(
         client
-      );
+      ),
 
-    const occAlerts =
-      await ACS_detectDeletedOccAlerts(
+      ACS_detectDeletedOccAlerts(
         client
-      );
+      )
+    ]);
 
     await client.query("COMMIT");
 
     return {
-      ok: true,
+      ok:
+        true,
 
       authority:
         "POSTGRESQL_READ_ONLY",
@@ -531,7 +605,8 @@ export async function ACS_getGuardianDiagnostics() {
       capturedAt:
         new Date().toISOString(),
 
-      automaticCleanup: false,
+      automaticCleanup:
+        false,
 
       diagnostics: [
         ACS_buildDiagnostic({
@@ -594,7 +669,9 @@ export async function ACS_getGuardianDiagnostics() {
     };
   } catch (error) {
     try {
-      await client.query("ROLLBACK");
+      await client.query(
+        "ROLLBACK"
+      );
     } catch (rollbackError) {
       console.error(
         "[ACS Guardian] diagnostics rollback failed:",
