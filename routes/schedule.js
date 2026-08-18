@@ -814,6 +814,7 @@ router.post(
           af.status,
           af.operational_status,
           af.maintenance_status,
+          af.year_built,
           af.total_hours,
           af.total_cycles,
           af.condition_pct,
