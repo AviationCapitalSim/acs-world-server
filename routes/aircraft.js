@@ -7797,7 +7797,7 @@ router.post(
             base_icao = $7,
             current_airport = $7,
 
-            source = 'USED MARKET',
+            source = 'USED_MARKET',
             purchase_price = $8,
             current_value = $8,
 
