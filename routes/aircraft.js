@@ -2778,99 +2778,222 @@ FROM aircraft_maintenance_policy
 
     const policy = policyResult.rows[0];
 
-    const conditionPct = Number(aircraft.condition_pct || 80);
-    const totalHours = Number(aircraft.total_hours || 0);
-    const totalCycles = Number(aircraft.total_cycles || 0);
+    let cPricing;
+let dPricing;
 
-    const aircraftValue = Math.round(
-      Number(
-        aircraft.current_value ||
-        aircraft.purchase_price ||
-        aircraft.price_acs_usd ||
-        0
-      )
-    );
-
-    const currency = aircraft.currency || "USD";
-
-    let conditionFactor = Number(policy.condition_factor_good || 1);
-
-    if (conditionPct < 70) {
-      conditionFactor = Number(policy.condition_factor_low || 1.25);
-    } else if (conditionPct < 85) {
-      conditionFactor = Number(policy.condition_factor_medium || 1.12);
-    }
-
-    let usageFactor = Number(policy.usage_factor_normal || 1);
-
-    if (totalHours > 20000 || totalCycles > 12000) {
-      usageFactor = Number(policy.usage_factor_high || 1.18);
-    } else if (totalHours > 10000 || totalCycles > 6000) {
-      usageFactor = Number(policy.usage_factor_medium || 1.10);
-    }
-
-    const cEstimatedCost = aircraftValue > 0
-      ? Math.round(
-          aircraftValue *
-          Number(policy.c_check_cost_rate) *
-          conditionFactor *
-          usageFactor
-        )
-      : null;
-
-    const dEstimatedCost = aircraftValue > 0
-      ? Math.round(
-          aircraftValue *
-          Number(policy.d_check_cost_rate) *
-          conditionFactor *
-          usageFactor
-        )
-      : null;
-
-    return res.json({
-      ok: true,
-      endpoint: "ACS_MAINTENANCE_QUOTE",
-      version: "v1.0",
-      authority: {
-        time: "acs_get_current_sim_time",
-        fleet: "aircraft_fleet",
-        maintenance: "aircraft_maintenance_status",
-        catalog: "aircraft_catalog",
-        policy: "aircraft_maintenance_policy"
-      },
-      aircraft: {
-        id: aircraft.id,
-        registration: aircraft.registration,
-        aircraft_name: aircraft.aircraft_name,
-        model_key: aircraft.model_key,
-        source: aircraft.source,
-        size_class: sizeClass,
-        condition_pct: conditionPct,
-        total_hours: totalHours,
-        total_cycles: totalCycles,
-        current_value: aircraftValue,
-        currency
-      },
-      current_sim_time: aircraft.current_sim_time,
-      policy: {
-        policy_code: policy.policy_code,
-        aircraft_size_class: policy.aircraft_size_class
-      },
-      c_check: {
-        status: aircraft.c_check_status || "NOT_ESTABLISHED",
-        due_date: aircraft.c_check_due_date,
-        duration_days: Number(policy.c_check_duration_days),
-        estimated_cost: cEstimatedCost,
-        currency
-      },
-      d_check: {
-        status: aircraft.d_check_status || "NOT_ESTABLISHED",
-        due_date: aircraft.d_check_due_date,
-        duration_days: Number(policy.d_check_duration_days),
-        estimated_cost: dEstimatedCost,
-        currency
-      }
+try {
+  cPricing =
+    ACS_calculateMaintenancePrice({
+      aircraft,
+      policy,
+      checkType: "C_CHECK",
+      simTime:
+        aircraft.current_sim_time
     });
+
+  dPricing =
+    ACS_calculateMaintenancePrice({
+      aircraft,
+      policy,
+      checkType: "D_CHECK",
+      simTime:
+        aircraft.current_sim_time
+    });
+
+} catch (pricingError) {
+  return res.status(409).json({
+    ok: false,
+
+    error:
+      pricingError?.message ||
+      "MAINTENANCE_PRICING_FAILED",
+
+    authority:
+      "ACS_OCC_MAINTENANCE_PRICING"
+  });
+}
+
+const cEstimatedCost =
+  cPricing.final_cost;
+
+const dEstimatedCost =
+  dPricing.final_cost;
+
+const currency =
+  cPricing.currency;
+
+const conditionPct =
+  cPricing.calculation
+    .condition_pct;
+
+const totalHours =
+  cPricing.calculation
+    .total_hours;
+
+const totalCycles =
+  cPricing.calculation
+    .total_cycles;
+
+const aircraftValue =
+  cPricing.calculation
+    .technical_value;
+
+const technicalValueSource =
+  cPricing.calculation
+    .technical_value_source;
+    
+return res.json({
+  ok: true,
+
+  endpoint:
+    "ACS_MAINTENANCE_QUOTE",
+
+  version:
+    "v2.0",
+
+  authority: {
+    time:
+      "acs_get_current_sim_time",
+
+    fleet:
+      "aircraft_fleet",
+
+    maintenance:
+      "aircraft_maintenance_status",
+
+    catalog:
+      "aircraft_catalog",
+
+    policy:
+      "aircraft_maintenance_policy",
+
+    pricing:
+      "ACS_OCC_MAINTENANCE_PRICING"
+  },
+
+  aircraft: {
+    id:
+      aircraft.id,
+
+    registration:
+      aircraft.registration,
+
+    aircraft_name:
+      aircraft.aircraft_name,
+
+    model_key:
+      aircraft.model_key,
+
+    source:
+      aircraft.source,
+
+    size_class:
+      sizeClass,
+
+    year_built:
+      aircraft.year_built,
+
+    aircraft_age:
+      cPricing.calculation
+        .aircraft_age,
+
+    condition_pct:
+      conditionPct,
+
+    total_hours:
+      totalHours,
+
+    total_cycles:
+      totalCycles,
+
+    current_value:
+      Number(
+        aircraft.current_value || 0
+      ),
+
+    technical_value:
+      aircraftValue,
+
+    technical_value_source:
+      technicalValueSource,
+
+    currency
+  },
+
+  current_sim_time:
+    aircraft.current_sim_time,
+
+  policy: {
+    id:
+      policy.id,
+
+    policy_code:
+      policy.policy_code,
+
+    aircraft_size_class:
+      policy.aircraft_size_class,
+
+    aircraft_category:
+      policy.aircraft_category,
+
+    era_start_year:
+      Number(
+        policy.era_start_year
+      ),
+
+    era_end_year:
+      Number(
+        policy.era_end_year
+      ),
+
+    pricing_formula_version:
+      policy.pricing_formula_version
+  },
+
+  c_check: {
+    status:
+      aircraft.c_check_status ||
+      "NOT_ESTABLISHED",
+
+    due_date:
+      aircraft.c_check_due_date,
+
+    duration_days:
+      Number(
+        policy.c_check_duration_days
+      ),
+
+    estimated_cost:
+      cEstimatedCost,
+
+    currency,
+
+    pricing:
+      cPricing.calculation
+  },
+
+  d_check: {
+    status:
+      aircraft.d_check_status ||
+      "NOT_ESTABLISHED",
+
+    due_date:
+      aircraft.d_check_due_date,
+
+    duration_days:
+      Number(
+        policy.d_check_duration_days
+      ),
+
+    estimated_cost:
+      dEstimatedCost,
+
+    currency,
+
+    pricing:
+      dPricing.calculation
+  }
+});
 
   } catch (err) {
     console.error("ACS MAINTENANCE QUOTE ERROR:", err);
@@ -3228,61 +3351,107 @@ FROM aircraft_maintenance_policy
 
     const policy = policyResult.rows[0];
 
-    const conditionPct = Number(aircraft.condition_pct || 80);
-    const totalHours = Number(aircraft.total_hours || 0);
-    const totalCycles = Number(aircraft.total_cycles || 0);
+    let maintenancePricing;
 
-    const aircraftValue = Math.round(
-      Number(
-        aircraft.current_value ||
-        aircraft.purchase_price ||
-        aircraft.price_acs_usd ||
-        0
+try {
+  maintenancePricing =
+    ACS_calculateMaintenancePrice({
+      aircraft,
+      policy,
+      checkType,
+      simTime:
+        aircraft.current_sim_time
+    });
+
+} catch (pricingError) {
+  await client.query(
+    "ROLLBACK"
+  );
+
+  return res.status(409).json({
+    ok: false,
+
+    error:
+      pricingError?.message ||
+      "MAINTENANCE_PRICING_FAILED",
+
+    authority:
+      "ACS_OCC_MAINTENANCE_PRICING",
+
+    check_type:
+      checkType
+  });
+}
+
+const durationDays =
+  checkType === "D_CHECK"
+    ? Number(
+        policy.d_check_duration_days
       )
-    );
+    : Number(
+        policy.c_check_duration_days
+      );
 
-    const currency = aircraft.currency || "USD";
+if (
+  !Number.isInteger(durationDays) ||
+  durationDays <= 0
+) {
+  await client.query(
+    "ROLLBACK"
+  );
 
-    let conditionFactor = Number(policy.condition_factor_good || 1);
+  return res.status(409).json({
+    ok: false,
 
-    if (conditionPct < 70) {
-      conditionFactor = Number(policy.condition_factor_low || 1.25);
-    } else if (conditionPct < 85) {
-      conditionFactor = Number(policy.condition_factor_medium || 1.12);
-    }
+    error:
+      "INVALID_MAINTENANCE_DURATION",
 
-    let usageFactor = Number(policy.usage_factor_normal || 1);
+    check_type:
+      checkType
+  });
+}
 
-    if (totalHours > 20000 || totalCycles > 12000) {
-      usageFactor = Number(policy.usage_factor_high || 1.18);
-    } else if (totalHours > 10000 || totalCycles > 6000) {
-      usageFactor = Number(policy.usage_factor_medium || 1.10);
-    }
+const serviceCost =
+  maintenancePricing.final_cost;
 
-    const durationDays =
-      checkType === "D_CHECK"
-        ? Number(policy.d_check_duration_days)
-        : Number(policy.c_check_duration_days);
+const currency =
+  maintenancePricing.currency;
 
-    const costRate =
-      checkType === "D_CHECK"
-        ? Number(policy.d_check_cost_rate)
-        : Number(policy.c_check_cost_rate);
+const aircraftValue =
+  maintenancePricing.calculation
+    .technical_value;
 
-    const serviceCost = aircraftValue > 0
-      ? Math.round(aircraftValue * costRate * conditionFactor * usageFactor)
-      : 0;
+const technicalValueSource =
+  maintenancePricing.calculation
+    .technical_value_source;
 
-    if (!serviceCost || serviceCost <= 0) {
-      await client.query("ROLLBACK");
+const conditionPct =
+  maintenancePricing.calculation
+    .condition_pct;
 
-      return res.status(409).json({
-        ok: false,
-        error: "INVALID_MAINTENANCE_COST",
-        aircraft_value: aircraftValue,
-        check_type: checkType
-      });
-    }
+const totalHours =
+  maintenancePricing.calculation
+    .total_hours;
+
+const totalCycles =
+  maintenancePricing.calculation
+    .total_cycles;
+
+const costRate =
+  maintenancePricing.calculation
+    .cost_rate;
+
+const conditionFactor =
+  maintenancePricing.calculation
+    .condition_factor;
+
+const usageFactor =
+  maintenancePricing.calculation
+    .usage_factor;
+
+const ageFactor =
+  maintenancePricing.calculation
+    .age_factor;
 
     await client.query(
       `
