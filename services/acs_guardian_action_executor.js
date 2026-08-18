@@ -336,132 +336,332 @@ async function ACS_assertPolicyStillAllowsAction(
 async function ACS_compactClosedFinance(client, action) {
   await ACS_assertNoUnexpectedReferences(
     client,
-    "public.finance_log"
+    "public.finance_log",
+    ["public.corporate_tax"]
   );
+
   await ACS_assertNoUserTriggers(
     client,
     ["public.finance_log"]
   );
 
-  await client.query(
-    "LOCK TABLE public.finance_log IN ACCESS EXCLUSIVE MODE"
-  );
+  /*
+   * El bloqueo impide que aparezcan nuevos movimientos
+   * financieros o vínculos fiscales durante la limpieza.
+   *
+   * Si alguna tabla está ocupada, el lock_timeout general
+   * cancela la operación sin modificar datos.
+   */
+  await client.query(`
+    LOCK TABLE
+      public.finance_log,
+      public.corporate_tax
+    IN ACCESS EXCLUSIVE MODE
+  `);
 
+  /*
+   * Reconstruye exactamente la misma selección presentada
+   * en la propuesta aprobada por el administrador.
+   */
   await client.query(`
     CREATE TEMP TABLE acs_guardian_candidate_ids
     ON COMMIT DROP
     AS
-    SELECT log.id
-    FROM public.finance_log log
-    WHERE log.source = ANY(
-      ARRAY[
-        'FLIGHT_REVENUE',
-        'FLIGHT_FUEL',
-        'FLIGHT_HANDLING',
-        'FLIGHT_LANDING',
-        'FLIGHT_NAVIGATION',
-        'FLIGHT_OVERFLIGHT'
-      ]::text[]
-    )
-      AND log.reference_uid LIKE 'FLIGHT_OCCURRENCE:%'
+    SELECT
+      log.id
+    FROM
+      public.finance_log log
+    WHERE
+      log.source = ANY(
+        ARRAY[
+          'FLIGHT_REVENUE',
+          'FLIGHT_FUEL',
+          'FLIGHT_HANDLING',
+          'FLIGHT_LANDING',
+          'FLIGHT_NAVIGATION',
+          'FLIGHT_OVERFLIGHT'
+        ]::text[]
+      )
+      AND log.reference_uid LIKE
+        'FLIGHT_OCCURRENCE:%'
       AND EXISTS (
-        SELECT 1
-        FROM public.finance_history history
-        WHERE history.airline_id = log.airline_id
-          AND history.record_kind = 'MONTHLY_CLOSE'
-          AND history.data_quality = 'VERIFIED'
+        SELECT
+          1
+        FROM
+          public.finance_history history
+        WHERE
+          history.airline_id =
+            log.airline_id
+          AND history.record_kind =
+            'MONTHLY_CLOSE'
+          AND history.data_quality =
+            'VERIFIED'
           AND log.timestamp >= FLOOR(
-            EXTRACT(EPOCH FROM history.period_start_sim) * 1000
+            EXTRACT(
+              EPOCH FROM
+              history.period_start_sim
+            ) * 1000
           )::bigint
           AND log.timestamp < FLOOR(
-            EXTRACT(EPOCH FROM history.period_end_sim) * 1000
+            EXTRACT(
+              EPOCH FROM
+              history.period_end_sim
+            ) * 1000
           )::bigint
       )
   `);
 
   await client.query(`
-    ALTER TABLE acs_guardian_candidate_ids
+    ALTER TABLE
+      acs_guardian_candidate_ids
     ADD PRIMARY KEY (id)
   `);
 
-  const signature = await ACS_readCandidateSignature(client);
-  ACS_assertPreviewMatches(action, signature);
+  /*
+   * La cantidad y la huella deben coincidir exactamente
+   * con la propuesta temporal autorizada.
+   */
+  const signature =
+    await ACS_readCandidateSignature(
+      client
+    );
 
-  const beforeSize = await ACS_assertPolicyStillAllowsAction(
-    client,
-    action.action_type,
-    signature,
-    "public.finance_log"
+  ACS_assertPreviewMatches(
+    action,
+    signature
   );
 
-  const protectedBefore = await client.query(`
-    SELECT
-      (SELECT COUNT(*) FROM public.finance_history)::bigint
-        AS finance_history_rows,
-      (SELECT COUNT(*) FROM public.company_finance)::bigint
-        AS company_finance_rows
-  `);
+  const beforeSize =
+    await ACS_assertPolicyStillAllowsAction(
+      client,
+      action.action_type,
+      signature,
+      "public.finance_log"
+    );
 
-  await client.query(`
-    CREATE TEMP TABLE acs_guardian_finance_keep
-    ON COMMIT DROP
-    AS
-    SELECT log.*
-    FROM public.finance_log log
-    WHERE NOT EXISTS (
-      SELECT 1
-      FROM acs_guardian_candidate_ids candidate
-      WHERE candidate.id = log.id
-    )
-  `);
+  /*
+   * Guarda una fotografía de todas las estructuras
+   * financieras protegidas.
+   */
+  const protectedBefore =
+    await client.query(`
+      SELECT
+        (
+          SELECT COUNT(*)
+          FROM public.finance_history
+        )::bigint
+          AS finance_history_rows,
 
-  const counts = await client.query(`
-    SELECT
-      (SELECT COUNT(*) FROM public.finance_log)::bigint
-        AS original_rows,
-      (SELECT COUNT(*) FROM acs_guardian_finance_keep)::bigint
-        AS kept_rows
-  `);
+        (
+          SELECT COUNT(*)
+          FROM public.company_finance
+        )::bigint
+          AS company_finance_rows,
 
-  const originalRows = Number(counts.rows[0].original_rows);
-  const keptRows = Number(counts.rows[0].kept_rows);
+        (
+          SELECT COUNT(*)
+          FROM public.corporate_tax
+        )::bigint
+          AS corporate_tax_rows,
 
-  if (originalRows - keptRows !== signature.eligibleRows) {
+        (
+          SELECT MD5(
+            COALESCE(
+              STRING_AGG(
+                tax.id::text ||
+                ':' ||
+                COALESCE(
+                  tax.finance_log_id::text,
+                  'NULL'
+                ),
+                ','
+                ORDER BY tax.id
+              ),
+              ''
+            )
+          )
+          FROM
+            public.corporate_tax tax
+        )
+          AS corporate_tax_fingerprint
+    `);
+
+  /*
+   * Comprueba que ningún impuesto apunte a una fila
+   * incluida en la limpieza.
+   */
+  const counts =
+    await client.query(`
+      SELECT
+        (
+          SELECT COUNT(*)
+          FROM public.finance_log
+        )::bigint
+          AS original_rows,
+
+        (
+          SELECT COUNT(*)
+          FROM
+            public.corporate_tax tax
+          JOIN
+            acs_guardian_candidate_ids candidate
+          ON
+            candidate.id =
+              tax.finance_log_id
+        )::bigint
+          AS protected_tax_references
+    `);
+
+  const originalRows =
+    Number(
+      counts.rows[0].original_rows
+    );
+
+  const protectedTaxReferences =
+    Number(
+      counts.rows[0]
+        .protected_tax_references
+    );
+
+  const keptRows =
+    originalRows -
+    signature.eligibleRows;
+
+  if (
+    protectedTaxReferences !== 0
+  ) {
     throw ACS_actionError(
-      "GUARDIAN_FINANCE_SNAPSHOT_COUNT_MISMATCH",
+      "GUARDIAN_FINANCE_PROTECTED_REFERENCE_FOUND",
       409
     );
   }
 
-  await client.query("TRUNCATE TABLE public.finance_log");
-
-  await ACS_restoreTableFromSnapshot({
-    client,
-    tableName: "public.finance_log",
-    snapshotName: "acs_guardian_finance_keep"
-  });
-
-  await ACS_syncIdentitySequence(
-    client,
-    "public.finance_log"
-  );
-
-  const verification = await client.query(`
-    SELECT
-      (SELECT COUNT(*) FROM public.finance_log)::bigint
-        AS restored_rows,
-      (SELECT COUNT(*) FROM public.finance_history)::bigint
-        AS finance_history_rows,
-      (SELECT COUNT(*) FROM public.company_finance)::bigint
-        AS company_finance_rows
-  `);
+  /*
+   * Elimina exclusivamente las filas incluidas
+   * en la propuesta autorizada.
+   */
+  const deletion =
+    await client.query(`
+      DELETE FROM
+        public.finance_log log
+      USING
+        acs_guardian_candidate_ids candidate
+      WHERE
+        log.id = candidate.id
+    `);
 
   if (
-    Number(verification.rows[0].restored_rows) !== keptRows ||
-    String(verification.rows[0].finance_history_rows) !==
-      String(protectedBefore.rows[0].finance_history_rows) ||
-    String(verification.rows[0].company_finance_rows) !==
-      String(protectedBefore.rows[0].company_finance_rows)
+    deletion.rowCount !==
+    signature.eligibleRows
+  ) {
+    throw ACS_actionError(
+      "GUARDIAN_FINANCE_DELETE_COUNT_MISMATCH",
+      409
+    );
+  }
+
+  /*
+   * Reconstruye físicamente finance_log y sus índices
+   * sin vaciar la tabla y sin romper corporate_tax.
+   */
+  await client.query(`
+    CLUSTER
+      public.finance_log
+    USING
+      finance_log_pkey
+  `);
+
+  /*
+   * Comprueba que las filas conservadas, los cierres,
+   * las finanzas de las compañías y los 52 vínculos
+   * fiscales permanezcan exactamente iguales.
+   */
+  const verification =
+    await client.query(`
+      SELECT
+        (
+          SELECT COUNT(*)
+          FROM public.finance_log
+        )::bigint
+          AS restored_rows,
+
+        (
+          SELECT COUNT(*)
+          FROM public.finance_history
+        )::bigint
+          AS finance_history_rows,
+
+        (
+          SELECT COUNT(*)
+          FROM public.company_finance
+        )::bigint
+          AS company_finance_rows,
+
+        (
+          SELECT COUNT(*)
+          FROM public.corporate_tax
+        )::bigint
+          AS corporate_tax_rows,
+
+        (
+          SELECT MD5(
+            COALESCE(
+              STRING_AGG(
+                tax.id::text ||
+                ':' ||
+                COALESCE(
+                  tax.finance_log_id::text,
+                  'NULL'
+                ),
+                ','
+                ORDER BY tax.id
+              ),
+              ''
+            )
+          )
+          FROM
+            public.corporate_tax tax
+        )
+          AS corporate_tax_fingerprint
+    `);
+
+  if (
+    Number(
+      verification.rows[0]
+        .restored_rows
+    ) !== keptRows ||
+
+    String(
+      verification.rows[0]
+        .finance_history_rows
+    ) !==
+      String(
+        protectedBefore.rows[0]
+          .finance_history_rows
+      ) ||
+
+    String(
+      verification.rows[0]
+        .company_finance_rows
+    ) !==
+      String(
+        protectedBefore.rows[0]
+          .company_finance_rows
+      ) ||
+
+    String(
+      verification.rows[0]
+        .corporate_tax_rows
+    ) !==
+      String(
+        protectedBefore.rows[0]
+          .corporate_tax_rows
+      ) ||
+
+    verification.rows[0]
+      .corporate_tax_fingerprint !==
+      protectedBefore.rows[0]
+        .corporate_tax_fingerprint
   ) {
     throw ACS_actionError(
       "GUARDIAN_FINANCE_POSTCHECK_FAILED",
@@ -469,24 +669,50 @@ async function ACS_compactClosedFinance(client, action) {
     );
   }
 
-  await client.query("ANALYZE public.finance_log");
-  const afterSize = await ACS_measureTable(
-    client,
-    "public.finance_log"
-  );
+  await client.query(`
+    ANALYZE
+      public.finance_log
+  `);
+
+  const afterSize =
+    await ACS_measureTable(
+      client,
+      "public.finance_log"
+    );
 
   return {
-    targetTable: "finance_log",
-    removedRows: signature.eligibleRows,
-    preservedRows: keptRows,
-    relatedPassengerRowsRemoved: 0,
+    targetTable:
+      "finance_log",
+
+    removedRows:
+      signature.eligibleRows,
+
+    preservedRows:
+      keptRows,
+
+    relatedPassengerRowsRemoved:
+      0,
+
     beforeSize,
+
     afterSize,
+
     releasedBytesEstimate:
-      Math.max(0, beforeSize.totalBytes - afterSize.totalBytes),
+      Math.max(
+        0,
+        beforeSize.totalBytes -
+        afterSize.totalBytes
+      ),
+
     protectedChecks: {
-      financeHistory: "UNCHANGED",
-      companyFinance: "UNCHANGED"
+      financeHistory:
+        "UNCHANGED",
+
+      companyFinance:
+        "UNCHANGED",
+
+      corporateTax:
+        "UNCHANGED"
     }
   };
 }
