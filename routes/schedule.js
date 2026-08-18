@@ -4753,7 +4753,9 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
             )
 
           RETURNING
-            ame.id
+  ame.id,
+  ame.aircraft_id,
+  ame.check_type
         ),
 
         inserted_events AS (
@@ -4859,12 +4861,24 @@ async function ACS_runMaintenanceResolverForAirline(airlineId) {
             )
 
           RETURNING
-            id
+  id,
+  aircraft_id,
+  check_type
         )
 
-        SELECT id FROM recycled_events
-        UNION ALL
-        SELECT id FROM inserted_events
+        SELECT
+  id,
+  aircraft_id,
+  check_type
+FROM recycled_events
+
+UNION ALL
+
+SELECT
+  id,
+  aircraft_id,
+  check_type
+FROM inserted_events
         `,
         [airlineId]
       );
