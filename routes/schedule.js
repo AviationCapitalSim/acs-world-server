@@ -875,7 +875,15 @@ router.post(
           condition_factor_good,
           usage_factor_high,
           usage_factor_medium,
-          usage_factor_normal
+          usage_factor_normal,
+
+          age_curve_ceiling,
+          age_curve_amplitude,
+          age_curve_rate,
+          age_curve_exponent,
+          ab_age_sensitivity,
+          cd_age_sensitivity,
+          pricing_formula_version
 
         FROM public.aircraft_maintenance_policy
 
