@@ -926,37 +926,37 @@ router.post(
         throw error;
       }
 
-      const factors =
-        ACS_resolveMaintenanceFactors(aircraft, policy);
+            let maintenancePricing;
 
-      const aircraftValue = Math.round(
-        Number(
-          aircraft.current_value ||
-          aircraft.purchase_price ||
-          aircraft.price_acs_usd ||
-          0
-        )
-      );
-
-      const estimatedCost =
-        aircraftValue > 0
-          ? Math.round(
-              aircraftValue *
-              costRate *
-              factors.condition_factor *
-              factors.usage_factor
-            )
-          : 0;
-
-      if (estimatedCost <= 0) {
+      try {
+        maintenancePricing =
+          ACS_calculateMaintenancePrice({
+            aircraft,
+            policy,
+            checkType,
+            simTime:
+              aircraft.current_sim_time
+          });
+      } catch (pricingError) {
         const error = new Error(
-          "MAINTENANCE_COST_RATE_INVALID"
+          pricingError?.message ||
+          "MAINTENANCE_PRICING_FAILED"
         );
 
-        error.code = "MAINTENANCE_COST_RATE_INVALID";
+        error.code =
+          pricingError?.message ||
+          "MAINTENANCE_PRICING_FAILED";
+
         throw error;
       }
 
+      const estimatedCost =
+        maintenancePricing.final_cost;
+
+      const aircraftValue =
+        maintenancePricing.calculation
+          .technical_value;
+       
       const proposedStartAbs =
         ACS_absoluteScheduleMinute(
           selectedDay,
@@ -1155,17 +1155,21 @@ router.post(
           currency: aircraft.currency || "USD"
         },
 
-        policy: {
+         policy: {
           policy_code: policy.policy_code,
           era_start_year:
             Number(policy.era_start_year),
           era_end_year:
             Number(policy.era_end_year),
-          cost_rate: costRate,
+          cost_rate:
+            maintenancePricing.calculation
+              .service_rate,
           condition_factor:
-            factors.condition_factor,
+            maintenancePricing.calculation
+              .condition_factor,
           usage_factor:
-            factors.usage_factor
+            maintenancePricing.calculation
+              .usage_factor
         },
 
         current_sim_time: aircraft.current_sim_time,
@@ -1469,6 +1473,7 @@ router.post(
       }
 
       const higherCheckControlsAircraft =
+         
   cCheckStatus === "IN_PROGRESS" ||
   dCheckStatus === "IN_PROGRESS" ||
   cCheckStatus === "OVERDUE" ||
@@ -1657,10 +1662,17 @@ const immediateStart =
             condition_factor_medium,
             condition_factor_good,
 
-            usage_factor_high,
-            usage_factor_medium,
-            usage_factor_normal
+          usage_factor_high,
+          usage_factor_medium,
+          usage_factor_normal,
 
+          age_curve_ceiling,
+          age_curve_amplitude,
+          age_curve_rate,
+          age_curve_exponent,
+          ab_age_sensitivity,
+          cd_age_sensitivity,
+          pricing_formula_version
           FROM public.aircraft_maintenance_policy
 
           WHERE is_active = TRUE
