@@ -2438,9 +2438,9 @@ const eventExpectedCompletionAt =
               cost_rate:
                 costRate,
               condition_factor:
-                factors.condition_factor,
-              usage_factor:
-                factors.usage_factor,
+   maintenancePricing.calculation.condition_factor,
+usage_factor:
+  maintenancePricing.calculation.usage_factor,
               immediate_start:
                 immediateStart
             })
