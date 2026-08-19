@@ -7835,36 +7835,146 @@ if (
       throw error;
     }
 
-    const conflictResult = await client.query(
-      `
-      SELECT DISTINCT
-        existing.id,
-        existing.route_plan_id,
-        existing.flight_number,
-        existing.selected_day,
-        existing.departure,
-        existing.arrival
-      FROM public.schedule_items target
-      JOIN public.schedule_items existing
-        ON existing.airline_id = target.airline_id
-       AND existing.aircraft_id = $3
-       AND existing.route_plan_id <> target.route_plan_id
-       AND existing.item_type IN ('flight', 'service')
-       AND LOWER(COALESCE(existing.status, 'planned'))
-           NOT IN ('cancelled', 'completed')
-       AND target.dep_abs_min IS NOT NULL
-       AND target.arr_abs_min IS NOT NULL
-       AND existing.dep_abs_min IS NOT NULL
-       AND existing.arr_abs_min IS NOT NULL
-       AND target.dep_abs_min < existing.arr_abs_min
-       AND existing.dep_abs_min < target.arr_abs_min
-      WHERE target.route_plan_id = $1
-        AND target.airline_id = $2
-        AND target.item_type = 'flight'
-      LIMIT 1
-      `,
-      [routePlanId, airlineId, aircraftId]
-    );
+    /* ========================================================
+   ACS OCC — ASSIGNMENT CONFLICT AUTHORITY
+   --------------------------------------------------------
+   Rules:
+   - Validate the REAL occupation window of target flights.
+   - Target flight occupation ends at NEXT FLIGHT availability.
+   - Existing A-Check blocks assignment when intervals overlap.
+   - Existing flights also block assignment when intervals overlap.
+   - B-Check is NOT part of this assignment conflict rule.
+   - Exact boundary contact is valid:
+       existing end == target start -> NO conflict.
+   - PostgreSQL weekly absolute-minute authority only.
+   ======================================================== */
+
+const conflictResult = await client.query(
+  `
+  SELECT DISTINCT
+    target.id AS target_id,
+    target.route_plan_id AS target_route_plan_id,
+    target.flight_number AS target_flight_number,
+    target.paired_flight_number AS target_paired_flight_number,
+    target.selected_day AS target_day,
+    target.departure AS target_departure,
+    target.arrival AS target_arrival,
+
+    existing.id AS existing_id,
+    existing.route_plan_id AS existing_route_plan_id,
+    existing.item_type AS existing_item_type,
+    existing.service_type AS existing_service_type,
+    existing.flight_number AS existing_flight_number,
+    existing.paired_flight_number AS existing_paired_flight_number,
+    existing.selected_day AS existing_day,
+    existing.departure AS existing_departure,
+    existing.arrival AS existing_arrival,
+
+    target.dep_abs_min AS target_start_abs,
+
+    (
+      target.dep_abs_min
+      +
+      (
+        COALESCE(rp.total_rotation_min, 0)
+        +
+        COALESCE(rp.turnaround_min, 0)
+      )
+    ) AS target_available_abs,
+
+    existing.dep_abs_min AS existing_start_abs,
+
+    CASE
+      WHEN existing.item_type = 'flight'
+        THEN existing.arr_abs_min
+             + COALESCE(existing.turnaround_min, 0)
+
+      WHEN existing.item_type = 'service'
+           AND UPPER(COALESCE(existing.service_type, '')) = 'A'
+        THEN existing.arr_abs_min
+
+      ELSE NULL
+    END AS existing_end_abs
+
+  FROM public.schedule_items target
+
+  JOIN public.route_plans rp
+    ON rp.id = target.route_plan_id
+   AND rp.airline_id = target.airline_id
+
+  JOIN public.schedule_items existing
+    ON existing.airline_id = target.airline_id
+   AND existing.aircraft_id = $3
+
+   AND (
+     existing.item_type = 'flight'
+     OR (
+       existing.item_type = 'service'
+       AND UPPER(COALESCE(existing.service_type, '')) = 'A'
+     )
+   )
+
+   AND LOWER(COALESCE(existing.status, 'planned'))
+       NOT IN ('cancelled', 'completed')
+
+   AND target.dep_abs_min IS NOT NULL
+   AND existing.dep_abs_min IS NOT NULL
+   AND existing.arr_abs_min IS NOT NULL
+
+   /* Do not compare the target route against itself. */
+   AND (
+     existing.route_plan_id IS NULL
+     OR existing.route_plan_id <> target.route_plan_id
+   )
+
+   /* ------------------------------------------------------
+      REAL WEEKLY INTERVAL OVERLAP
+
+      target:
+      DEP -> rotation -> final turnaround -> NEXT FLIGHT
+
+      existing A:
+      A start -> A end
+
+      existing flight:
+      DEP -> arrival + final turnaround
+      ------------------------------------------------------ */
+
+   AND target.dep_abs_min
+       <
+       CASE
+         WHEN existing.item_type = 'flight'
+           THEN existing.arr_abs_min
+                + COALESCE(existing.turnaround_min, 0)
+
+         WHEN existing.item_type = 'service'
+              AND UPPER(COALESCE(existing.service_type, '')) = 'A'
+           THEN existing.arr_abs_min
+
+         ELSE NULL
+       END
+
+   AND existing.dep_abs_min
+       <
+       (
+         target.dep_abs_min
+         +
+         (
+           COALESCE(rp.total_rotation_min, 0)
+           +
+           COALESCE(rp.turnaround_min, 0)
+         )
+       )
+
+  WHERE target.route_plan_id = $1
+    AND target.airline_id = $2
+    AND target.item_type = 'flight'
+    AND LOWER(COALESCE(target.status, 'planned')) <> 'cancelled'
+
+  LIMIT 1
+  `,
+  [routePlanId, airlineId, aircraftId]
+);
 
     if (conflictResult.rows.length) {
       const error = new Error("AIRCRAFT_SCHEDULE_CONFLICT");
