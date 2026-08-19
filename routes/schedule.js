@@ -1,5 +1,5 @@
 /* ============================================================
-   ACS SCHEDULE ROUTES —  POSTGRESQL AUTHORITY v 2.4
+   ACS SCHEDULE ROUTES — POSTGRESQL AUTHORITY v 2.4
    ------------------------------------------------------------
    File: routes/schedule.js
 
