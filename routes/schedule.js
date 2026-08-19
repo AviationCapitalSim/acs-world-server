@@ -5752,23 +5752,170 @@ FROM inserted_events
           continue;
         }
 
-        if (event.finance_charged === true) {
-          continue;
-        }
+       if (event.finance_charged === true) {
+  continue;
+}
 
-        const cost = Math.round(
-          Number(event.estimated_cost || 0)
-        );
+/* ========================================================
+   ACS OCC — FINAL A/B PRICE AUTHORITY AT START
+   --------------------------------------------------------
+   Recalculate the maintenance price using the aircraft's
+   current technical state and the policy valid at ACS Time.
 
-        if (!Number.isFinite(cost) || cost <= 0) {
-          const error =
-            new Error("MAINTENANCE_COST_RATE_INVALID");
+   This is the definitive amount used for:
+   - estimated_cost
+   - finance_log
+   - company_finance
+   - final_cost
+   ======================================================== */
 
-          error.code =
-            "MAINTENANCE_COST_RATE_INVALID";
+const pricingAircraftResult =
+  await client.query(
+    `
+    SELECT
+      af.id,
+      af.airline_id,
+      af.aircraft_name,
+      af.model_key,
+      af.year_built,
+      af.total_hours,
+      af.total_cycles,
+      af.condition_pct,
+      af.current_value,
+      af.purchase_price,
+      af.currency,
 
-          throw error;
-        }
+      ac.aircraft_category,
+      ac.seats,
+      ac.price_acs_usd,
+
+      EXTRACT(
+        YEAR FROM acs_get_current_sim_time()
+      )::INTEGER AS sim_year,
+
+      acs_get_current_sim_time()
+        AS current_sim_time
+
+    FROM public.aircraft_fleet af
+
+    LEFT JOIN public.aircraft_catalog ac
+      ON ac.model_key = af.model_key
+
+    WHERE af.id = $1
+      AND af.airline_id = $2
+
+    LIMIT 1
+    `,
+    [
+      event.aircraft_id,
+      airlineId
+    ]
+  );
+
+if (!pricingAircraftResult.rows.length) {
+  const error =
+    new Error("AIRCRAFT_NOT_FOUND");
+
+  error.code =
+    "AIRCRAFT_NOT_FOUND";
+
+  throw error;
+}
+
+const pricingAircraft =
+  pricingAircraftResult.rows[0];
+
+const pricingSizeClass =
+  ACS_resolveAircraftSizeClass(
+    pricingAircraft
+  );
+
+const pricingPolicyResult =
+  await client.query(
+    `
+    SELECT *
+    FROM public.aircraft_maintenance_policy
+
+    WHERE is_active = TRUE
+      AND aircraft_size_class = $1
+      AND aircraft_category = 'ANY'
+      AND era_start_year <= $2
+      AND era_end_year >= $2
+
+    ORDER BY era_start_year DESC
+    LIMIT 1
+    `,
+    [
+      pricingSizeClass,
+      Number(pricingAircraft.sim_year)
+    ]
+  );
+
+if (!pricingPolicyResult.rows.length) {
+  const error =
+    new Error(
+      "MAINTENANCE_POLICY_NOT_FOUND"
+    );
+
+  error.code =
+    "MAINTENANCE_POLICY_NOT_FOUND";
+
+  throw error;
+}
+
+const pricingPolicy =
+  pricingPolicyResult.rows[0];
+
+const startPricing =
+  ACS_calculateMaintenancePrice({
+    aircraft:
+      pricingAircraft,
+
+    policy:
+      pricingPolicy,
+
+    checkType,
+
+    simTime:
+      pricingAircraft.current_sim_time
+  });
+
+const cost =
+  Number(startPricing.final_cost);
+
+if (!Number.isFinite(cost) || cost <= 0) {
+  const error =
+    new Error(
+      "INVALID_MAINTENANCE_COST"
+    );
+
+  error.code =
+    "INVALID_MAINTENANCE_COST";
+
+  throw error;
+}
+
+await client.query(
+  `
+  UPDATE public.aircraft_maintenance_events
+  SET
+    estimated_cost = $2,
+    currency = $3,
+    updated_at =
+      (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+
+  WHERE id = $1
+    AND airline_id = $4
+    AND event_status = 'SCHEDULED'
+    AND finance_charged = FALSE
+  `,
+  [
+    event.id,
+    cost,
+    startPricing.currency,
+    airlineId
+  ]
+);
 
         const financeResult = await client.query(
           `
@@ -5861,6 +6008,7 @@ FROM inserted_events
          * event_uid belongs to the persistent recycled event.
          * scheduled_start_at distinguishes each A/B occurrence.
          */
+         
         const scheduledStartDate =
           new Date(event.scheduled_start_at);
 
@@ -5997,11 +6145,12 @@ FROM inserted_events
             scheduled_end_at =
               acs_get_current_sim_time()
               + (duration_minutes * INTERVAL '1 minute'),
-            finance_charged = TRUE,
-            finance_log_id = $2,
-            final_cost = estimated_cost,
-            updated_at =
-              (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+           finance_charged = TRUE,
+           finance_log_id = $2,
+           estimated_cost = $4,
+           final_cost = $4,
+           updated_at =
+         (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
           WHERE id = $1
             AND airline_id = $3
             AND event_status = 'SCHEDULED'
@@ -6013,7 +6162,12 @@ FROM inserted_events
             started_at,
             expected_completion_at
           `,
-          [event.id, financeLogId, airlineId]
+          [
+            event.id,
+            financeLogId,
+            airlineId,
+            cost
+          ]
         );
 
         if (!startedEventResult.rows.length) {
