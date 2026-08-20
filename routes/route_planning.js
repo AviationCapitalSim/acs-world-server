@@ -156,19 +156,14 @@ router.get("/aircraft", async (req, res) => {
         LEFT JOIN aircraft_production_rules pr
           ON pr.model_key = ac.model_key
 
-
-        WHERE
-
-          WHERE
-
-  WHERE
+ WHERE
 
   COALESCE(
     pr.first_delivery_year,
     pr.production_start_year,
     ac.production_year,
     ac.year
-  ) <= $1
+  ) BETWEEN ($1 - 25) AND $1
 
 
         ORDER BY
