@@ -27,6 +27,7 @@ import aircraftRoutes, {
   ACS_runCDMaintenanceResolver
 } from "./routes/aircraft.js";
 import factoryRoutes from "./routes/factory.js";
+import routePlanningRoutes from "./routes/route_planning.js";
 import cabinPresetsRoutes from "./routes/cabin_presets.js";
 import routePlanRoutes from "./routes/route_plans.js";
 import myRoutesOccRoutes from "./routes/my_routes.js";
@@ -395,6 +396,7 @@ app.use("/v1", cabinPresetsRoutes);
 app.use("/v1", routePlanRoutes);
 app.use("/v1", myRoutesOccRoutes);
 app.use("/v1/aircraft/factory", factoryRoutes);
+app.use("/v1/route-planning", routePlanningRoutes);
 app.use("/v1", airportsRoutes);
 app.use("/v1", flightSettlementRoutes);
 
