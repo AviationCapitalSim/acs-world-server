@@ -161,12 +161,14 @@ router.get("/aircraft", async (req, res) => {
 
           WHERE
 
+  WHERE
+
   COALESCE(
     pr.first_delivery_year,
     pr.production_start_year,
     ac.production_year,
     ac.year
-  ) BETWEEN ($1 - 25) AND $1
+  ) <= $1
 
 
         ORDER BY
