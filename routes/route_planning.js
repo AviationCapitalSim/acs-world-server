@@ -111,6 +111,7 @@ router.get("/aircraft", async (req, res) => {
 ac.range_nm,
 ac.speed_kts,
 ac.mtow_kg,
+ac.oew_kg,
 ac.fuel_burn_kgph,
 
 COALESCE(
