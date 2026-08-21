@@ -108,14 +108,14 @@ router.get("/aircraft", async (req, res) => {
           ac.year,
 
           ac.seats,
-          ac.range_nm,
-          ac.speed_kts,
-          ac.mtow_kg,
-          ac.fuel_burn_kgph,
+ac.range_nm,
+ac.speed_kts,
+ac.mtow_kg,
+ac.fuel_burn_kgph,
+ac.required_runway_m,
 
-          ac.engines,
-          ac.aircraft_category,
-
+ac.engines,
+ac.aircraft_category,
           ac.status,
 
           ac.image_filename
