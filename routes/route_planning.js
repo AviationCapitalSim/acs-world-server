@@ -112,7 +112,14 @@ ac.range_nm,
 ac.speed_kts,
 ac.mtow_kg,
 ac.fuel_burn_kgph,
-ac.required_runway_m,
+
+COALESCE(
+  NULLIF(
+    ac.raw_data ->> 'required_runway_m',
+    ''
+  )::INTEGER,
+  0
+) AS required_runway_m,
 
 ac.engines,
 ac.aircraft_category,
