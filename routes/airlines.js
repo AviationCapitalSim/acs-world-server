@@ -29,26 +29,37 @@ router.get(
   requireAuth,
   async (req, res) => {
     try {
-      const result = await pool.query(
-        `
-        SELECT
-          a.airline_name,
-          a.country,
-          UPPER(BTRIM(u.base_icao))
-            AS base_icao
-        FROM public.airlines a
+   const result = await pool.query(
+  `
+  SELECT
+    a.airline_name,
+    a.country,
 
-        INNER JOIN public.users u
-          ON u.airline_id = a.airline_id
+    UPPER(BTRIM(u.base_icao))
+      AS base_icao,
 
-        WHERE u.base_icao IS NOT NULL
-          AND BTRIM(u.base_icao) <> ''
+    UPPER(BTRIM(airport.country))
+      AS country_code
 
-        ORDER BY
-          LOWER(a.airline_name),
-          a.airline_id
-        `
-      );
+  FROM public.airlines a
+
+  INNER JOIN public.users u
+    ON u.airline_id = a.airline_id
+
+  LEFT JOIN
+    public.v_acs_airport_authority_current
+      airport
+    ON UPPER(airport.icao) =
+       UPPER(BTRIM(u.base_icao))
+
+  WHERE u.base_icao IS NOT NULL
+    AND BTRIM(u.base_icao) <> ''
+
+  ORDER BY
+    LOWER(a.airline_name),
+    a.airline_id
+  `
+);
 
       return res.json({
         ok: true,
