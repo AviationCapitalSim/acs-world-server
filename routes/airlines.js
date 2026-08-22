@@ -80,6 +80,96 @@ router.get(
   }
 );
 
+);
+
+/* ============================================================
+   GET ONBOARDING BASE CONTEXT
+   ------------------------------------------------------------
+   Railway authority:
+   - Reads users.base_icao
+   - Derives World Area and Country from PostgreSQL
+   - No frontend storage authority
+   ============================================================ */
+
+router.get(
+  "/users/base-context",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const result = await pool.query(
+        `
+        SELECT
+          UPPER(BTRIM(u.base_icao))
+            AS base_icao,
+
+          CASE
+            WHEN UPPER(airport.country) IN (
+              'AE',
+              'BH',
+              'IQ',
+              'IR',
+              'IL',
+              'JO',
+              'KW',
+              'LB',
+              'OM',
+              'PS',
+              'QA',
+              'SA',
+              'SY',
+              'TR',
+              'YE'
+            )
+            THEN 'Middle East'
+            ELSE airport.continent
+          END AS region,
+
+          airport.region AS country
+
+        FROM public.users u
+
+        INNER JOIN
+          public.v_acs_airport_authority_current
+            airport
+          ON UPPER(airport.icao) =
+             UPPER(BTRIM(u.base_icao))
+
+        WHERE u.user_id = $1
+          AND u.base_icao IS NOT NULL
+          AND BTRIM(u.base_icao) <> ''
+
+        LIMIT 1
+        `,
+        [req.user_id]
+      );
+
+      if (!result.rows.length) {
+        return res.status(404).json({
+          ok: false,
+          error: "ONBOARDING_BASE_NOT_FOUND"
+        });
+      }
+
+      return res.json({
+        ok: true,
+        base: result.rows[0]
+      });
+
+    } catch (err) {
+      console.error(
+        "GET ONBOARDING BASE CONTEXT ERROR:",
+        err
+      );
+
+      return res.status(500).json({
+        ok: false,
+        error:
+          "ONBOARDING_BASE_CONTEXT_FAILED"
+      });
+    }
+  }
+);
+
 /* ============================================================
    CREATE AIRLINE
    ------------------------------------------------------------
