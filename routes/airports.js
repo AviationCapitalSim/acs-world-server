@@ -458,8 +458,6 @@ aa.ticket_fee_percent
           "public.airport_slot_bookings"
       },
 
-      airline_id: airlineId,
-
       current_sim_time:
         firstAirport?.current_sim_time || null,
 
