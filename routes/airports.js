@@ -114,15 +114,6 @@ router.get("/airports/health", requireAuth, async (req, res) => {
 
 router.get("/airports/catalog", requireAuth, async (req, res) => {
   try {
-    const airlineId = Number(req.airline_id);
-
-    if (!Number.isInteger(airlineId) || airlineId <= 0) {
-      return res.status(401).json({
-        ok: false,
-        error: "NO_AIRLINE_SESSION"
-      });
-    }
-
     const continent =
       String(req.query?.continent || "").trim();
 
