@@ -5,6 +5,71 @@ import { requireAuth } from "../middleware/auth.js"; // 🔥 NUEVO
 const router = express.Router();
 
 /* ============================================================
+   GET ACTIVE AIRLINES
+   ------------------------------------------------------------
+   Public player directory for authenticated ACS users.
+
+   An airline is considered active when:
+   - The airline exists.
+   - It is linked to its user.
+   - The user has completed base assignment.
+
+   Exposes only:
+   - Airline name.
+   - Country.
+   - Base ICAO.
+
+   No passenger data.
+   No user data.
+   No image data.
+   ============================================================ */
+
+router.get(
+  "/airlines/active",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const result = await pool.query(
+        `
+        SELECT
+          a.airline_name,
+          a.country,
+          UPPER(BTRIM(u.base_icao))
+            AS base_icao
+        FROM public.airlines a
+
+        INNER JOIN public.users u
+          ON u.airline_id = a.airline_id
+
+        WHERE u.base_icao IS NOT NULL
+          AND BTRIM(u.base_icao) <> ''
+
+        ORDER BY
+          LOWER(a.airline_name),
+          a.airline_id
+        `
+      );
+
+      return res.json({
+        ok: true,
+        count: result.rows.length,
+        airlines: result.rows
+      });
+    } catch (err) {
+      console.error(
+        "GET ACTIVE AIRLINES ERROR:",
+        err
+      );
+
+      return res.status(500).json({
+        ok: false,
+        error: "ACTIVE_AIRLINES_FAILED"
+      });
+    }
+  }
+);
+
+/* ============================================================
    CREATE AIRLINE
    ------------------------------------------------------------
    Production-grade flow:
