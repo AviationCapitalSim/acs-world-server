@@ -32,14 +32,40 @@ router.get(
    const result = await pool.query(
   `
   SELECT
+    a.airline_id,
     a.airline_name,
     a.country,
+    a.business_model,
 
     UPPER(BTRIM(u.base_icao))
       AS base_icao,
 
     UPPER(BTRIM(airport.country))
-      AS country_code
+      AS country_code,
+
+    (
+      SELECT COUNT(*)::INTEGER
+      FROM public.aircraft_fleet af
+      WHERE af.airline_id = a.airline_id
+    ) AS active_aircraft,
+
+    (
+      SELECT COUNT(*)::INTEGER
+      FROM public.route_plans rp
+      WHERE rp.airline_id = a.airline_id
+        AND UPPER(
+          COALESCE(
+            rp.route_state,
+            'ACTIVE'
+          )
+        ) = 'ACTIVE'
+    ) AS active_routes,
+
+    NULL::NUMERIC
+      AS company_value,
+
+    NULL::INTEGER
+      AS global_rank
 
   FROM public.airlines a
 
