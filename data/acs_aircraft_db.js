@@ -5005,7 +5005,7 @@ const ACS_AIRCRAFT_DB = [
     required_runway_m: 3050
   },
   {
-    manufacturer: "McDonnell Douglas",
+    manufacturer: "Douglas",
     model: "DC-9-15",
     year: 1966,
     seats: 90,
