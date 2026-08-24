@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import flightRoutes from "./routes/flights.js";
 import worldRoutes from "./routes/world.js";
 import fuelRoutes from "./routes/fuel.js";
+import globalEventsRoutes from "./routes/global_events.js";
 import systemRoutes from "./routes/system.js";
 import authRoutes from "./routes/auth.js";
 import airlineRoutes from "./routes/airlines.js";
@@ -373,6 +374,7 @@ app.get("/health", (req, res) => {
 app.use("/v1", flightRoutes);
 app.use("/v1", worldRoutes);
 app.use("/v1", fuelRoutes);
+app.use("/v1", globalEventsRoutes);
 app.use("/v1", systemRoutes);
 app.use("/v1/auth/login", loginLimiter);
 app.use("/v1/auth/forgot-password", forgotPasswordLimiter);
