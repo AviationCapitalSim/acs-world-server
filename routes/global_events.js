@@ -3,7 +3,15 @@
    ------------------------------------------------------------
    Date: 2026-08-24
    Read-only PostgreSQL global events authority.
+
+   PostgreSQL controls:
+   - Official simulation time.
+   - Publication availability.
+   - Ninety-day visibility for point events.
+   - Historical duration for extended events.
+
    No embedded events, future records or local fallback.
+   No database writes.
    ============================================================ */
 
 import express from "express";
@@ -15,10 +23,18 @@ const router = express.Router();
 /* ============================================================
    GET GLOBAL EVENTS
    ------------------------------------------------------------
-   PostgreSQL determines the official ACS time.
+   Visibility rules:
 
-   Only events whose publication_date has been reached are
-   returned to the browser.
+   1. Future events are not returned.
+
+   2. Point events without event_end_date remain visible for
+      exactly 90 simulated days from publication_date.
+
+   3. Extended events remain visible while event_end_date is
+      equal to or later than the current ACS date.
+
+   4. Expired events remain permanently stored in PostgreSQL,
+      but are not returned to the browser.
 
    event_end_date remains internal and is not exposed.
    ============================================================ */
@@ -34,25 +50,49 @@ router.get(
             acs_get_current_sim_time()
               AS current_sim_time
         ),
-        published_events AS (
+
+        visible_events AS (
           SELECT
-            global_events.id,
-            global_events.event_key,
-            global_events.origin,
-            global_events.category,
-            global_events.headline,
-            global_events.summary,
-            global_events.article,
-            global_events.aviation_effect,
-            global_events.location,
-            global_events.publication_date,
-            global_events.image_filename
-          FROM public.global_events
+            ge.id,
+            ge.event_key,
+            ge.origin,
+            ge.category,
+            ge.headline,
+            ge.summary,
+            ge.article,
+            ge.aviation_effect,
+            ge.location,
+            ge.publication_date,
+            ge.image_filename
+
+          FROM public.global_events AS ge
           CROSS JOIN world_authority
-          WHERE global_events.is_published = TRUE
-            AND global_events.publication_date
+
+          WHERE ge.is_published = TRUE
+
+            AND ge.publication_date
               <= world_authority.current_sim_time::date
+
+            AND (
+              (
+                ge.event_end_date IS NOT NULL
+
+                AND ge.event_end_date::date
+                  >= world_authority.current_sim_time::date
+              )
+
+              OR
+
+              (
+                ge.event_end_date IS NULL
+
+                AND world_authority.current_sim_time::date
+                  < ge.publication_date
+                    + INTERVAL '90 days'
+              )
+            )
         )
+
         SELECT
           world_authority.current_sim_time,
 
@@ -60,40 +100,44 @@ router.get(
             JSONB_AGG(
               JSONB_BUILD_OBJECT(
                 'id',
-                  published_events.id,
+                  visible_events.id,
                 'event_key',
-                  published_events.event_key,
+                  visible_events.event_key,
                 'origin',
-                  published_events.origin,
+                  visible_events.origin,
                 'category',
-                  published_events.category,
+                  visible_events.category,
                 'headline',
-                  published_events.headline,
+                  visible_events.headline,
                 'summary',
-                  published_events.summary,
+                  visible_events.summary,
                 'article',
-                  published_events.article,
+                  visible_events.article,
                 'aviation_effect',
-                  published_events.aviation_effect,
+                  visible_events.aviation_effect,
                 'location',
-                  published_events.location,
+                  visible_events.location,
                 'publication_date',
-                  published_events.publication_date,
+                  visible_events.publication_date,
                 'image_filename',
-                  published_events.image_filename
+                  visible_events.image_filename
               )
+
               ORDER BY
-                published_events.publication_date DESC,
-                published_events.id DESC
+                visible_events.publication_date DESC,
+                visible_events.id DESC
             ) FILTER (
-              WHERE published_events.id IS NOT NULL
+              WHERE visible_events.id IS NOT NULL
             ),
+
             '[]'::JSONB
           ) AS events
 
         FROM world_authority
-        LEFT JOIN published_events
+
+        LEFT JOIN visible_events
           ON TRUE
+
         GROUP BY
           world_authority.current_sim_time
       `);
