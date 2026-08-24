@@ -9,6 +9,7 @@
    - Publication availability.
    - Ninety-day visibility for point events.
    - Historical duration for extended events.
+   - Active lifecycle identification.
 
    No embedded events, future records or local fallback.
    No database writes.
@@ -35,6 +36,11 @@ const router = express.Router();
 
    4. Expired events remain permanently stored in PostgreSQL,
       but are not returned to the browser.
+
+   Lifecycle:
+
+   is_active = true only when an extended event remains inside
+   its historical start/end period.
 
    event_end_date remains internal and is not exposed.
    ============================================================ */
@@ -63,7 +69,17 @@ router.get(
             ge.aviation_effect,
             ge.location,
             ge.publication_date,
-            ge.image_filename
+            ge.image_filename,
+
+            CASE
+              WHEN ge.event_end_date IS NOT NULL
+                AND ge.event_start_date::date
+                  <= world_authority.current_sim_time::date
+                AND ge.event_end_date::date
+                  >= world_authority.current_sim_time::date
+              THEN TRUE
+              ELSE FALSE
+            END AS is_active
 
           FROM public.global_events AS ge
           CROSS JOIN world_authority
@@ -120,7 +136,9 @@ router.get(
                 'publication_date',
                   visible_events.publication_date,
                 'image_filename',
-                  visible_events.image_filename
+                  visible_events.image_filename,
+                'is_active',
+                  visible_events.is_active
               )
 
               ORDER BY
