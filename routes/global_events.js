@@ -7,11 +7,12 @@
    PostgreSQL controls:
    - Official simulation time.
    - Publication availability.
+   - Global 365-day visibility.
    - ACTIVE / NORMAL lifecycle status.
    - Global event totals.
 
-   All published events are returned.
-   Future events remain hidden.
+   All eligible published events are returned.
+   Future and expired events remain hidden.
    No embedded data, local fallback or database writes.
    ============================================================ */
 
@@ -28,7 +29,11 @@ const router = express.Router();
 
    PUBLICATION:
    - Future events remain hidden.
-   - Every published event is returned.
+   - Every published event uses the global 365-day rule.
+   - Extended events remain visible until 365 simulated days
+     after event_end_date.
+   - Events without event_end_date remain visible until
+     365 simulated days after publication_date.
 
    ACTIVE:
    - Point event inside its first 90 simulated days.
@@ -36,9 +41,6 @@ const router = express.Router();
 
    NORMAL:
    - Published event outside its ACTIVE period.
-
-   The 60-day NORMAL visibility filter will be connected only
-   after this complete 270-event response is verified.
    ============================================================ */
 
 router.get(
@@ -97,8 +99,16 @@ router.get(
 
           WHERE ge.is_published = TRUE
 
+            /* Future events remain hidden */
             AND ge.publication_date
                 <= world_authority.current_sim_time::date
+
+            /* Global 365-day visibility rule */
+            AND world_authority.current_sim_time::date
+                <= COALESCE(
+                     ge.event_end_date,
+                     ge.publication_date
+                   ) + 365
         )
 
         SELECT
