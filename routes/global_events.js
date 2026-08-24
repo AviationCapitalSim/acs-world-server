@@ -4,14 +4,12 @@
    Date: 2026-08-24
    Read-only PostgreSQL global events authority.
 
-   PostgreSQL controls:
-   - Official simulation time.
-   - Publication availability.
-   - ACTIVE / NORMAL lifecycle status.
-   - Global event totals.
+   Lifecycle:
+   - ACTIVE
+   - NORMAL
+   - EXPIRED
 
-   All published events are returned.
-   Future events remain hidden.
+   PostgreSQL remains the permanent historical authority.
    No embedded data, local fallback or database writes.
    ============================================================ */
 
@@ -24,21 +22,17 @@ const router = express.Router();
 /* ============================================================
    GET GLOBAL EVENTS
    ------------------------------------------------------------
-   CURRENT IMPLEMENTATION
+   POINT EVENTS
+   - ACTIVE: first 90 simulated days.
+   - NORMAL: following 60 simulated days.
+   - EXPIRED: removed from the visible table.
 
-   PUBLICATION:
-   - Future events remain hidden.
-   - Every published event is returned.
+   EXTENDED EVENTS
+   - ACTIVE: through event_end_date.
+   - NORMAL: 60 days after event_end_date.
+   - EXPIRED: removed from the visible table.
 
-   ACTIVE:
-   - Point event inside its first 90 simulated days.
-   - Extended event inside event_start_date/event_end_date.
-
-   NORMAL:
-   - Published event outside its ACTIVE period.
-
-   The 60-day NORMAL visibility filter will be connected only
-   after this complete 270-event response is verified.
+   Expired records remain permanently stored in PostgreSQL.
    ============================================================ */
 
 router.get(
@@ -53,7 +47,7 @@ router.get(
               AS current_sim_time
         ),
 
-        published_events AS (
+        classified_events AS (
           SELECT
             ge.id,
             ge.event_key,
@@ -68,7 +62,7 @@ router.get(
             ge.image_filename,
 
             CASE
-              /* Extended event currently in effect */
+              /* Extended event currently ACTIVE */
               WHEN ge.event_end_date IS NOT NULL
                 AND COALESCE(
                       ge.event_start_date::date,
@@ -79,26 +73,50 @@ router.get(
                     >= world_authority.current_sim_time::date
               THEN 'ACTIVE'
 
-              /* Point event inside its 90-day period */
+              /* Extended event inside 60-day NORMAL period */
+              WHEN ge.event_end_date IS NOT NULL
+                AND world_authority.current_sim_time::date
+                    > ge.event_end_date::date
+                AND world_authority.current_sim_time::date
+                    < ge.event_end_date::date
+                      + INTERVAL '60 days'
+              THEN 'NORMAL'
+
+              /* Point event inside 90-day ACTIVE period */
               WHEN ge.event_end_date IS NULL
-                AND ge.publication_date
-                    <= world_authority.current_sim_time::date
                 AND world_authority.current_sim_time::date
                     < ge.publication_date
                       + INTERVAL '90 days'
               THEN 'ACTIVE'
 
-              /* Published event outside active period */
-              ELSE 'NORMAL'
+              /* Point event inside following 60-day NORMAL period */
+              WHEN ge.event_end_date IS NULL
+                AND world_authority.current_sim_time::date
+                    >= ge.publication_date
+                      + INTERVAL '90 days'
+                AND world_authority.current_sim_time::date
+                    < ge.publication_date
+                      + INTERVAL '150 days'
+              THEN 'NORMAL'
+
+              ELSE 'EXPIRED'
             END AS lifecycle_status
 
           FROM public.global_events AS ge
           CROSS JOIN world_authority
 
           WHERE ge.is_published = TRUE
-
             AND ge.publication_date
                 <= world_authority.current_sim_time::date
+        ),
+
+        visible_events AS (
+          SELECT *
+          FROM classified_events
+          WHERE lifecycle_status IN (
+            'ACTIVE',
+            'NORMAL'
+          )
         )
 
         SELECT
@@ -108,38 +126,43 @@ router.get(
             JSONB_AGG(
               JSONB_BUILD_OBJECT(
                 'id',
-                  published_events.id,
+                  visible_events.id,
                 'event_key',
-                  published_events.event_key,
+                  visible_events.event_key,
                 'origin',
-                  published_events.origin,
+                  visible_events.origin,
                 'category',
-                  published_events.category,
+                  visible_events.category,
                 'headline',
-                  published_events.headline,
+                  visible_events.headline,
                 'summary',
-                  published_events.summary,
+                  visible_events.summary,
                 'article',
-                  published_events.article,
+                  visible_events.article,
                 'aviation_effect',
-                  published_events.aviation_effect,
+                  visible_events.aviation_effect,
                 'location',
-                  published_events.location,
+                  visible_events.location,
                 'publication_date',
-                  published_events.publication_date,
+                  visible_events.publication_date,
                 'image_filename',
-                  published_events.image_filename,
+                  visible_events.image_filename,
                 'lifecycle_status',
-                  published_events.lifecycle_status,
+                  visible_events.lifecycle_status,
                 'is_active',
-                  published_events.lifecycle_status = 'ACTIVE'
+                  visible_events.lifecycle_status = 'ACTIVE'
               )
 
               ORDER BY
-                published_events.publication_date DESC,
-                published_events.id DESC
+                CASE
+                  WHEN visible_events.lifecycle_status = 'ACTIVE'
+                    THEN 0
+                  ELSE 1
+                END,
+                visible_events.publication_date DESC,
+                visible_events.id DESC
             ) FILTER (
-              WHERE published_events.id IS NOT NULL
+              WHERE visible_events.id IS NOT NULL
             ),
 
             '[]'::JSONB
@@ -147,7 +170,7 @@ router.get(
 
         FROM world_authority
 
-        LEFT JOIN published_events
+        LEFT JOIN visible_events
           ON TRUE
 
         GROUP BY
@@ -174,8 +197,10 @@ router.get(
           event.lifecycle_status === "ACTIVE"
       ).length;
 
-      const normalTotal =
-        events.length - activeTotal;
+      const normalTotal = events.filter(
+        (event) =>
+          event.lifecycle_status === "NORMAL"
+      ).length;
 
       const worldStatus =
         activeTotal > 0
