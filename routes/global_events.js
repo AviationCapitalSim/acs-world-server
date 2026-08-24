@@ -8,7 +8,6 @@
    - Official simulation time.
    - Publication availability.
    - Global 365-day visibility.
-   - ACTIVE / NORMAL lifecycle status.
    - Global event totals.
 
    All eligible published events are returned.
@@ -35,12 +34,7 @@ const router = express.Router();
    - Events without event_end_date remain visible until
      365 simulated days after publication_date.
 
-   ACTIVE:
-   - Point event inside its first 90 simulated days.
-   - Extended event inside event_start_date/event_end_date.
-
-   NORMAL:
-   - Published event outside its ACTIVE period.
+   No ACTIVE or NORMAL lifecycle classification is applied.
    ============================================================ */
 
 router.get(
@@ -67,32 +61,7 @@ router.get(
             ge.aviation_effect,
             ge.location,
             ge.publication_date,
-            ge.image_filename,
-
-            CASE
-              /* Extended event currently in effect */
-              WHEN ge.event_end_date IS NOT NULL
-                AND COALESCE(
-                      ge.event_start_date::date,
-                      ge.publication_date
-                    )
-                    <= world_authority.current_sim_time::date
-                AND ge.event_end_date::date
-                    >= world_authority.current_sim_time::date
-              THEN 'ACTIVE'
-
-              /* Point event inside its 90-day period */
-              WHEN ge.event_end_date IS NULL
-                AND ge.publication_date
-                    <= world_authority.current_sim_time::date
-                AND world_authority.current_sim_time::date
-                    < ge.publication_date
-                      + INTERVAL '90 days'
-              THEN 'ACTIVE'
-
-              /* Published event outside active period */
-              ELSE 'NORMAL'
-            END AS lifecycle_status
+            ge.image_filename
 
           FROM public.global_events AS ge
           CROSS JOIN world_authority
@@ -138,11 +107,7 @@ router.get(
                 'publication_date',
                   published_events.publication_date,
                 'image_filename',
-                  published_events.image_filename,
-                'lifecycle_status',
-                  published_events.lifecycle_status,
-                'is_active',
-                  published_events.lifecycle_status = 'ACTIVE'
+                  published_events.image_filename
               )
 
               ORDER BY
@@ -179,19 +144,6 @@ router.get(
         });
       }
 
-      const activeTotal = events.filter(
-        (event) =>
-          event.lifecycle_status === "ACTIVE"
-      ).length;
-
-      const normalTotal =
-        events.length - activeTotal;
-
-      const worldStatus =
-        activeTotal > 0
-          ? "ACTIVE"
-          : "NORMAL";
-
       res.set("Cache-Control", "no-store");
 
       return res.status(200).json({
@@ -199,10 +151,7 @@ router.get(
         time_source:
           "POSTGRESQL_TIME_AUTHORITY",
         current_sim_time: currentSimTime,
-        world_status: worldStatus,
         total: events.length,
-        active_total: activeTotal,
-        normal_total: normalTotal,
         events
       });
 
