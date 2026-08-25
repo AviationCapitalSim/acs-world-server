@@ -1497,22 +1497,26 @@ router.post(
       const updatedLoanResult =
         await client.query(
           `
-          UPDATE public.bank_loans
+                    UPDATE public.bank_loans
 
           SET
-            remaining_principal = $3,
+            remaining_principal =
+              $3::BIGINT,
 
             status =
               CASE
-                WHEN $3 = 0 THEN 'PAID'
+                WHEN $3::BIGINT = 0
+                  THEN 'PAID'
                 ELSE status
               END,
 
-            last_payment_sim_time = $4,
+            last_payment_sim_time =
+              $4::TIMESTAMP,
 
             closed_sim_time =
               CASE
-                WHEN $3 = 0 THEN $4
+                WHEN $3::BIGINT = 0
+                  THEN $4::TIMESTAMP
                 ELSE closed_sim_time
               END,
 
