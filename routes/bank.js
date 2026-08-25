@@ -162,6 +162,7 @@ router.get("/bank/summary", requireAuth, async (req, res) => {
         SELECT
           id,
           loan_reference,
+          loan_product_code,
           status,
           collateral_mode,
 
@@ -254,6 +255,18 @@ router.get("/bank/summary", requireAuth, async (req, res) => {
         ) > 0
     );
 
+    const activeInfrastructureFacility =
+      activeLoans.find(
+        loan =>
+          String(
+            loan.loan_product_code || ""
+          ).toUpperCase() ===
+          "ACS_INITIAL_INFRASTRUCTURE_FACILITY"
+      ) || null;
+
+    const standardCreditAllowed =
+      !activeInfrastructureFacility;
+    
     const totalOutstanding =
       activeLoans.reduce(
         (total, loan) =>
@@ -339,16 +352,26 @@ router.get("/bank/summary", requireAuth, async (req, res) => {
         bankNumber(context.max_ltv)
       );
 
-    const loanCapacity =
+    const calculatedLoanCapacity =
       Math.max(
         0,
         maximumCredit - totalOutstanding
       );
 
+    const loanCapacity =
+      standardCreditAllowed
+        ? calculatedLoanCapacity
+        : 0;
+
     const mappedLoans =
       loans.map(loan => ({
         id: String(loan.id),
         ref: loan.loan_reference,
+
+        productCode:
+          loan.loan_product_code ||
+          "STANDARD",
+
         status: loan.status,
 
         collateralMode:
@@ -469,9 +492,42 @@ router.get("/bank/summary", requireAuth, async (req, res) => {
         aircraftCount,
 
       maximumCredit,
+      calculatedLoanCapacity,
       loanCapacity,
+
       creditAvailability:
         loanCapacity,
+
+      standardCreditAllowed,
+
+      creditRestriction:
+        activeInfrastructureFacility
+          ? {
+              code:
+                "INITIAL_INFRASTRUCTURE_FACILITY_ACTIVE",
+
+              facilityLoanId:
+                String(
+                  activeInfrastructureFacility.id
+                ),
+
+              facilityReference:
+                activeInfrastructureFacility
+                  .loan_reference,
+
+              remainingPrincipal:
+                bankNumber(
+                  activeInfrastructureFacility
+                    .remaining_principal
+                ),
+
+              monthlyPayment:
+                bankNumber(
+                  activeInfrastructureFacility
+                    .monthly_payment
+                )
+            }
+          : null,
 
       interestRate,
       debtRatio,
@@ -588,6 +644,7 @@ function bankAmortization(principal, annualRate, months) {
    ============================================================ */
 
 router.get("/bank/collateral", requireAuth, async (req, res) => {
+  
   try {
     const airlineId = Number(req.airline_id);
 
@@ -707,8 +764,71 @@ router.post("/bank/loans", requireAuth, async (req, res) => {
 
   const client = await pool.connect();
 
-  try {
+    try {
     await client.query("BEGIN");
+
+    /* ========================================================
+       ACS INITIAL INFRASTRUCTURE FACILITY RESTRICTION
+       Standard credit remains denied until fully repaid.
+       ======================================================== */
+
+    const infrastructureFacilityResult =
+      await client.query(
+        `
+        SELECT
+          id,
+          loan_reference,
+          remaining_principal,
+          monthly_payment
+
+        FROM public.bank_loans
+
+        WHERE airline_id = $1
+
+          AND loan_product_code =
+              'ACS_INITIAL_INFRASTRUCTURE_FACILITY'
+
+          AND status = 'ACTIVE'
+          AND remaining_principal > 0
+
+        ORDER BY id DESC
+
+        LIMIT 1
+
+        FOR UPDATE
+        `,
+        [airlineId]
+      );
+
+    if (
+      infrastructureFacilityResult.rows.length >
+      0
+    ) {
+      const facility =
+        infrastructureFacilityResult.rows[0];
+
+      throw bankHttpError(
+        409,
+        "INITIAL_INFRASTRUCTURE_FACILITY_ACTIVE",
+        {
+          facility_loan_id:
+            String(facility.id),
+
+          facility_reference:
+            facility.loan_reference,
+
+          remaining_principal:
+            bankNumber(
+              facility.remaining_principal
+            ),
+
+          monthly_payment:
+            bankNumber(
+              facility.monthly_payment
+            )
+        }
+      );
+    }
 
     const contextResult = await client.query(
       `
@@ -769,6 +889,9 @@ router.post("/bank/loans", requireAuth, async (req, res) => {
       FROM public.bank_loans
 
       WHERE airline_id = $1
+
+      AND loan_product_code =
+            'STANDARD'
 
       ORDER BY opened_sim_time DESC, id DESC
       LIMIT 1
