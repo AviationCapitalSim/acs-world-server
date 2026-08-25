@@ -2392,6 +2392,7 @@ async function ACS_archiveFinanceMonth(
       cost_taxes,
       cost_loans,
       cost_other,
+      cost_company_infrastructure,
 
       cost_new_aircraft_purchase,
       cost_used_aircraft_purchase,
@@ -2441,15 +2442,16 @@ async function ACS_archiveFinanceMonth(
       $24,
       $25,
       $26,
-
       $27,
-      $28,
 
+      $28,
       $29,
+
+      $30,
       0,
 
-      $30,
-      $30,
+      $31,
+      $31,
       'MONTHLY_CLOSE',
       'VERIFIED',
       MAKE_DATE($2, $3, 1)::TIMESTAMP,
@@ -2507,6 +2509,9 @@ async function ACS_archiveFinanceMonth(
       ACS_toInteger(finance.cost_taxes),
       ACS_toInteger(finance.cost_loans),
       ACS_toInteger(finance.cost_other),
+      ACS_toInteger(
+        finance.cost_company_infrastructure
+      ),
 
       ACS_toInteger(
         finance.cost_new_aircraft_purchase
@@ -2621,6 +2626,7 @@ async function ACS_openNextFinanceMonth(
       cost_taxes = 0,
       cost_airport = 0,
       cost_other = 0,
+      cost_company_infrastructure = 0,
 
       cost_handling = 0,
       cost_landing = 0,
