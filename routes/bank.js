@@ -117,7 +117,8 @@ router.get("/bank/summary", requireAuth, async (req, res) => {
     const [
       fleetResult,
       loansResult,
-      collateralResult
+      collateralResult,
+      financeResult
     ] = await Promise.all([
       pool.query(
         `
@@ -212,6 +213,20 @@ router.get("/bank/summary", requireAuth, async (req, res) => {
           AND released_sim_time IS NULL
         `,
         [airlineId]
+      ),
+
+      pool.query(
+        `
+        SELECT
+          COALESCE(capital, 0)::BIGINT
+            AS available_capital
+
+        FROM public.company_finance
+
+        WHERE airline_id = $1
+        LIMIT 1
+        `,
+        [airlineId]
       )
     ]);
 
@@ -221,6 +236,10 @@ router.get("/bank/summary", requireAuth, async (req, res) => {
 
     const aircraftCount = bankNumber(
       fleetResult.rows[0]?.aircraft_count
+    );
+
+    const availableCapital = bankNumber(
+      financeResult.rows[0]?.available_capital
     );
 
     const loans = loansResult.rows;
