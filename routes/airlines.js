@@ -251,6 +251,13 @@ const ALLOWED_OPERATION_MODES = new Set([
   "Passenger"
 ]);
 
+const ALLOWED_AIRLINE_TYPES = new Set([
+  "STARTER",
+  "MEDIUM",
+  "ADVANCED",
+  "GLOBAL"
+]);
+
 function normalizeRequiredText(value) {
   if (typeof value !== "string") {
     return null;
@@ -259,6 +266,69 @@ function normalizeRequiredText(value) {
   return value
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function calculateInfrastructureFacility(
+  principal,
+  annualInterestRate,
+  termMonths
+) {
+  const amount = Number(principal);
+  const annualRate =
+    Number(annualInterestRate);
+  const months = Number(termMonths);
+
+  if (
+    !Number.isSafeInteger(amount) ||
+    amount <= 0 ||
+    !Number.isFinite(annualRate) ||
+    annualRate < 0 ||
+    !Number.isInteger(months) ||
+    months <= 0
+  ) {
+    throw new Error(
+      "INVALID_INFRASTRUCTURE_FACILITY_VALUES"
+    );
+  }
+
+  const monthlyRate =
+    annualRate / 1200;
+
+  const rawMonthlyPayment =
+    monthlyRate === 0
+      ? amount / months
+      : (
+          amount *
+          monthlyRate *
+          Math.pow(
+            1 + monthlyRate,
+            months
+          )
+        ) / (
+          Math.pow(
+            1 + monthlyRate,
+            months
+          ) - 1
+        );
+
+  const monthlyPayment =
+    Math.max(
+      1,
+      Math.ceil(rawMonthlyPayment)
+    );
+
+  const totalRepayment =
+    monthlyPayment * months;
+
+  return {
+    monthlyPayment,
+    totalRepayment,
+    totalInterest:
+      Math.max(
+        0,
+        totalRepayment - amount
+      )
+  };
 }
 
 function validateCreateAirlinePayload(payload) {
@@ -298,12 +368,23 @@ function validateCreateAirlinePayload(payload) {
       payload.operation_mode
     );
 
+  const airlineTypeValue =
+    normalizeRequiredText(
+      payload.airline_type
+    );
+
+  const airlineType =
+    airlineTypeValue
+      ? airlineTypeValue.toUpperCase()
+      : null;
+
   const requiredValues = {
     airline_name: airlineName,
     country,
     region,
     business_model: businessModel,
-    operation_mode: operationMode
+    operation_mode: operationMode,
+    airline_type: airlineType
   };
 
   for (
@@ -325,15 +406,21 @@ function validateCreateAirlinePayload(payload) {
   ) {
     return {
       ok: false,
-      error: "INVALID_AIRLINE_NAME_LENGTH",
+      error:
+        "INVALID_AIRLINE_NAME_LENGTH",
       field: "airline_name"
     };
   }
 
-  if (/[\u0000-\u001F\u007F]/.test(airlineName)) {
+  if (
+    /[\u0000-\u001F\u007F]/.test(
+      airlineName
+    )
+  ) {
     return {
       ok: false,
-      error: "INVALID_AIRLINE_NAME_CHARACTERS",
+      error:
+        "INVALID_AIRLINE_NAME_CHARACTERS",
       field: "airline_name"
     };
   }
@@ -378,6 +465,21 @@ function validateCreateAirlinePayload(payload) {
     };
   }
 
+  if (
+    !ALLOWED_AIRLINE_TYPES.has(
+      airlineType
+    )
+  ) {
+    return {
+      ok: false,
+      error: "INVALID_AIRLINE_TYPE",
+      field: "airline_type",
+      allowed_values: [
+        ...ALLOWED_AIRLINE_TYPES
+      ]
+    };
+  }
+
   return {
     ok: true,
     data: {
@@ -385,7 +487,8 @@ function validateCreateAirlinePayload(payload) {
       country,
       region,
       businessModel,
-      operationMode
+      operationMode,
+      airlineType
     }
   };
 }
@@ -741,297 +844,886 @@ router.get(
 /* ============================================================
    CREATE AIRLINE
    ------------------------------------------------------------
-   Production-grade flow:
+   Transactional ACS onboarding:
    - Session user is authority
-   - Prevent duplicate airline per user
-   - Repair user/session airline link if airline already exists
-   - Create airline transactionally
-   - Link users.airline_id
-   - Link active sessions.airline_id
-   - Initialize HR
-============================================================ */
-
-router.post("/airlines/create", requireAuth, async (req, res) => {
-
-  const body = req.body || {};
-const userUUID = req.user_id;
-
-const client = await pool.connect();
-
-try {
-
-  await client.query("BEGIN");
-
-  /* ============================================================
-     1️⃣ Check if user already has an airline
-     ------------------------------------------------------------
-     Repair links before requiring a new creation payload.
-  ============================================================ */
-
-  const existing = await client.query(
-    `
-    SELECT airline_id
-    FROM public.airlines
-    WHERE user_id = $1
-    LIMIT 1
-    `,
-    [userUUID]
-  );
-
-  if (existing.rows.length > 0) {
-
-    const existingAirlineId =
-      existing.rows[0].airline_id;
-
-    await client.query(
-      `
-      UPDATE public.users
-      SET airline_id = $1
-      WHERE user_id = $2
-        AND (
-          airline_id IS NULL
-          OR airline_id <> $1
-        )
-      `,
-      [existingAirlineId, userUUID]
-    );
-
-    await client.query(
-      `
-      UPDATE public.sessions
-      SET airline_id = $1
-      WHERE user_id = $2
-        AND active = true
-        AND (
-          airline_id IS NULL
-          OR airline_id <> $1
-        )
-      `,
-      [existingAirlineId, userUUID]
-    );
-
-    await client.query("COMMIT");
-
-    return res.status(200).json({
-      ok: true,
-      status:
-        "AIRLINE_ALREADY_EXISTS_LINK_REPAIRED",
-      airline_id: existingAirlineId
-    });
-  }
-
-  /* ============================================================
-     2️⃣ Validate and normalize creation payload
-  ============================================================ */
-
-  const validation =
-    validateCreateAirlinePayload(body);
-
-  if (!validation.ok) {
-    await client.query("ROLLBACK");
-
-    return res.status(400).json(
-      validation
-    );
-  }
-
-  const {
-    airlineName,
-    country,
-    region,
-    businessModel,
-    operationMode
-  } = validation.data;
-
-    /* ============================================================
-       3️⃣ Check duplicate airline name
-    ============================================================ */
-
-    const nameCheck = await client.query(
-      `
-      SELECT 1
-      FROM airlines
-      WHERE LOWER(BTRIM(airline_name)) =
-      LOWER($1)
-      LIMIT 1
-      `,
-      [airlineName]
-    );
-
-    if (nameCheck.rows.length > 0) {
-
-      await client.query("ROLLBACK");
-
-      return res.status(400).json({
-        ok: false,
-        error: "AIRLINE_NAME_ALREADY_EXISTS"
-      });
-
-    }
-
-   /* ============================================================
-   SERIALIZE DESIGNATOR ASSIGNMENT
+   - Validates selected airline type
+   - Validates airport type limit
+   - Creates airline
+   - Creates company infrastructure
+   - Creates one-time infrastructure facility
+   - Does not deposit facility principal into capital
+   - Links user and active sessions
+   - Initializes HR
    ============================================================ */
 
-await client.query(
-  `
-  SELECT pg_advisory_xact_lock(
-    hashtext($1)
-  )
-  `,
-  ["ACS_AIRLINE_DESIGNATOR_ALLOCATION"]
-);
+router.post(
+  "/airlines/create",
+  requireAuth,
+  async (req, res) => {
 
-const assignedDesignators =
-  await generateAvailableDesignators(
-    client,
-    airlineName
-  );
-  
-    /* ============================================================
-       4️⃣ Create airline
-    ============================================================ */
+    const body = req.body || {};
+    const userUUID = req.user_id;
 
-    const insertAirline = await client.query(
-      `
-      INSERT INTO airlines
-      (
-        user_id,
-        airline_name,
-        iata,
-        icao,
+    const client = await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      /* ========================================================
+         1. EXISTING AIRLINE
+         ======================================================== */
+
+      const existing = await client.query(
+        `
+        SELECT airline_id
+        FROM public.airlines
+        WHERE user_id = $1
+        LIMIT 1
+        `,
+        [userUUID]
+      );
+
+      if (existing.rows.length > 0) {
+        const existingAirlineId =
+          existing.rows[0].airline_id;
+
+        await client.query(
+          `
+          UPDATE public.users
+          SET airline_id = $1
+          WHERE user_id = $2
+            AND (
+              airline_id IS NULL
+              OR airline_id <> $1
+            )
+          `,
+          [
+            existingAirlineId,
+            userUUID
+          ]
+        );
+
+        await client.query(
+          `
+          UPDATE public.sessions
+          SET airline_id = $1
+          WHERE user_id = $2
+            AND active = TRUE
+            AND (
+              airline_id IS NULL
+              OR airline_id <> $1
+            )
+          `,
+          [
+            existingAirlineId,
+            userUUID
+          ]
+        );
+
+        await client.query("COMMIT");
+
+        return res.status(200).json({
+          ok: true,
+          status:
+            "AIRLINE_ALREADY_EXISTS_LINK_REPAIRED",
+          airline_id:
+            existingAirlineId
+        });
+      }
+
+      /* ========================================================
+         2. PAYLOAD VALIDATION
+         ======================================================== */
+
+      const validation =
+        validateCreateAirlinePayload(body);
+
+      if (!validation.ok) {
+        await client.query("ROLLBACK");
+
+        return res.status(400).json(
+          validation
+        );
+      }
+
+      const {
+        airlineName,
         country,
         region,
-        business_model,
-        operation_mode
-      )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-      RETURNING airline_id
-      `,
-      [
-  userUUID,
-  airlineName,
-  assignedDesignators.iata,
-  assignedDesignators.icao,
-  country,
-  region,
-  businessModel,
-  operationMode
-]
-    );
+        businessModel,
+        operationMode,
+        airlineType
+      } = validation.data;
 
-    const airlineId = insertAirline.rows[0].airline_id;
+      /* ========================================================
+         3. LOCK USER AND READ BASE
+         ======================================================== */
 
-    /* ============================================================
-       5️⃣ Link airline to user
-    ============================================================ */
+      const userResult = await client.query(
+        `
+        SELECT
+          user_id,
+          UPPER(BTRIM(base_icao))
+            AS base_icao
 
-    const userUpdate = await client.query(
-      `
-      UPDATE users
-      SET airline_id = $1
-      WHERE user_id = $2
-      RETURNING user_id, airline_id
-      `,
-      [airlineId, userUUID]
-    );
+        FROM public.users
 
-    if (!userUpdate.rows.length) {
-      throw new Error("USER_LINK_FAILED");
-    }
+        WHERE user_id = $1
 
-    /* ============================================================
-       6️⃣ Link active sessions to airline
-    ============================================================ */
+        FOR UPDATE
+        `,
+        [userUUID]
+      );
 
-    await client.query(
-      `
-      UPDATE sessions
-      SET airline_id = $1
-      WHERE user_id = $2
-        AND active = true
-      `,
-      [airlineId, userUUID]
-    );
+      if (!userResult.rows.length) {
+        await client.query("ROLLBACK");
 
-    /* ============================================================
-       7️⃣ Initialize HR Departments
-    ============================================================ */
+        return res.status(404).json({
+          ok: false,
+          error: "USER_NOT_FOUND"
+        });
+      }
 
-    await client.query(
-      `
-      SELECT init_airline_hr($1)
-      `,
-      [airlineId]
-    );
+      const baseIcao =
+        String(
+          userResult.rows[0].base_icao || ""
+        ).trim().toUpperCase();
 
-    console.log("HR INITIALIZED FOR AIRLINE", airlineId);
+      if (!/^[A-Z0-9]{4}$/.test(baseIcao)) {
+        await client.query("ROLLBACK");
 
-    /* ============================================================
-       COMMIT
-    ============================================================ */
+        return res.status(409).json({
+          ok: false,
+          error:
+            "ONBOARDING_BASE_NOT_FOUND"
+        });
+      }
 
-    await client.query("COMMIT");
+      /* ========================================================
+         4. AIRPORT, INFRASTRUCTURE AND BANK AUTHORITY
+         ======================================================== */
 
-    console.log("DEBUG CREATE AIRLINE", {
-      airlineId,
-      userUUID,
-      linkedUser: true,
-      linkedSession: true,
-      hrInitialized: true
-    });
+      const authorityResult =
+        await client.query(
+          `
+          WITH infrastructure_clock AS (
+            SELECT
+              public.acs_get_current_sim_time()
+                AS current_sim_time,
 
-    return res.json({
-  ok: true,
-  airline_id: airlineId,
-  airline_iata:
-    assignedDesignators.iata,
-  airline_icao:
-    assignedDesignators.icao
-});
+              EXTRACT(
+                YEAR FROM
+                public.acs_get_current_sim_time()
+              )::INTEGER AS sim_year,
 
-  } catch (err) {
+              FLOOR(
+                EXTRACT(
+                  EPOCH FROM
+                  public.acs_get_current_sim_time()
+                ) * 1000
+              )::BIGINT AS sim_timestamp_ms
+          )
 
-  await client.query("ROLLBACK");
+          SELECT
+            UPPER(BTRIM(airport.icao))
+              AS base_icao,
 
-  console.error(
-    "CREATE AIRLINE ERROR:",
-    err
-  );
+            CASE
+              WHEN UPPER(airport.country) IN (
+                'AE',
+                'BH',
+                'IQ',
+                'IR',
+                'IL',
+                'JO',
+                'KW',
+                'LB',
+                'OM',
+                'PS',
+                'QA',
+                'SA',
+                'SY',
+                'TR',
+                'YE'
+              )
+              THEN 'Middle East'
+              ELSE airport.continent
+            END AS authority_region,
 
-  if (err.code === "23505") {
-    const constraint =
-      String(err.constraint || "");
+            airport.region
+              AS authority_country,
 
-    if (
-      constraint.includes("iata") ||
-      constraint.includes("icao")
-    ) {
-      return res.status(409).json({
+            UPPER(
+              BTRIM(
+                airport.airline_type_limit
+              )
+            ) AS airline_type_limit,
+
+            selected_policy.type_rank
+              AS selected_type_rank,
+
+            airport_limit_policy.type_rank
+              AS airport_limit_rank,
+
+            clock.current_sim_time,
+            clock.sim_year,
+            clock.sim_timestamp_ms,
+
+            infrastructure.historical_factor,
+            infrastructure.initial_investment,
+            infrastructure.monthly_operating_cost,
+            infrastructure.facility_term_months,
+            infrastructure.revision_code,
+
+            bank_policy.id
+              AS bank_policy_id,
+
+            bank_policy.policy_code
+              AS bank_policy_code,
+
+            bank_policy.base_interest_rate
+
+          FROM
+            public.v_acs_airport_authority_current
+              airport
+
+          INNER JOIN
+            public.acs_infrastructure_type_policy
+              selected_policy
+            ON selected_policy.airline_type = $2
+           AND selected_policy.is_active = TRUE
+
+          INNER JOIN
+            public.acs_infrastructure_type_policy
+              airport_limit_policy
+            ON airport_limit_policy.airline_type =
+               UPPER(
+                 BTRIM(
+                   airport.airline_type_limit
+                 )
+               )
+           AND airport_limit_policy.is_active = TRUE
+
+          CROSS JOIN infrastructure_clock clock
+
+          CROSS JOIN LATERAL
+            public.acs_resolve_infrastructure_policy(
+              $2,
+              clock.sim_year
+            ) infrastructure
+
+          LEFT JOIN LATERAL (
+            SELECT
+              policy.id,
+              policy.policy_code,
+              policy.base_interest_rate
+
+            FROM public.bank_credit_policy policy
+
+            WHERE clock.sim_year
+                  BETWEEN
+                    policy.era_start_year
+                    AND policy.era_end_year
+
+              AND policy.is_active = TRUE
+
+            ORDER BY
+              policy.era_start_year DESC
+
+            LIMIT 1
+          ) bank_policy
+            ON TRUE
+
+          WHERE UPPER(BTRIM(airport.icao)) = $1
+
+          LIMIT 1
+          `,
+          [
+            baseIcao,
+            airlineType
+          ]
+        );
+
+      if (!authorityResult.rows.length) {
+        await client.query("ROLLBACK");
+
+        return res.status(409).json({
+          ok: false,
+          error:
+            "AIRLINE_INFRASTRUCTURE_AUTHORITY_NOT_FOUND"
+        });
+      }
+
+      const authority =
+        authorityResult.rows[0];
+
+      if (!authority.bank_policy_id) {
+        await client.query("ROLLBACK");
+
+        return res.status(409).json({
+          ok: false,
+          error: "BANK_POLICY_NOT_FOUND",
+          sim_year:
+            authority.sim_year || null
+        });
+      }
+
+      if (
+        Number(authority.selected_type_rank) >
+        Number(authority.airport_limit_rank)
+      ) {
+        await client.query("ROLLBACK");
+
+        return res.status(409).json({
+          ok: false,
+          error:
+            "AIRLINE_TYPE_NOT_AVAILABLE_AT_BASE",
+          selected_airline_type:
+            airlineType,
+          airport_airline_type_limit:
+            authority.airline_type_limit
+        });
+      }
+
+      const authorityCountry =
+        String(
+          authority.authority_country || ""
+        ).trim();
+
+      const authorityRegion =
+        String(
+          authority.authority_region || ""
+        ).trim();
+
+      if (
+        country.toUpperCase() !==
+          authorityCountry.toUpperCase() ||
+        region.toUpperCase() !==
+          authorityRegion.toUpperCase()
+      ) {
+        await client.query("ROLLBACK");
+
+        return res.status(409).json({
+          ok: false,
+          error: "BASE_CONTEXT_MISMATCH"
+        });
+      }
+
+      /* ========================================================
+         5. UNIQUE AIRLINE NAME
+         ======================================================== */
+
+      const nameCheck = await client.query(
+        `
+        SELECT 1
+        FROM public.airlines
+
+        WHERE LOWER(BTRIM(airline_name)) =
+              LOWER(BTRIM($1))
+
+        LIMIT 1
+        `,
+        [airlineName]
+      );
+
+      if (nameCheck.rows.length > 0) {
+        await client.query("ROLLBACK");
+
+        return res.status(409).json({
+          ok: false,
+          error:
+            "AIRLINE_NAME_ALREADY_EXISTS"
+        });
+      }
+
+      /* ========================================================
+         6. SERIALIZE DESIGNATOR ASSIGNMENT
+         ======================================================== */
+
+      await client.query(
+        `
+        SELECT pg_advisory_xact_lock(
+          hashtext($1)
+        )
+        `,
+        [
+          "ACS_AIRLINE_DESIGNATOR_ALLOCATION"
+        ]
+      );
+
+      const assignedDesignators =
+        await generateAvailableDesignators(
+          client,
+          airlineName
+        );
+
+      /* ========================================================
+         7. CREATE AIRLINE
+         ======================================================== */
+
+      const insertAirline =
+        await client.query(
+          `
+          INSERT INTO public.airlines (
+            user_id,
+            airline_name,
+            iata,
+            icao,
+            country,
+            region,
+            business_model,
+            operation_mode
+          )
+          VALUES (
+            $1,
+            $2,
+            $3,
+            $4,
+            $5,
+            $6,
+            $7,
+            $8
+          )
+          RETURNING airline_id
+          `,
+          [
+            userUUID,
+            airlineName,
+            assignedDesignators.iata,
+            assignedDesignators.icao,
+            authorityCountry,
+            authorityRegion,
+            businessModel,
+            operationMode
+          ]
+        );
+
+      const airlineId =
+        insertAirline.rows[0].airline_id;
+
+      /* ========================================================
+         8. LINK USER AND ACTIVE SESSIONS
+         ======================================================== */
+
+      const userUpdate =
+        await client.query(
+          `
+          UPDATE public.users
+          SET airline_id = $1
+
+          WHERE user_id = $2
+
+          RETURNING
+            user_id,
+            airline_id
+          `,
+          [
+            airlineId,
+            userUUID
+          ]
+        );
+
+      if (!userUpdate.rows.length) {
+        throw new Error(
+          "USER_LINK_FAILED"
+        );
+      }
+
+      await client.query(
+        `
+        UPDATE public.sessions
+        SET airline_id = $1
+
+        WHERE user_id = $2
+          AND active = TRUE
+        `,
+        [
+          airlineId,
+          userUUID
+        ]
+      );
+
+      /* ========================================================
+         9. INITIALIZE COMPANY FINANCE
+         Starting operational capital remains $1,500,000.
+         Facility principal is not deposited into capital.
+         ======================================================== */
+
+      await client.query(
+        `
+        INSERT INTO public.company_finance (
+          airline_id,
+          capital,
+          opening_capital
+        )
+        VALUES (
+          $1,
+          1500000,
+          1500000
+        )
+
+        ON CONFLICT (airline_id)
+        DO NOTHING
+        `,
+        [airlineId]
+      );
+
+      /* ========================================================
+         10. CALCULATE INFRASTRUCTURE FACILITY
+         ======================================================== */
+
+      const initialInvestment =
+        Number(
+          authority.initial_investment
+        );
+
+      const facilityTermMonths =
+        Number(
+          authority.facility_term_months
+        );
+
+      const annualInterestRate =
+        Number(
+          authority.base_interest_rate
+        );
+
+      const facilityPlan =
+        calculateInfrastructureFacility(
+          initialInvestment,
+          annualInterestRate,
+          facilityTermMonths
+        );
+
+      /* ========================================================
+         11. RESERVE BANK LOAN ID
+         ======================================================== */
+
+      const loanIdResult =
+        await client.query(
+          `
+          SELECT nextval(
+            pg_get_serial_sequence(
+              'public.bank_loans',
+              'id'
+            )
+          )::BIGINT AS id
+          `
+        );
+
+      const facilityLoanId =
+        String(
+          loanIdResult.rows[0].id
+        );
+
+      const facilityReference =
+        `ACS-INFRA-${airlineId}-${facilityLoanId}`;
+
+      /* ========================================================
+         12. RECORD RESTRICTED FINANCING
+         This records the financing event but does not increase
+         company_finance.capital.
+         ======================================================== */
+
+      const financeLogResult =
+        await client.query(
+          `
+          INSERT INTO public.finance_log (
+            airline_id,
+            type,
+            source,
+            amount,
+            timestamp,
+            reference_uid,
+            description
+          )
+          VALUES (
+            $1,
+            'FINANCING',
+            'ACS_INITIAL_INFRASTRUCTURE_FACILITY',
+            $2,
+            $3,
+            $4,
+            $5
+          )
+          RETURNING id
+          `,
+          [
+            airlineId,
+            initialInvestment,
+            authority.sim_timestamp_ms,
+            `INFRASTRUCTURE_FACILITY:${facilityReference}`,
+            `ACS Initial Infrastructure Facility for ${airlineType}`
+          ]
+        );
+
+      const financeLogId =
+        financeLogResult.rows[0].id;
+
+      /* ========================================================
+         13. CREATE RESTRICTED FACILITY
+         ======================================================== */
+
+      const facilityResult =
+        await client.query(
+          `
+          INSERT INTO public.bank_loans (
+            id,
+            airline_id,
+            policy_id,
+            loan_reference,
+            status,
+            loan_product_code,
+            collateral_mode,
+            original_principal,
+            remaining_principal,
+            annual_interest_rate,
+            term_months,
+            monthly_payment,
+            total_repayment,
+            total_interest,
+            currency,
+            opened_sim_time,
+            maturity_sim_time,
+            next_payment_sim_time,
+            payment_number,
+            finance_log_id,
+            updated_at
+          )
+          VALUES (
+            $1,
+            $2,
+            $3,
+            $4,
+            'ACTIVE',
+            'ACS_INITIAL_INFRASTRUCTURE_FACILITY',
+            'UNSECURED',
+            $5,
+            $5,
+            $6,
+            $7,
+            $8,
+            $9,
+            $10,
+            'USD',
+            $11,
+            $11::TIMESTAMP +
+              make_interval(
+                months => $7::INTEGER
+              ),
+            $11::TIMESTAMP +
+              INTERVAL '1 month',
+            0,
+            $12,
+            NOW()
+          )
+          RETURNING *
+          `,
+          [
+            facilityLoanId,
+            airlineId,
+            authority.bank_policy_id,
+            facilityReference,
+            initialInvestment,
+            annualInterestRate,
+            facilityTermMonths,
+            facilityPlan.monthlyPayment,
+            facilityPlan.totalRepayment,
+            facilityPlan.totalInterest,
+            authority.current_sim_time,
+            financeLogId
+          ]
+        );
+
+      /* ========================================================
+         14. CREATE COMPANY INFRASTRUCTURE
+         ======================================================== */
+
+      await client.query(
+        `
+        INSERT INTO
+          public.airline_infrastructure (
+            airline_id,
+            airline_type,
+            established_base_icao,
+            established_sim_year,
+            initial_historical_factor,
+            initial_investment,
+            initial_monthly_operating_cost,
+            facility_term_months,
+            financing_mode,
+            policy_revision_code
+          )
+        VALUES (
+          $1,
+          $2,
+          $3,
+          $4,
+          $5,
+          $6,
+          $7,
+          $8,
+          'ACS_INITIAL_FACILITY',
+          $9
+        )
+        `,
+        [
+          airlineId,
+          airlineType,
+          baseIcao,
+          authority.sim_year,
+          authority.historical_factor,
+          initialInvestment,
+          authority.monthly_operating_cost,
+          facilityTermMonths,
+          authority.revision_code
+        ]
+      );
+
+      /* ========================================================
+         15. INITIALIZE HR
+         Infrastructure remains financially separate from HR.
+         ======================================================== */
+
+      await client.query(
+        `
+        SELECT public.init_airline_hr($1)
+        `,
+        [airlineId]
+      );
+
+      await client.query("COMMIT");
+
+      console.log(
+        "ACS AIRLINE AND INFRASTRUCTURE CREATED",
+        {
+          airlineId,
+          userUUID,
+          airlineType,
+          baseIcao,
+          initialInvestment,
+          facilityLoanId
+        }
+      );
+
+      return res.status(201).json({
+        ok: true,
+
+        airline_id:
+          airlineId,
+
+        airline_iata:
+          assignedDesignators.iata,
+
+        airline_icao:
+          assignedDesignators.icao,
+
+        infrastructure: {
+          airline_type:
+            airlineType,
+
+          base_icao:
+            baseIcao,
+
+          sim_year:
+            Number(authority.sim_year),
+
+          initial_investment:
+            initialInvestment,
+
+          monthly_operating_cost:
+            Number(
+              authority.monthly_operating_cost
+            )
+        },
+
+        facility: {
+          id:
+            String(
+              facilityResult.rows[0].id
+            ),
+
+          reference:
+            facilityReference,
+
+          product_code:
+            "ACS_INITIAL_INFRASTRUCTURE_FACILITY",
+
+          status:
+            facilityResult.rows[0].status,
+
+          original_principal:
+            initialInvestment,
+
+          annual_interest_rate:
+            annualInterestRate,
+
+          term_months:
+            facilityTermMonths,
+
+          monthly_payment:
+            facilityPlan.monthlyPayment,
+
+          first_payment_sim_time:
+            facilityResult.rows[0]
+              .next_payment_sim_time
+        }
+      });
+
+    } catch (err) {
+      await client.query("ROLLBACK");
+
+      console.error(
+        "CREATE AIRLINE ERROR:",
+        err
+      );
+
+      if (err.code === "23505") {
+        const constraint =
+          String(
+            err.constraint || ""
+          );
+
+        if (
+          constraint.includes(
+            "uq_bank_loans_one_infrastructure_facility"
+          )
+        ) {
+          return res.status(409).json({
+            ok: false,
+            error:
+              "INFRASTRUCTURE_FACILITY_ALREADY_EXISTS"
+          });
+        }
+
+        if (
+          constraint.includes("iata") ||
+          constraint.includes("icao")
+        ) {
+          return res.status(409).json({
+            ok: false,
+            error:
+              "AIRLINE_DESIGNATOR_CONFLICT"
+          });
+        }
+
+        return res.status(409).json({
+          ok: false,
+          error: "AIRLINE_CONFLICT"
+        });
+      }
+
+      return res.status(500).json({
         ok: false,
         error:
-          "AIRLINE_DESIGNATOR_CONFLICT"
+          err.message ||
+          "CREATE_AIRLINE_FAILED"
       });
+
+    } finally {
+      client.release();
     }
-
-    return res.status(409).json({
-      ok: false,
-      error: "AIRLINE_CONFLICT"
-    });
   }
-
-  return res.status(500).json({
-    ok: false,
-    error: "CREATE_AIRLINE_FAILED"
-  });
-
-} finally {
-   
-    client.release();
-
-  }
-
-});
+);
 
 /* ============================================================
    SET BASE — POSTGRESQL AIRPORT AUTHORITY
