@@ -495,9 +495,11 @@ router.get(
 /* ============================================================
    GET ONBOARDING BASE CONTEXT
    ------------------------------------------------------------
-   Railway authority:
+   Railway and PostgreSQL authority:
    - Reads users.base_icao
-   - Derives World Area and Country from PostgreSQL
+   - Resolves airport airline type limit
+   - Resolves historical infrastructure costs
+   - Returns the four ACS airline types
    - No frontend storage authority
    ============================================================ */
 
@@ -508,47 +510,138 @@ router.get(
     try {
       const result = await pool.query(
         `
+        WITH infrastructure_clock AS (
+          SELECT
+            EXTRACT(
+              YEAR FROM
+              public.acs_get_current_sim_time()
+            )::INTEGER AS sim_year
+        ),
+
+        base_context AS (
+          SELECT
+            UPPER(BTRIM(player.base_icao))
+              AS base_icao,
+
+            CASE
+              WHEN UPPER(airport.country) IN (
+                'AE',
+                'BH',
+                'IQ',
+                'IR',
+                'IL',
+                'JO',
+                'KW',
+                'LB',
+                'OM',
+                'PS',
+                'QA',
+                'SA',
+                'SY',
+                'TR',
+                'YE'
+              )
+              THEN 'Middle East'
+              ELSE airport.continent
+            END AS region,
+
+            airport.region AS country,
+
+            airport.category
+              AS airport_category,
+
+            airport.runway_m,
+
+            airport.aircraft_limit,
+
+            UPPER(
+              BTRIM(
+                airport.airline_type_limit
+              )
+            ) AS airline_type_limit
+
+          FROM public.users player
+
+          INNER JOIN
+            public.v_acs_airport_authority_current
+              airport
+            ON UPPER(BTRIM(airport.icao)) =
+               UPPER(BTRIM(player.base_icao))
+
+          WHERE player.user_id = $1
+            AND player.base_icao IS NOT NULL
+            AND BTRIM(player.base_icao) <> ''
+
+          LIMIT 1
+        )
+
         SELECT
-          UPPER(BTRIM(u.base_icao))
-            AS base_icao,
+          base.base_icao,
+          base.region,
+          base.country,
+          base.airport_category,
+          base.runway_m,
+          base.aircraft_limit,
+          base.airline_type_limit,
 
-          CASE
-            WHEN UPPER(airport.country) IN (
-              'AE',
-              'BH',
-              'IQ',
-              'IR',
-              'IL',
-              'JO',
-              'KW',
-              'LB',
-              'OM',
-              'PS',
-              'QA',
-              'SA',
-              'SY',
-              'TR',
-              'YE'
-            )
-            THEN 'Middle East'
-            ELSE airport.continent
-          END AS region,
+          clock.sim_year,
 
-          airport.region AS country
+          COALESCE(
+            (
+              SELECT
+                JSONB_AGG(
+                  JSONB_BUILD_OBJECT(
+                    'airline_type',
+                      resolved.airline_type,
 
-        FROM public.users u
+                    'type_rank',
+                      resolved.type_rank,
 
-        INNER JOIN
-          public.v_acs_airport_authority_current
-            airport
-          ON UPPER(airport.icao) =
-             UPPER(BTRIM(u.base_icao))
+                    'initial_investment',
+                      resolved.initial_investment,
 
-        WHERE u.user_id = $1
-          AND u.base_icao IS NOT NULL
-          AND BTRIM(u.base_icao) <> ''
+                    'monthly_operating_cost',
+                      resolved.monthly_operating_cost,
 
-        LIMIT 1
+                    'facility_term_months',
+                      resolved.facility_term_months,
+
+                    'historical_factor',
+                      resolved.historical_factor,
+
+                    'data_kind',
+                      resolved.data_kind,
+
+                    'available',
+                      type_policy.type_rank <=
+                      limit_policy.type_rank
+                  )
+                  ORDER BY type_policy.type_rank
+                )
+
+              FROM
+                public.acs_infrastructure_type_policy
+                  type_policy
+
+              INNER JOIN
+                public.acs_infrastructure_type_policy
+                  limit_policy
+                ON limit_policy.airline_type =
+                   base.airline_type_limit
+
+              CROSS JOIN LATERAL
+                public.acs_resolve_infrastructure_policy(
+                  type_policy.airline_type,
+                  clock.sim_year
+                ) resolved
+
+              WHERE type_policy.is_active = TRUE
+            ),
+            '[]'::JSONB
+          ) AS infrastructure_options
+
+        FROM base_context base
+        CROSS JOIN infrastructure_clock clock
         `,
         [req.user_id]
       );
@@ -560,9 +653,25 @@ router.get(
         });
       }
 
+      const base = result.rows[0];
+
+      if (
+        !base.airline_type_limit ||
+        !Array.isArray(
+          base.infrastructure_options
+        ) ||
+        base.infrastructure_options.length !== 4
+      ) {
+        return res.status(409).json({
+          ok: false,
+          error:
+            "ONBOARDING_INFRASTRUCTURE_AUTHORITY_INCOMPLETE"
+        });
+      }
+
       return res.json({
         ok: true,
-        base: result.rows[0]
+        base
       });
 
     } catch (err) {
