@@ -239,6 +239,158 @@ async function generateAvailableDesignators(
 }
 
 /* ============================================================
+   ACS CREATE AIRLINE VALIDATION AUTHORITY
+   ============================================================ */
+
+const ALLOWED_BUSINESS_MODELS = new Set([
+  "Regional",
+  "International"
+]);
+
+const ALLOWED_OPERATION_MODES = new Set([
+  "Passenger"
+]);
+
+function normalizeRequiredText(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  return value
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function validateCreateAirlinePayload(payload) {
+  if (
+    !payload ||
+    typeof payload !== "object" ||
+    Array.isArray(payload)
+  ) {
+    return {
+      ok: false,
+      error: "INVALID_REQUEST_BODY"
+    };
+  }
+
+  const airlineName =
+    normalizeRequiredText(
+      payload.airline_name
+    );
+
+  const country =
+    normalizeRequiredText(
+      payload.country
+    );
+
+  const region =
+    normalizeRequiredText(
+      payload.region
+    );
+
+  const businessModel =
+    normalizeRequiredText(
+      payload.business_model
+    );
+
+  const operationMode =
+    normalizeRequiredText(
+      payload.operation_mode
+    );
+
+  const requiredValues = {
+    airline_name: airlineName,
+    country,
+    region,
+    business_model: businessModel,
+    operation_mode: operationMode
+  };
+
+  for (
+    const [field, value]
+    of Object.entries(requiredValues)
+  ) {
+    if (!value) {
+      return {
+        ok: false,
+        error: "MISSING_REQUIRED_FIELD",
+        field
+      };
+    }
+  }
+
+  if (
+    airlineName.length < 2 ||
+    airlineName.length > 80
+  ) {
+    return {
+      ok: false,
+      error: "INVALID_AIRLINE_NAME_LENGTH",
+      field: "airline_name"
+    };
+  }
+
+  if (/[\u0000-\u001F\u007F]/.test(airlineName)) {
+    return {
+      ok: false,
+      error: "INVALID_AIRLINE_NAME_CHARACTERS",
+      field: "airline_name"
+    };
+  }
+
+  if (
+    country.length > 100 ||
+    region.length > 100
+  ) {
+    return {
+      ok: false,
+      error: "INVALID_LOCATION_VALUE"
+    };
+  }
+
+  if (
+    !ALLOWED_BUSINESS_MODELS.has(
+      businessModel
+    )
+  ) {
+    return {
+      ok: false,
+      error: "INVALID_BUSINESS_MODEL",
+      field: "business_model",
+      allowed_values: [
+        ...ALLOWED_BUSINESS_MODELS
+      ]
+    };
+  }
+
+  if (
+    !ALLOWED_OPERATION_MODES.has(
+      operationMode
+    )
+  ) {
+    return {
+      ok: false,
+      error: "INVALID_OPERATION_MODE",
+      field: "operation_mode",
+      allowed_values: [
+        ...ALLOWED_OPERATION_MODES
+      ]
+    };
+  }
+
+  return {
+    ok: true,
+    data: {
+      airlineName,
+      country,
+      region,
+      businessModel,
+      operationMode
+    }
+  };
+}
+
+/* ============================================================
    GET ACTIVE AIRLINES
    ------------------------------------------------------------
    Public player directory for authenticated ACS users.
@@ -493,95 +645,94 @@ router.get(
 router.post("/airlines/create", requireAuth, async (req, res) => {
 
   const body = req.body || {};
-  const userUUID = req.user_id;
+const userUUID = req.user_id;
 
-  const client = await pool.connect();
+const client = await pool.connect();
 
-  try {
+try {
 
-    await client.query("BEGIN");
+  await client.query("BEGIN");
 
-    /* ============================================================
-       1️⃣ Validate required fields
-    ============================================================ */
+  /* ============================================================
+     1️⃣ Check if user already has an airline
+     ------------------------------------------------------------
+     Repair links before requiring a new creation payload.
+  ============================================================ */
 
-    const requiredFields = [
-  "airline_name",
-  "country",
-  "region",
-  "business_model",
-  "operation_mode"
-];
+  const existing = await client.query(
+    `
+    SELECT airline_id
+    FROM public.airlines
+    WHERE user_id = $1
+    LIMIT 1
+    `,
+    [userUUID]
+  );
 
-    for (const field of requiredFields) {
-      if (!body[field]) {
-        await client.query("ROLLBACK");
+  if (existing.rows.length > 0) {
 
-        return res.status(400).json({
-          ok: false,
-          error: "MISSING_REQUIRED_FIELD",
-          field
-        });
-      }
-    }
+    const existingAirlineId =
+      existing.rows[0].airline_id;
 
-    /* ============================================================
-       2️⃣ Check if user already has an airline
-       ------------------------------------------------------------
-       If airline exists but users/sessions are desynchronized,
-       repair links instead of allowing duplicate creation.
-    ============================================================ */
-
-    const existing = await client.query(
+    await client.query(
       `
-      SELECT airline_id
-      FROM airlines
-      WHERE user_id = $1
-      LIMIT 1
+      UPDATE public.users
+      SET airline_id = $1
+      WHERE user_id = $2
+        AND (
+          airline_id IS NULL
+          OR airline_id <> $1
+        )
       `,
-      [userUUID]
+      [existingAirlineId, userUUID]
     );
 
-    if (existing.rows.length > 0) {
+    await client.query(
+      `
+      UPDATE public.sessions
+      SET airline_id = $1
+      WHERE user_id = $2
+        AND active = true
+        AND (
+          airline_id IS NULL
+          OR airline_id <> $1
+        )
+      `,
+      [existingAirlineId, userUUID]
+    );
 
-      const existingAirlineId = existing.rows[0].airline_id;
+    await client.query("COMMIT");
 
-      await client.query(
-        `
-        UPDATE users
-        SET airline_id = $1
-        WHERE user_id = $2
-          AND (
-            airline_id IS NULL
-            OR airline_id <> $1
-          )
-        `,
-        [existingAirlineId, userUUID]
-      );
+    return res.status(200).json({
+      ok: true,
+      status:
+        "AIRLINE_ALREADY_EXISTS_LINK_REPAIRED",
+      airline_id: existingAirlineId
+    });
+  }
 
-      await client.query(
-        `
-        UPDATE sessions
-        SET airline_id = $1
-        WHERE user_id = $2
-          AND active = true
-          AND (
-            airline_id IS NULL
-            OR airline_id <> $1
-          )
-        `,
-        [existingAirlineId, userUUID]
-      );
+  /* ============================================================
+     2️⃣ Validate and normalize creation payload
+  ============================================================ */
 
-      await client.query("COMMIT");
+  const validation =
+    validateCreateAirlinePayload(body);
 
-      return res.status(200).json({
-        ok: true,
-        status: "AIRLINE_ALREADY_EXISTS_LINK_REPAIRED",
-        airline_id: existingAirlineId
-      });
+  if (!validation.ok) {
+    await client.query("ROLLBACK");
 
-    }
+    return res.status(400).json(
+      validation
+    );
+  }
+
+  const {
+    airlineName,
+    country,
+    region,
+    businessModel,
+    operationMode
+  } = validation.data;
 
     /* ============================================================
        3️⃣ Check duplicate airline name
@@ -591,10 +742,11 @@ router.post("/airlines/create", requireAuth, async (req, res) => {
       `
       SELECT 1
       FROM airlines
-      WHERE LOWER(airline_name) = LOWER($1)
+      WHERE LOWER(BTRIM(airline_name)) =
+      LOWER($1)
       LIMIT 1
       `,
-      [body.airline_name]
+      [airlineName]
     );
 
     if (nameCheck.rows.length > 0) {
@@ -624,7 +776,7 @@ await client.query(
 const assignedDesignators =
   await generateAvailableDesignators(
     client,
-    body.airline_name
+    airlineName
   );
   
     /* ============================================================
@@ -648,15 +800,15 @@ const assignedDesignators =
       RETURNING airline_id
       `,
       [
-        userUUID,
-        body.airline_name,
-        assignedDesignators.iata,
-        assignedDesignators.icao,
-        body.country,
-        body.region,
-        body.business_model,
-        body.operation_mode
-      ]
+  userUUID,
+  airlineName,
+  assignedDesignators.iata,
+  assignedDesignators.icao,
+  country,
+  region,
+  businessModel,
+  operationMode
+]
     );
 
     const airlineId = insertAirline.rows[0].airline_id;
@@ -731,18 +883,41 @@ const assignedDesignators =
 
   } catch (err) {
 
-    await client.query("ROLLBACK");
+  await client.query("ROLLBACK");
 
-    console.error("CREATE AIRLINE ERROR:", err);
+  console.error(
+    "CREATE AIRLINE ERROR:",
+    err
+  );
 
-    return res.status(500).json({
+  if (err.code === "23505") {
+    const constraint =
+      String(err.constraint || "");
+
+    if (
+      constraint.includes("iata") ||
+      constraint.includes("icao")
+    ) {
+      return res.status(409).json({
+        ok: false,
+        error:
+          "AIRLINE_DESIGNATOR_CONFLICT"
+      });
+    }
+
+    return res.status(409).json({
       ok: false,
-      error: "CREATE_AIRLINE_FAILED",
-      message: err.message
+      error: "AIRLINE_CONFLICT"
     });
+  }
 
-  } finally {
+  return res.status(500).json({
+    ok: false,
+    error: "CREATE_AIRLINE_FAILED"
+  });
 
+} finally {
+   
     client.release();
 
   }
