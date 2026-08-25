@@ -479,6 +479,7 @@ router.get("/bank/summary", requireAuth, async (req, res) => {
       totalOriginal,
       totalMonthly,
       totalOutstanding,
+      availableCapital,
 
       lockedAircraftCount:
         bankNumber(
@@ -677,6 +678,7 @@ router.get("/bank/collateral", requireAuth, async (req, res) => {
    ============================================================ */
 
 router.post("/bank/loans", requireAuth, async (req, res) => {
+  
   const airlineId = Number(req.airline_id);
   const amount = bankInteger(req.body?.amount);
   const termMonths = bankInteger(req.body?.term_months);
@@ -1228,10 +1230,11 @@ router.post(
   "/bank/loans/:loanId/amortize",
   requireAuth,
   async (req, res) => {
+    
     const airlineId = Number(req.airline_id);
     const loanId = Number(req.params.loanId);
-    const requestedAmount =
-      bankInteger(req.body?.amount);
+    const requestedPercent =
+      bankInteger(req.body?.payment_percent);
 
     if (!Number.isInteger(airlineId) || airlineId <= 0) {
       return res.status(401).json({
@@ -1247,13 +1250,17 @@ router.post(
       });
     }
 
-    if (requestedAmount <= 0) {
+    if (
+      ![10, 25, 50, 100].includes(
+        requestedPercent
+      )
+    ) {
       return res.status(400).json({
         ok: false,
-        error: "INVALID_PAYMENT_AMOUNT"
+        error: "INVALID_PAYMENT_PERCENT"
       });
     }
-
+    
     const client = await pool.connect();
 
     try {
@@ -1339,11 +1346,20 @@ router.post(
       const balanceBefore =
         bankNumber(loan.remaining_principal);
 
+      const calculatedPayment =
+        requestedPercent === 100
+          ? balanceBefore
+          : Math.floor(
+              balanceBefore *
+              requestedPercent /
+              100
+            );
+
       const paymentAmount = Math.min(
-        requestedAmount,
+        Math.max(1, calculatedPayment),
         balanceBefore
       );
-
+      
       if (
         bankNumber(financeLock.rows[0]?.capital) <
         paymentAmount
@@ -1545,6 +1561,7 @@ router.post(
 
         payment: {
           id: paymentId,
+          percentage: requestedPercent,
           amount: paymentAmount,
           balanceBefore,
           balanceAfter,
