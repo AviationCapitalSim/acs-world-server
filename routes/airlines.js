@@ -5,6 +5,240 @@ import { requireAuth } from "../middleware/auth.js"; // 🔥 NUEVO
 const router = express.Router();
 
 /* ============================================================
+   ACS AIRLINE DESIGNATOR AUTHORITY
+   ------------------------------------------------------------
+   - IATA: 2 uppercase alphanumeric characters
+   - ICAO: 3 uppercase alphabetic characters
+   - Prefers combinations related to airline name
+   - PostgreSQL remains final uniqueness authority
+   ============================================================ */
+
+const DESIGNATOR_IGNORED_WORDS = new Set([
+  "AIR",
+  "AIRLINE",
+  "AIRLINES",
+  "AIRWAY",
+  "AIRWAYS",
+  "AVIATION",
+  "THE"
+]);
+
+function normalizeDesignatorName(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getDesignatorWords(airlineName) {
+  const allWords =
+    normalizeDesignatorName(airlineName)
+      .split(" ")
+      .filter(Boolean);
+
+  const meaningfulWords =
+    allWords.filter(
+      word =>
+        !DESIGNATOR_IGNORED_WORDS.has(word)
+    );
+
+  return meaningfulWords.length
+    ? meaningfulWords
+    : allWords;
+}
+
+function buildPreferredIataCodes(airlineName) {
+  const words = getDesignatorWords(airlineName);
+  const compact = words.join("");
+  const candidates = new Set();
+
+  const add = value => {
+    const code = String(value || "").toUpperCase();
+
+    if (/^[A-Z0-9]{2}$/.test(code)) {
+      candidates.add(code);
+    }
+  };
+
+  if (words.length >= 2) {
+    add(words[0][0] + words[1][0]);
+  }
+
+  add(compact.slice(0, 2));
+  add(compact[0] + compact.at(-1));
+
+  for (
+    let index = 1;
+    index < compact.length;
+    index += 1
+  ) {
+    add(compact[0] + compact[index]);
+  }
+
+  return [...candidates];
+}
+
+function buildPreferredIcaoCodes(airlineName) {
+  const words = getDesignatorWords(airlineName);
+  const compact = words.join("");
+  const candidates = new Set();
+
+  const add = value => {
+    const code = String(value || "").toUpperCase();
+
+    if (/^[A-Z]{3}$/.test(code)) {
+      candidates.add(code);
+    }
+  };
+
+  if (words.length >= 3) {
+    add(
+      words[0][0] +
+      words[1][0] +
+      words[2][0]
+    );
+  }
+
+  if (words.length >= 2) {
+    add(
+      words[0][0] +
+      words[1].slice(0, 2)
+    );
+
+    add(
+      words[0].slice(0, 2) +
+      words[1][0]
+    );
+  }
+
+  add(compact.slice(0, 3));
+
+  for (
+    let second = 1;
+    second < compact.length;
+    second += 1
+  ) {
+    for (
+      let third = second + 1;
+      third < compact.length;
+      third += 1
+    ) {
+      add(
+        compact[0] +
+        compact[second] +
+        compact[third]
+      );
+    }
+  }
+
+  return [...candidates];
+}
+
+function findAvailableIata(
+  preferredCodes,
+  occupiedCodes
+) {
+  for (const code of preferredCodes) {
+    if (!occupiedCodes.has(code)) {
+      return code;
+    }
+  }
+
+  const characters =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+
+  for (const first of characters) {
+    for (const second of characters) {
+      const code = first + second;
+
+      if (!occupiedCodes.has(code)) {
+        return code;
+      }
+    }
+  }
+
+  return null;
+}
+
+function findAvailableIcao(
+  preferredCodes,
+  occupiedCodes
+) {
+  const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+  for (const code of preferredCodes) {
+    if (!occupiedCodes.has(code)) {
+      return code;
+    }
+  }
+
+  for (const first of letters) {
+    for (const second of letters) {
+      for (const third of letters) {
+        const code =
+          first + second + third;
+
+        if (!occupiedCodes.has(code)) {
+          return code;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+async function generateAvailableDesignators(
+  client,
+  airlineName
+) {
+  const result = await client.query(
+    `
+    SELECT
+      UPPER(BTRIM(iata)) AS iata,
+      UPPER(BTRIM(icao)) AS icao
+    FROM public.airlines
+    `
+  );
+
+  const occupiedIata = new Set(
+    result.rows
+      .map(row => row.iata)
+      .filter(Boolean)
+  );
+
+  const occupiedIcao = new Set(
+    result.rows
+      .map(row => row.icao)
+      .filter(Boolean)
+  );
+
+  const iata = findAvailableIata(
+    buildPreferredIataCodes(airlineName),
+    occupiedIata
+  );
+
+  const icao = findAvailableIcao(
+    buildPreferredIcaoCodes(airlineName),
+    occupiedIcao
+  );
+
+  if (!iata || !icao) {
+    throw new Error(
+      "AIRLINE_DESIGNATORS_EXHAUSTED"
+    );
+  }
+
+  return {
+    iata,
+    icao
+  };
+}
+
+/* ============================================================
    GET ACTIVE AIRLINES
    ------------------------------------------------------------
    Public player directory for authenticated ACS users.
@@ -195,6 +429,55 @@ router.get(
 );
 
 /* ============================================================
+   PREVIEW AIRLINE DESIGNATORS
+   ------------------------------------------------------------
+   Preview only. Final assignment occurs transactionally
+   during airline creation.
+   ============================================================ */
+
+router.get(
+  "/airlines/designators/preview",
+  requireAuth,
+  async (req, res) => {
+    const airlineName =
+      String(req.query?.name || "").trim();
+
+    if (airlineName.length < 2) {
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_AIRLINE_NAME"
+      });
+    }
+
+    try {
+      const designators =
+        await generateAvailableDesignators(
+          pool,
+          airlineName
+        );
+
+      return res.json({
+        ok: true,
+        airline_iata: designators.iata,
+        airline_icao: designators.icao,
+        status: "PREVIEW"
+      });
+    } catch (err) {
+      console.error(
+        "AIRLINE DESIGNATOR PREVIEW ERROR:",
+        err
+      );
+
+      return res.status(500).json({
+        ok: false,
+        error:
+          "AIRLINE_DESIGNATOR_PREVIEW_FAILED"
+      });
+    }
+  }
+);
+
+/* ============================================================
    CREATE AIRLINE
    ------------------------------------------------------------
    Production-grade flow:
@@ -209,7 +492,7 @@ router.get(
 
 router.post("/airlines/create", requireAuth, async (req, res) => {
 
-  const body = req.body;
+  const body = req.body || {};
   const userUUID = req.user_id;
 
   const client = await pool.connect();
@@ -223,14 +506,12 @@ router.post("/airlines/create", requireAuth, async (req, res) => {
     ============================================================ */
 
     const requiredFields = [
-      "airline_name",
-      "airline_iata",
-      "airline_icao",
-      "country",
-      "region",
-      "business_model",
-      "operation_mode"
-    ];
+  "airline_name",
+  "country",
+  "region",
+  "business_model",
+  "operation_mode"
+];
 
     for (const field of requiredFields) {
       if (!body[field]) {
@@ -327,6 +608,25 @@ router.post("/airlines/create", requireAuth, async (req, res) => {
 
     }
 
+   /* ============================================================
+   SERIALIZE DESIGNATOR ASSIGNMENT
+   ============================================================ */
+
+await client.query(
+  `
+  SELECT pg_advisory_xact_lock(
+    hashtext($1)
+  )
+  `,
+  ["ACS_AIRLINE_DESIGNATOR_ALLOCATION"]
+);
+
+const assignedDesignators =
+  await generateAvailableDesignators(
+    client,
+    body.airline_name
+  );
+  
     /* ============================================================
        4️⃣ Create airline
     ============================================================ */
@@ -350,8 +650,8 @@ router.post("/airlines/create", requireAuth, async (req, res) => {
       [
         userUUID,
         body.airline_name,
-        body.airline_iata,
-        body.airline_icao,
+        assignedDesignators.iata,
+        assignedDesignators.icao,
         body.country,
         body.region,
         body.business_model,
@@ -421,9 +721,13 @@ router.post("/airlines/create", requireAuth, async (req, res) => {
     });
 
     return res.json({
-      ok: true,
-      airline_id: airlineId
-    });
+  ok: true,
+  airline_id: airlineId,
+  airline_iata:
+    assignedDesignators.iata,
+  airline_icao:
+    assignedDesignators.icao
+});
 
   } catch (err) {
 
