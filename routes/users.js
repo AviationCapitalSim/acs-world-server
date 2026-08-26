@@ -38,11 +38,16 @@ router.get("/users/profile/:userId", requireAuth, async (req, res) => {
         a.icao,
         a.region,
         a.business_model,
-        a.operation_mode
+        a.operation_mode,
+        a.callsign,
+        ai.airline_type AS infrastructure
 
       FROM users u
       LEFT JOIN airlines a
         ON a.user_id = u.user_id
+
+      LEFT JOIN airline_infrastructure ai
+        ON ai.airline_id = a.airline_id
 
       WHERE u.user_id = $1
       LIMIT 1
@@ -74,7 +79,9 @@ router.get("/users/profile/:userId", requireAuth, async (req, res) => {
         icao: row.icao,
         region: row.region,
         business_model: row.business_model,
-        operation_mode: row.operation_mode
+        operation_mode: row.operation_mode,
+        callsign: row.callsign,
+        infrastructure: row.infrastructure
       }
     });
 
