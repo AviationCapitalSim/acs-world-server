@@ -797,11 +797,13 @@ router.get(
         );
 
       return res.json({
-        ok: true,
-        airline_iata: designators.iata,
-        airline_icao: designators.icao,
-        status: "PREVIEW"
-      });
+  ok: true,
+  airline_iata: designators.iata,
+  airline_icao: designators.icao,
+  airline_callsign: designators.callsign,
+  status: "PREVIEW"
+});
+       
     } catch (err) {
       console.error(
         "AIRLINE DESIGNATOR PREVIEW ERROR:",
@@ -1238,42 +1240,46 @@ router.post(
          ======================================================== */
 
       const insertAirline =
-        await client.query(
-          `
-          INSERT INTO public.airlines (
-            user_id,
-            airline_name,
-            iata,
-            icao,
-            country,
-            region,
-            business_model,
-            operation_mode
-          )
-          VALUES (
-            $1,
-            $2,
-            $3,
-            $4,
-            $5,
-            $6,
-            $7,
-            $8
-          )
-          RETURNING airline_id
-          `,
-          [
-            userUUID,
-            airlineName,
-            assignedDesignators.iata,
-            assignedDesignators.icao,
-            authorityCountry,
-            authorityRegion,
-            businessModel,
-            operationMode
-          ]
-        );
-
+  await client.query(
+    `
+    INSERT INTO public.airlines (
+      user_id,
+      airline_name,
+      iata,
+      icao,
+      callsign,
+      country,
+      region,
+      business_model,
+      operation_mode
+    )
+    VALUES (
+      $1,
+      $2,
+      $3,
+      $4,
+      $5,
+      $6,
+      $7,
+      $8,
+      $9
+    )
+    RETURNING
+      airline_id,
+      callsign
+    `,
+    [
+      userUUID,
+      airlineName,
+      assignedDesignators.iata,
+      assignedDesignators.icao,
+      assignedDesignators.callsign,
+      authorityCountry,
+      authorityRegion,
+      businessModel,
+      operationMode
+    ]
+  );
       const airlineId =
         insertAirline.rows[0].airline_id;
 
