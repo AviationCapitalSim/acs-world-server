@@ -2342,6 +2342,115 @@ async function ACS_settleMonthlyCorporateTax(
 }
 
 /* ============================================================
+   SETTLE MONTHLY COMPANY INFRASTRUCTURE
+   ------------------------------------------------------------
+   Rules:
+   - Airline type comes from airline_infrastructure.
+   - Cost comes from the global historical resolver.
+   - The current simulation year determines the amount.
+   - One canonical movement per airline and month.
+   - PostgreSQL remains the monetary authority.
+   ============================================================ */
+
+async function ACS_settleMonthlyCompanyInfrastructure(
+  client,
+  airlineId,
+  year,
+  month,
+  settlementTimestampMs
+) {
+  const monthKey =
+    ACS_monthKey(year, month);
+
+  const referenceUid =
+    `COMPANY_INFRASTRUCTURE:${airlineId}:${monthKey}`;
+
+  const result = await client.query(
+    `
+    WITH infrastructure_authority AS (
+      SELECT
+        infrastructure.airline_type,
+
+        resolved.monthly_operating_cost
+          AS amount
+
+      FROM public.airline_infrastructure
+        infrastructure
+
+      CROSS JOIN LATERAL
+        public.acs_resolve_infrastructure_policy(
+          infrastructure.airline_type,
+          $2::INTEGER
+        ) resolved
+
+      WHERE infrastructure.airline_id = $1
+    ),
+
+    inserted_log AS (
+      INSERT INTO public.finance_log (
+        airline_id,
+        type,
+        source,
+        amount,
+        timestamp,
+        route_plan_id,
+        schedule_item_id,
+        reference_uid,
+        description,
+        created_at
+      )
+
+      SELECT
+        $1,
+        'EXPENSE',
+        'COMPANY_INFRASTRUCTURE_MONTHLY',
+        authority.amount,
+        $3,
+        NULL,
+        NULL,
+        $4,
+        (
+          'Monthly Company Infrastructure — '
+          || authority.airline_type
+          || ' — '
+          || $5
+        ),
+        NOW()
+
+      FROM infrastructure_authority
+        authority
+
+      WHERE authority.amount > 0
+
+      ON CONFLICT (reference_uid)
+      DO NOTHING
+
+      RETURNING amount
+    )
+
+    SELECT
+      COALESCE(
+        SUM(amount),
+        0
+      )::BIGINT AS applied_amount
+
+    FROM inserted_log
+    `,
+    [
+      airlineId,
+      year,
+      settlementTimestampMs,
+      referenceUid,
+      monthKey
+    ]
+  );
+
+  return ACS_toInteger(
+    result.rows[0]?.applied_amount
+  );
+}
+
+/* ============================================================
    ARCHIVE ONE MONTH
    ------------------------------------------------------------
    Payroll and leasing must already be included in company_finance.
@@ -2543,11 +2652,24 @@ async function ACS_applyMonthlyObligations(
   client,
   airlineId,
   payrollAmount,
-  leasingAmount
+  leasingAmount,
+  infrastructureAmount
 ) {
-  const totalAmount =
-    ACS_toInteger(payrollAmount) +
+  const normalizedPayroll =
+    ACS_toInteger(payrollAmount);
+
+  const normalizedLeasing =
     ACS_toInteger(leasingAmount);
+
+  const normalizedInfrastructure =
+    ACS_toInteger(
+      infrastructureAmount
+    );
+
+  const totalAmount =
+    normalizedPayroll +
+    normalizedLeasing +
+    normalizedInfrastructure;
 
   const result = await client.query(
     `
@@ -2568,6 +2690,12 @@ async function ACS_applyMonthlyObligations(
       cost_leasing =
         COALESCE(cost_leasing, 0) + $4,
 
+      cost_company_infrastructure =
+        COALESCE(
+          cost_company_infrastructure,
+          0
+        ) + $5,
+
       updated_at = NOW()
 
     WHERE airline_id = $1
@@ -2577,8 +2705,9 @@ async function ACS_applyMonthlyObligations(
     [
       airlineId,
       totalAmount,
-      ACS_toInteger(payrollAmount),
-      ACS_toInteger(leasingAmount)
+      normalizedPayroll,
+      normalizedLeasing,
+      normalizedInfrastructure
     ]
   );
 
@@ -2784,38 +2913,81 @@ export async function ACS_ensureFinancePeriod(
       financeYear,
       financeMonth,
       Number(
-        currentBoundaries.period_start_timestamp_ms
+        currentBoundaries
+          .period_start_timestamp_ms
+      )
+    );
+
+  const currentInfrastructureAmount =
+    await ACS_settleMonthlyCompanyInfrastructure(
+      client,
+      normalizedAirlineId,
+      financeYear,
+      financeMonth,
+      Number(
+        currentBoundaries
+          .period_start_timestamp_ms
       )
     );
 
   let payrollAppliedCount = 0;
+  let infrastructureAppliedCount = 0;
 
-  if (currentPayrollAmount > 0) {
+  if (
+    currentPayrollAmount > 0 ||
+    currentInfrastructureAmount > 0
+  ) {
     finance =
       await ACS_applyMonthlyObligations(
         client,
         normalizedAirlineId,
         currentPayrollAmount,
-        0
+        0,
+        currentInfrastructureAmount
       );
+  }
 
+  if (currentPayrollAmount > 0) {
     payrollAppliedCount += 1;
   }
 
-  if (openPeriodNumber === officialPeriodNumber) {
+  if (currentInfrastructureAmount > 0) {
+    infrastructureAppliedCount += 1;
+  }
+
+  if (
+    openPeriodNumber ===
+    officialPeriodNumber
+  ) {
     return {
       ok: true,
       rolled_over: false,
       closed_months: [],
+
       payroll_applied_count:
         payrollAppliedCount,
+
+      infrastructure_applied_count:
+        infrastructureAppliedCount,
+
       current_payroll:
         currentPayrollAmount,
+
+      current_company_infrastructure:
+        ACS_toInteger(
+          finance
+            .cost_company_infrastructure
+        ),
+
       insurance_created_count:
         insuranceCreatedCount,
+
       insurance_applied_count:
-        insuranceAppliedCount,       
-      current_period: officialPeriod,
+        insuranceAppliedCount,
+
+      current_period:
+        officialPeriod,
+
       finance
     };
   }
@@ -2875,8 +3047,46 @@ export async function ACS_ensureFinancePeriod(
         [normalizedAirlineId]
       );
 
-    finance =
+        finance =
       insuranceFinanceRefresh.rows[0];
+
+    /*
+     * Ensure infrastructure before closing the month.
+     * The canonical reference prevents duplicate charges.
+     */
+
+    const repairedInfrastructureAmount =
+      await ACS_settleMonthlyCompanyInfrastructure(
+        client,
+        normalizedAirlineId,
+        closingYear,
+        closingMonth,
+        Number(
+          boundaries
+            .period_start_timestamp_ms
+        )
+      );
+
+    if (
+      repairedInfrastructureAmount > 0
+    ) {
+      finance =
+        await ACS_applyMonthlyObligations(
+          client,
+          normalizedAirlineId,
+          0,
+          0,
+          repairedInfrastructureAmount
+        );
+
+      infrastructureAppliedCount += 1;
+    }
+
+    const closedInfrastructureAmount =
+      ACS_toInteger(
+        finance
+          .cost_company_infrastructure
+      );
      
     /*
      * Payroll was applied when this month opened.
@@ -2898,11 +3108,12 @@ export async function ACS_ensureFinancePeriod(
 
        if (leasingAmount > 0) {
       finance =
-        await ACS_applyMonthlyObligations(
+       await ACS_applyMonthlyObligations(
           client,
           normalizedAirlineId,
           0,
-          leasingAmount
+          leasingAmount,
+          0
         );
     }
 
@@ -2989,27 +3200,50 @@ export async function ACS_ensureFinancePeriod(
         nextPeriod.month
       );
 
-    const nextPayrollAmount =
+        const nextPayrollAmount =
       await ACS_settleMonthlyPayroll(
         client,
         normalizedAirlineId,
         nextPeriod.year,
         nextPeriod.month,
         Number(
-          nextBoundaries.period_start_timestamp_ms
+          nextBoundaries
+            .period_start_timestamp_ms
         )
       );
 
-    if (nextPayrollAmount > 0) {
+    const nextInfrastructureAmount =
+      await ACS_settleMonthlyCompanyInfrastructure(
+        client,
+        normalizedAirlineId,
+        nextPeriod.year,
+        nextPeriod.month,
+        Number(
+          nextBoundaries
+            .period_start_timestamp_ms
+        )
+      );
+
+    if (
+      nextPayrollAmount > 0 ||
+      nextInfrastructureAmount > 0
+    ) {
       finance =
         await ACS_applyMonthlyObligations(
           client,
           normalizedAirlineId,
           nextPayrollAmount,
-          0
+          0,
+          nextInfrastructureAmount
         );
+    }
 
+    if (nextPayrollAmount > 0) {
       payrollAppliedCount += 1;
+    }
+
+    if (nextInfrastructureAmount > 0) {
+      infrastructureAppliedCount += 1;
     }
 
     closedMonths.push({
@@ -3017,8 +3251,14 @@ export async function ACS_ensureFinancePeriod(
       year: closingYear,
       month: closingMonth,
       month_key: closingMonthKey,
-      payroll: closedPayrollAmount,
-      leasing: leasingAmount,
+      payroll:
+        closedPayrollAmount,
+
+      company_infrastructure:
+        closedInfrastructureAmount,
+
+      leasing:
+        leasingAmount,
       depreciation:
         depreciationSettlement.appliedAmount,
       depreciated_aircraft:
@@ -3041,7 +3281,10 @@ export async function ACS_ensureFinancePeriod(
       closing_capital:
         ACS_toInteger(finance.opening_capital),
       next_month_payroll:
-        nextPayrollAmount
+        nextPayrollAmount,
+
+      next_month_company_infrastructure:
+        nextInfrastructureAmount
     });
   }
 
@@ -3079,6 +3322,16 @@ export async function ACS_ensureFinancePeriod(
     closed_months: closedMonths,
     payroll_applied_count:
       payrollAppliedCount,
+
+    infrastructure_applied_count:
+      infrastructureAppliedCount,
+
+    current_company_infrastructure:
+      ACS_toInteger(
+        finance
+          .cost_company_infrastructure
+      ),
+
     insurance_created_count:
       insuranceCreatedCount,
     insurance_applied_count:
