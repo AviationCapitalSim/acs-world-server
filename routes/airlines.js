@@ -242,14 +242,11 @@ async function generateAvailableDesignators(
    ACS CREATE AIRLINE VALIDATION AUTHORITY
    ============================================================ */
 
-const ALLOWED_BUSINESS_MODELS = new Set([
-  "Regional",
-  "International"
-]);
+const ACS_DEFAULT_BUSINESS_MODEL =
+  "PASSENGER";
 
-const ALLOWED_OPERATION_MODES = new Set([
-  "Passenger"
-]);
+const ACS_DEFAULT_OPERATION_MODE =
+  "SCHEDULED";
 
 const ALLOWED_AIRLINE_TYPES = new Set([
   "STARTER",
@@ -358,16 +355,6 @@ function validateCreateAirlinePayload(payload) {
       payload.region
     );
 
-  const businessModel =
-    normalizeRequiredText(
-      payload.business_model
-    );
-
-  const operationMode =
-    normalizeRequiredText(
-      payload.operation_mode
-    );
-
   const airlineTypeValue =
     normalizeRequiredText(
       payload.airline_type
@@ -378,12 +365,10 @@ function validateCreateAirlinePayload(payload) {
       ? airlineTypeValue.toUpperCase()
       : null;
 
-  const requiredValues = {
+    const requiredValues = {
     airline_name: airlineName,
     country,
     region,
-    business_model: businessModel,
-    operation_mode: operationMode,
     airline_type: airlineType
   };
 
@@ -436,36 +421,6 @@ function validateCreateAirlinePayload(payload) {
   }
 
   if (
-    !ALLOWED_BUSINESS_MODELS.has(
-      businessModel
-    )
-  ) {
-    return {
-      ok: false,
-      error: "INVALID_BUSINESS_MODEL",
-      field: "business_model",
-      allowed_values: [
-        ...ALLOWED_BUSINESS_MODELS
-      ]
-    };
-  }
-
-  if (
-    !ALLOWED_OPERATION_MODES.has(
-      operationMode
-    )
-  ) {
-    return {
-      ok: false,
-      error: "INVALID_OPERATION_MODE",
-      field: "operation_mode",
-      allowed_values: [
-        ...ALLOWED_OPERATION_MODES
-      ]
-    };
-  }
-
-  if (
     !ALLOWED_AIRLINE_TYPES.has(
       airlineType
     )
@@ -480,14 +435,16 @@ function validateCreateAirlinePayload(payload) {
     };
   }
 
-  return {
+    return {
     ok: true,
     data: {
       airlineName,
       country,
       region,
-      businessModel,
-      operationMode,
+      businessModel:
+        ACS_DEFAULT_BUSINESS_MODEL,
+      operationMode:
+        ACS_DEFAULT_OPERATION_MODE,
       airlineType
     }
   };
