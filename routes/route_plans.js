@@ -1484,6 +1484,115 @@ router.get(
 );
 
 /* ============================================================
+   GET /v1/routes/aircraft-infrastructure-authority/:aircraft_id
+   ------------------------------------------------------------
+   Read-only ACS OCC eligibility preview.
+   PostgreSQL remains the operational authority.
+   ============================================================ */
+
+router.get(
+  "/routes/aircraft-infrastructure-authority/:aircraft_id",
+  requireAuth,
+  async (req, res) => {
+    const airlineId = Number(req.airline_id);
+    const aircraftId = Number(req.params.aircraft_id);
+
+    if (!Number.isInteger(airlineId) || airlineId <= 0) {
+      return res.status(401).json({
+        ok: false,
+        error: "NO_AIRLINE_SESSION"
+      });
+    }
+
+    if (!Number.isInteger(aircraftId) || aircraftId <= 0) {
+      return res.status(400).json({
+        ok: false,
+        error: "AIRCRAFT_ID_REQUIRED"
+      });
+    }
+
+    try {
+      const authorityResult = await pool.query(
+        `
+        SELECT
+          airline_id,
+          aircraft_id,
+          model_key,
+          company_infrastructure,
+          aircraft_classification,
+          required_infrastructure,
+          company_rank,
+          required_rank,
+          authorized,
+          denial_code
+        FROM public.acs_resolve_aircraft_infrastructure_authority(
+          $1::INTEGER,
+          $2::BIGINT
+        )
+        `,
+        [
+          airlineId,
+          aircraftId
+        ]
+      );
+
+      if (!authorityResult.rows.length) {
+        return res.status(404).json({
+          ok: false,
+          error: "AIRCRAFT_NOT_FOUND_OR_NOT_OWNED"
+        });
+      }
+
+      const authority = authorityResult.rows[0];
+
+      return res.json({
+        ok: true,
+        endpoint:
+          "ACS_AIRCRAFT_INFRASTRUCTURE_AUTHORITY",
+        version: "v1.0",
+
+        infrastructure_check: {
+          authorized:
+            authority.authorized === true,
+
+          denial_code:
+            authority.denial_code || null,
+
+          company_infrastructure:
+            authority.company_infrastructure || null,
+
+          aircraft_classification:
+            authority.aircraft_classification || null,
+
+          required_infrastructure:
+            authority.required_infrastructure || null,
+
+          company_rank:
+            Number(authority.company_rank || 0),
+
+          required_rank:
+            Number(authority.required_rank || 0)
+        }
+      });
+
+    } catch (error) {
+      console.error(
+        "ACS AIRCRAFT INFRASTRUCTURE AUTHORITY ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        ok: false,
+        error:
+          error.code ||
+          "AIRCRAFT_INFRASTRUCTURE_AUTHORITY_FAILED",
+        details: error.message
+      });
+    }
+  }
+);
+
+/* ============================================================
    POST /v1/routes/plans
    ============================================================ */
 
