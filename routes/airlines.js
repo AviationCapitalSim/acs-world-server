@@ -226,16 +226,35 @@ async function generateAvailableDesignators(
     occupiedIcao
   );
 
-  if (!iata || !icao) {
-    throw new Error(
-      "AIRLINE_DESIGNATORS_EXHAUSTED"
-    );
-  }
+const callsignResult = await client.query(
+  `
+  SELECT
+    public.acs_generate_unique_airline_callsign(
+      $1::TEXT,
+      NULL::INTEGER
+    ) AS callsign
+  `,
+  [airlineName]
+);
 
-  return {
-    iata,
-    icao
-  };
+const callsign =
+  String(
+    callsignResult.rows[0]?.callsign || ""
+  )
+    .trim()
+    .toUpperCase();
+
+if (!iata || !icao || !callsign) {
+  throw new Error(
+    "AIRLINE_IDENTIFIERS_EXHAUSTED"
+  );
+}
+
+return {
+  iata,
+  icao,
+  callsign
+};
 }
 
 /* ============================================================
