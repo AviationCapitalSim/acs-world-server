@@ -7719,6 +7719,84 @@ router.post("/schedule/assign-aircraft", requireAuth, async (req, res) => {
 
     const aircraft = aircraftResult.rows[0];
 
+        /* ============================================================
+       ACS OCC — SCHEDULE INFRASTRUCTURE AUTHORITY
+       Prevents assignment outside company capability.
+       ============================================================ */
+
+    const infrastructureAuthorityResult =
+      await client.query(
+        `
+        SELECT
+          airline_id,
+          aircraft_id,
+          model_key,
+          company_infrastructure,
+          aircraft_classification,
+          required_infrastructure,
+          company_rank,
+          required_rank,
+          authorized,
+          denial_code
+        FROM public.acs_resolve_aircraft_infrastructure_authority(
+          $1::INTEGER,
+          $2::BIGINT
+        )
+        `,
+        [
+          airlineId,
+          aircraftId
+        ]
+      );
+
+    if (!infrastructureAuthorityResult.rows.length) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(409).json({
+        ok: false,
+        error:
+          "AIRCRAFT_INFRASTRUCTURE_AUTHORITY_NOT_FOUND"
+      });
+    }
+
+    const infrastructureAuthority =
+      infrastructureAuthorityResult.rows[0];
+
+    if (infrastructureAuthority.authorized !== true) {
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return res.status(409).json({
+        ok: false,
+        error: "OPERATION_NOT_AUTHORIZED",
+        denial_code:
+          infrastructureAuthority.denial_code ||
+          "INFRASTRUCTURE_CAPABILITY_EXCEEDED",
+
+        infrastructure_check: {
+          company_infrastructure:
+            infrastructureAuthority.company_infrastructure,
+
+          aircraft_classification:
+            infrastructureAuthority.aircraft_classification,
+
+          required_infrastructure:
+            infrastructureAuthority.required_infrastructure,
+
+          company_rank:
+            Number(
+              infrastructureAuthority.company_rank || 0
+            ),
+
+          required_rank:
+            Number(
+              infrastructureAuthority.required_rank || 0
+            )
+        }
+      });
+    }
+     
    /*
   Aircraft listed in the commercial market cannot
   receive new Schedule assignments.
