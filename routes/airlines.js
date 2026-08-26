@@ -1599,6 +1599,9 @@ router.post(
         airline_icao:
           assignedDesignators.icao,
 
+        airline_callsign:
+          assignedDesignators.callsign,
+         
         infrastructure: {
           airline_type:
             airlineType,
@@ -1678,9 +1681,11 @@ router.post(
         }
 
         if (
-          constraint.includes("iata") ||
-          constraint.includes("icao")
-        ) {
+           constraint.includes("iata") ||
+           constraint.includes("icao") ||
+           constraint.includes("callsign")
+         ) {
+           
           return res.status(409).json({
             ok: false,
             error:
