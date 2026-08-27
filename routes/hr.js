@@ -682,6 +682,7 @@ async function applyHRAutomation(airlineId) {
           resolvedFirstOfficerSalary
         ]
       );
+    }
 
     await client.query("COMMIT");
 
