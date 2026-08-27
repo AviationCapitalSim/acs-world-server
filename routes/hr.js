@@ -1821,32 +1821,14 @@ router.patch(
           Math.trunc(Number(department.staff || 0))
         );
 
-        const currentSalary = Number(
-          department.salary || 0
-        );
-
-        let nextMorale = Number(
-          department.morale || 100
-        );
-
-        const changePercent =
-          currentSalary > 0
-            ? (
-                (newSalary - currentSalary) /
-                currentSalary
-              ) * 100
-            : 0;
-
-        if (changePercent >= 20) nextMorale += 4;
-        else if (changePercent >= 5) nextMorale += 2;
-        else if (changePercent <= -15) nextMorale -= 6;
-        else if (changePercent < 0) nextMorale -= 3;
-
-        nextMorale = Math.max(
+         const nextMorale = Math.max(
           40,
-          Math.min(100, nextMorale)
+          Math.min(
+            100,
+            Number(department.morale || 100)
+          )
         );
-
+         
         await client.query(
           `
           UPDATE public.company_settings
