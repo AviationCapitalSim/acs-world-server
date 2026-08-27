@@ -60,30 +60,6 @@ const generalLimiter = rateLimit({
   }
 });
 
-const credentialLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
-  standardHeaders: true,
-  legacyHeaders: false,
-
-  message: {
-    ok: false,
-    error: "GUARDIAN_CREDENTIAL_RATE_LIMIT"
-  }
-});
-
-const executionLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 5,
-  standardHeaders: true,
-  legacyHeaders: false,
-
-  message: {
-    ok: false,
-    error: "GUARDIAN_EXECUTION_RATE_LIMIT"
-  }
-});
-
 /* ============================================================
    ERROR RESPONSE
    ============================================================ */
@@ -141,7 +117,6 @@ router.get(
 
 router.post(
   "/guardian/setup",
-  credentialLimiter,
   async (req, res) => {
     try {
       const result =
@@ -181,7 +156,6 @@ router.post(
 
 router.post(
   "/guardian/access",
-  credentialLimiter,
   async (req, res) => {
     try {
       const result =
@@ -400,7 +374,6 @@ router.post(
 
 router.post(
   "/guardian/actions/:actionId/execute",
-  executionLimiter,
   async (req, res) => {
     try {
       const result =
