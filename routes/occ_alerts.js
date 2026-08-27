@@ -99,51 +99,234 @@ async function ACS_createOccAlertIfAllowed(client, alert, currentSimTime) {
   );
 }
 
-async function ACS_syncHrAlerts(client, airlineId, currentSimTime) {
-  
-  const result = await client.query(
+async function ACS_syncHrAlerts(
+  client,
+  airlineId,
+  currentSimTime
+) {
+  const simResult = await client.query(
     `
     SELECT
-      airline_id,
+      EXTRACT(
+        YEAR FROM $1::TIMESTAMPTZ
+      )::INTEGER AS sim_year,
+
+      EXTRACT(
+        MONTH FROM $1::TIMESTAMPTZ
+      )::INTEGER AS sim_month
+    `,
+    [currentSimTime]
+  );
+
+  const simYear = Number(
+    simResult.rows[0]?.sim_year
+  );
+
+  const simMonth = Number(
+    simResult.rows[0]?.sim_month
+  );
+
+  if (
+    !Number.isInteger(simYear) ||
+    !Number.isInteger(simMonth)
+  ) {
+    throw new Error("INVALID_HR_ALERT_SIM_TIME");
+  }
+
+  const salaryHalf =
+    simMonth <= 6 ? 1 : 2;
+
+  const result = await client.query(
+    `
+    WITH hr_status AS (
+      SELECT
+        department.dept_id,
+        department.dept_name,
+
+        COALESCE(
+          department.staff,
+          0
+        )::INTEGER AS staff,
+
+        COALESCE(
+          department.required,
+          0
+        )::INTEGER AS required,
+
+        COALESCE(
+          department.morale,
+          100
+        )::NUMERIC AS morale,
+
+        COALESCE(
+          department.salary,
+          0
+        )::NUMERIC AS salary,
+
+        CASE
+          WHEN department.dept_id
+               LIKE 'pilots\\_%' ESCAPE '\\'
+            THEN standard.standard_two_crew_cost
+          ELSE standard.monthly_salary
+        END::NUMERIC AS standard_salary
+
+      FROM public.hr_departments department
+
+      JOIN public.hr_salary_standards standard
+        ON standard.dept_id =
+           department.dept_id
+       AND standard.cycle_year = $2
+       AND standard.cycle_half = $3
+
+      WHERE department.airline_id = $1
+    )
+
+    SELECT
       dept_id,
       dept_name,
       staff,
-      required
-    FROM public.hr_departments
-    WHERE airline_id = $1
-      AND COALESCE(required, 0) > 0
-      AND COALESCE(staff, 0) < COALESCE(required, 0)
+      required,
+      morale,
+      salary,
+      standard_salary
+
+    FROM hr_status
+
+    WHERE
+      (
+        required > 0
+        AND staff < required
+      )
+      OR
+      (
+        morale <= 80
+        AND salary < standard_salary
+      )
+
     ORDER BY dept_id
     `,
-    [airlineId]
+    [
+      airlineId,
+      simYear,
+      salaryHalf
+    ]
   );
+
+  if (result.rows.length === 0) {
+    return;
+  }
+
+  const staffingIssues = [];
+  const salaryIssues = [];
+
+  let level = "warning";
 
   for (const row of result.rows) {
     const staff = Number(row.staff || 0);
     const required = Number(row.required || 0);
-    const deficit = Math.max(0, required - staff);
-    const deficitRatio = required > 0 ? deficit / required : 0;
+    const morale = Number(row.morale || 100);
+    const salary = Number(row.salary || 0);
+    const standardSalary = Number(
+      row.standard_salary || 0
+    );
 
-    const level =
-      staff <= 0 || deficitRatio >= 0.5
-        ? "critical"
-        : "warning";
+    if (
+      required > 0 &&
+      staff < required
+    ) {
+      const deficit =
+        Math.max(0, required - staff);
 
-    await ACS_createOccAlertIfAllowed(
-      client,
-      {
-        airline_id: airlineId,
-        alert_key: `HR_CENTER:${row.dept_id}`,
-        category: "hr",
-        level,
-        title: "HR CENTER",
-        message: `HR staff: ${row.dept_name} ${staff}/${required}.`,
-        source: "hr_departments",
-        source_ref: row.dept_id
-      },
-      currentSimTime
+      const deficitRatio =
+        required > 0
+          ? deficit / required
+          : 0;
+
+      staffingIssues.push(
+        `${row.dept_name} ${staff}/${required}`
+      );
+
+      if (
+        staff <= 0 ||
+        deficitRatio >= 0.5
+      ) {
+        if (level !== "severe") {
+          level = "critical";
+        }
+      }
+    }
+
+    if (
+      morale <= 80 &&
+      salary < standardSalary
+    ) {
+      salaryIssues.push(
+        `${row.dept_name}: morale ${Math.round(
+          morale
+        )}%, salary $${Math.round(
+          salary
+        ).toLocaleString("en-US")}/$${Math.round(
+          standardSalary
+        ).toLocaleString("en-US")}`
+      );
+
+      if (morale <= 55) {
+        level = "severe";
+
+      } else if (
+        morale <= 70 &&
+        level !== "severe"
+      ) {
+        level = "critical";
+      }
+    }
+  }
+
+  const messageParts = [];
+
+  if (staffingIssues.length > 0) {
+    messageParts.push(
+      `Staff shortages: ${staffingIssues.join(
+        "; "
+      )}.`
     );
   }
+
+  if (salaryIssues.length > 0) {
+    messageParts.push(
+      `Salary morale: ${salaryIssues.join(
+        "; "
+      )}.`
+    );
+  }
+
+  const monthKey =
+    `${simYear}-${String(simMonth).padStart(
+      2,
+      "0"
+    )}`;
+
+  await ACS_createOccAlertIfAllowed(
+    client,
+    {
+      airline_id: airlineId,
+
+      alert_key:
+        `HR_CENTER:MONTH:${monthKey}`,
+
+      category: "hr",
+      level,
+
+      title:
+        "HR CENTER — MONTHLY PERSONNEL STATUS",
+
+      message: messageParts.join(" "),
+
+      source: "hr_departments",
+      source_ref: monthKey
+    },
+    currentSimTime
+  );
 }
 
 async function ACS_syncSlotAlerts(client, airlineId, currentSimTime) {
