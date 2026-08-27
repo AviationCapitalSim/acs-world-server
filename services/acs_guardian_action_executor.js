@@ -337,7 +337,10 @@ async function ACS_compactClosedFinance(client, action) {
   await ACS_assertNoUnexpectedReferences(
     client,
     "public.finance_log",
-    ["public.corporate_tax"]
+    [
+      "public.corporate_tax",
+      "public.airline_infrastructure_changes"
+    ]
   );
 
   await ACS_assertNoUserTriggers(
@@ -355,7 +358,8 @@ async function ACS_compactClosedFinance(client, action) {
   await client.query(`
     LOCK TABLE
       public.finance_log,
-      public.corporate_tax
+      public.corporate_tax,
+      public.airline_infrastructure_changes
     IN ACCESS EXCLUSIVE MODE
   `);
 
@@ -408,6 +412,16 @@ async function ACS_compactClosedFinance(client, action) {
               history.period_end_sim
             ) * 1000
           )::bigint
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM public.corporate_tax tax
+        WHERE tax.finance_log_id = log.id
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM public.airline_infrastructure_changes infrastructure
+        WHERE infrastructure.finance_log_id = log.id
       )
   `);
 
@@ -465,6 +479,12 @@ async function ACS_compactClosedFinance(client, action) {
           AS corporate_tax_rows,
 
         (
+          SELECT COUNT(*)
+          FROM public.airline_infrastructure_changes
+        )::bigint
+          AS infrastructure_change_rows,
+
+        (
           SELECT MD5(
             COALESCE(
               STRING_AGG(
@@ -483,7 +503,28 @@ async function ACS_compactClosedFinance(client, action) {
           FROM
             public.corporate_tax tax
         )
-          AS corporate_tax_fingerprint
+          AS corporate_tax_fingerprint,
+
+        (
+          SELECT MD5(
+            COALESCE(
+              STRING_AGG(
+                infrastructure.id::text ||
+                ':' ||
+                COALESCE(
+                  infrastructure.finance_log_id::text,
+                  'NULL'
+                ),
+                ','
+                ORDER BY infrastructure.id
+              ),
+              ''
+            )
+          )
+          FROM
+            public.airline_infrastructure_changes infrastructure
+        )
+          AS infrastructure_change_fingerprint
     `);
 
   /*
@@ -509,7 +550,19 @@ async function ACS_compactClosedFinance(client, action) {
             candidate.id =
               tax.finance_log_id
         )::bigint
-          AS protected_tax_references
+          AS protected_tax_references,
+
+        (
+          SELECT COUNT(*)
+          FROM
+            public.airline_infrastructure_changes infrastructure
+          JOIN
+            acs_guardian_candidate_ids candidate
+          ON
+            candidate.id =
+              infrastructure.finance_log_id
+        )::bigint
+          AS protected_infrastructure_references
     `);
 
   const originalRows =
@@ -523,12 +576,19 @@ async function ACS_compactClosedFinance(client, action) {
         .protected_tax_references
     );
 
+  const protectedInfrastructureReferences =
+    Number(
+      counts.rows[0]
+        .protected_infrastructure_references
+    );
+
   const keptRows =
     originalRows -
     signature.eligibleRows;
 
   if (
-    protectedTaxReferences !== 0
+    protectedTaxReferences !== 0 ||
+    protectedInfrastructureReferences !== 0
   ) {
     throw ACS_actionError(
       "GUARDIAN_FINANCE_PROTECTED_REFERENCE_FOUND",
@@ -604,6 +664,12 @@ async function ACS_compactClosedFinance(client, action) {
           AS corporate_tax_rows,
 
         (
+          SELECT COUNT(*)
+          FROM public.airline_infrastructure_changes
+        )::bigint
+          AS infrastructure_change_rows,
+
+        (
           SELECT MD5(
             COALESCE(
               STRING_AGG(
@@ -622,7 +688,28 @@ async function ACS_compactClosedFinance(client, action) {
           FROM
             public.corporate_tax tax
         )
-          AS corporate_tax_fingerprint
+          AS corporate_tax_fingerprint,
+
+        (
+          SELECT MD5(
+            COALESCE(
+              STRING_AGG(
+                infrastructure.id::text ||
+                ':' ||
+                COALESCE(
+                  infrastructure.finance_log_id::text,
+                  'NULL'
+                ),
+                ','
+                ORDER BY infrastructure.id
+              ),
+              ''
+            )
+          )
+          FROM
+            public.airline_infrastructure_changes infrastructure
+        )
+          AS infrastructure_change_fingerprint
     `);
 
   if (
@@ -658,10 +745,24 @@ async function ACS_compactClosedFinance(client, action) {
           .corporate_tax_rows
       ) ||
 
+    String(
+      verification.rows[0]
+        .infrastructure_change_rows
+    ) !==
+      String(
+        protectedBefore.rows[0]
+          .infrastructure_change_rows
+      ) ||
+
     verification.rows[0]
       .corporate_tax_fingerprint !==
       protectedBefore.rows[0]
-        .corporate_tax_fingerprint
+        .corporate_tax_fingerprint ||
+
+    verification.rows[0]
+      .infrastructure_change_fingerprint !==
+      protectedBefore.rows[0]
+        .infrastructure_change_fingerprint
   ) {
     throw ACS_actionError(
       "GUARDIAN_FINANCE_POSTCHECK_FAILED",
@@ -712,6 +813,9 @@ async function ACS_compactClosedFinance(client, action) {
         "UNCHANGED",
 
       corporateTax:
+        "UNCHANGED",
+
+      airlineInfrastructureChanges:
         "UNCHANGED"
     }
   };
