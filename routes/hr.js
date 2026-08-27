@@ -565,16 +565,36 @@ async function applyHRAutomation(airlineId) {
 
       let resolvedSalary = Number(department.salary || 0);
       let resolvedPercent = Number(department.salary_percent || 100);
-      let resolvedCaptainSalary = department.captain_salary === null
-        ? null
-        : Number(department.captain_salary);
-      let resolvedFirstOfficerSalary = department.first_officer_salary === null
-        ? null
-        : Number(department.first_officer_salary);
-      let resolvedCycleYear = Number(department.salary_cycle_year);
-      let resolvedCycleHalf = Number(department.salary_cycle_half);
 
-      if (!Number.isFinite(resolvedPercent) || resolvedPercent <= 0) {
+      let resolvedCaptainSalary =
+        department.captain_salary === null
+          ? null
+          : Number(department.captain_salary);
+
+      let resolvedFirstOfficerSalary =
+        department.first_officer_salary === null
+          ? null
+          : Number(department.first_officer_salary);
+
+      let resolvedDecade =
+        department.salary_decade === null
+          ? null
+          : Number(department.salary_decade);
+
+      let resolvedCycleYear =
+        department.salary_cycle_year === null
+          ? null
+          : Number(department.salary_cycle_year);
+
+      let resolvedCycleHalf =
+        department.salary_cycle_half === null
+          ? null
+          : Number(department.salary_cycle_half);
+
+      if (
+        !Number.isFinite(resolvedPercent) ||
+        resolvedPercent <= 0
+      ) {
         resolvedPercent = 100;
       }
 
@@ -582,7 +602,10 @@ async function applyHRAutomation(airlineId) {
         resolvedCycleYear === salaryCycle.year &&
         resolvedCycleHalf === salaryCycle.half;
 
-      if (autoSalaryEnabled && !cycleAlreadyApplied) {
+      if (
+        autoSalaryEnabled &&
+        !cycleAlreadyApplied
+      ) {
         const standard = await getHRSalaryStandard(
           client,
           deptId,
@@ -594,20 +617,29 @@ async function applyHRAutomation(airlineId) {
           standard.salary,
           resolvedPercent
         );
+
         resolvedCaptainSalary = applyHRSalaryPercent(
           standard.captainSalary,
           resolvedPercent
         );
+
         resolvedFirstOfficerSalary = applyHRSalaryPercent(
           standard.firstOfficerSalary,
           resolvedPercent
         );
+
+        resolvedDecade = salaryCycle.year;
         resolvedCycleYear = salaryCycle.year;
         resolvedCycleHalf = salaryCycle.half;
       }
 
-      if (!Number.isFinite(resolvedSalary) || resolvedSalary <= 0) {
-        throw new Error(`INVALID_STORED_HR_SALARY:${deptId}`);
+      if (
+        !Number.isFinite(resolvedSalary) ||
+        resolvedSalary <= 0
+      ) {
+        throw new Error(
+          `INVALID_STORED_HR_SALARY:${deptId}`
+        );
       }
 
       await client.query(
@@ -615,18 +647,25 @@ async function applyHRAutomation(airlineId) {
         UPDATE public.hr_departments
         SET
           staff = $3::INTEGER,
+
           salary = $4::NUMERIC,
+
           payroll = ROUND(
             ($3::INTEGER)::NUMERIC *
             $4::NUMERIC
           )::BIGINT,
+
           salary_percent = $5::NUMERIC,
           salary_decade = $6::INTEGER,
-          salary_cycle_year = $6::SMALLINT,
-          salary_cycle_half = $7::SMALLINT,
-          captain_salary = $8::INTEGER,
-          first_officer_salary = $9::INTEGER,
+
+          salary_cycle_year = $7::SMALLINT,
+          salary_cycle_half = $8::SMALLINT,
+
+          captain_salary = $9::INTEGER,
+          first_officer_salary = $10::INTEGER,
+
           updated_at = NOW()
+
         WHERE airline_id = $1
           AND dept_id = $2
         `,
@@ -636,13 +675,13 @@ async function applyHRAutomation(airlineId) {
           resolvedStaff,
           resolvedSalary,
           resolvedPercent,
+          resolvedDecade,
           resolvedCycleYear,
           resolvedCycleHalf,
           resolvedCaptainSalary,
           resolvedFirstOfficerSalary
         ]
       );
-    }
 
     await client.query("COMMIT");
 
