@@ -1,5 +1,5 @@
 /* ============================================================
-   ACS OCC — SYSTEM GUARDIAN
+   ACS OCC — SYSTEM  GUARDIAN
    SUPERVISED CLEANUP EXECUTOR
    ------------------------------------------------------------
    Executes only an administrator-confirmed, unexpired preview.
