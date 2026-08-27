@@ -737,14 +737,14 @@ async function applyHRMoraleMonthlyResolver(airlineId) {
   const departmentsResult = await pool.query(
     `
     SELECT
-      dept_id,
-      dept_name,
-      staff,
-      required,
-      morale,
-      salary,
-      morale_last_sim_year,
-      morale_last_sim_month,
+     department.dept_id,
+     department.dept_name,
+     department.staff,
+     department.required,
+     department.morale,
+     department.salary,
+     department.morale_last_sim_year,
+     department.morale_last_sim_month,
       CASE
         WHEN department.dept_id LIKE 'pilots\_%' ESCAPE '\'
           THEN standard.standard_two_crew_cost
