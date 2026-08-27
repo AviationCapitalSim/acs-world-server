@@ -1759,7 +1759,7 @@ router.post(
         ]
       );
 
-      const nextAllowedPeriod =
+      const newNextAllowedPeriod =
         currentPeriod + 6;
 
       await client.query(
