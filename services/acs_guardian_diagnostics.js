@@ -1,6 +1,6 @@
 /* ============================================================
    ACS OCC — SYSTEM GUARDIAN
-   CLEANUP DIAGNOSTICS
+   CLEANUP  DIAGNOSTICS
    ------------------------------------------------------------
    Read-only detectors. They identify rows that are already
    represented by verified ACS history or were soft-deleted.
