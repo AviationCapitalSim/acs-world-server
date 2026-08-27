@@ -5,178 +5,97 @@ import { requireAuth } from "../middleware/auth.js";
 const router = express.Router();
 
 /* ============================================================
-   HR HISTORICAL SALARY AUTHORITY
+   HR SEMESTRAL SALARY AUTHORITY — POSTGRESQL
    ------------------------------------------------------------
-   • One backend authority for all 18 departments
-   • Salary cycles advance by historical decade
-   • salary_percent preserves the airline salary policy
-   • salary_decade records the last applied historical cycle
+   • public.hr_salary_standards is the only salary authority
+   • H1 = January through June; H2 = July through December
+   • Pilot salary is Captain + F/O for the standard two-seat crew
+   • Every additional technical cockpit member is paid as F/O
    ============================================================ */
 
-const HR_HISTORICAL_SALARIES = Object.freeze({
-  1940: Object.freeze({
-    pilot: 380,
-    cabin: 140,
-    maintenance: 200,
-    ground: 120,
-    admin: 180,
-    flight_ops: 220,
-    security: 150,
-    executive: 650
-  }),
-  1950: Object.freeze({
-    pilot: 520,
-    cabin: 170,
-    maintenance: 240,
-    ground: 140,
-    admin: 210,
-    flight_ops: 260,
-    security: 170,
-    executive: 800
-  }),
-  1960: Object.freeze({
-    pilot: 900,
-    cabin: 240,
-    maintenance: 330,
-    ground: 190,
-    admin: 280,
-    flight_ops: 340,
-    security: 230,
-    executive: 1200
-  }),
-  1970: Object.freeze({
-    pilot: 1600,
-    cabin: 360,
-    maintenance: 500,
-    ground: 280,
-    admin: 420,
-    flight_ops: 520,
-    security: 340,
-    executive: 2200
-  }),
-  1980: Object.freeze({
-    pilot: 2600,
-    cabin: 600,
-    maintenance: 800,
-    ground: 420,
-    admin: 620,
-    flight_ops: 760,
-    security: 520,
-    executive: 3600
-  }),
-  1990: Object.freeze({
-    pilot: 3600,
-    cabin: 820,
-    maintenance: 1050,
-    ground: 520,
-    admin: 820,
-    flight_ops: 980,
-    security: 660,
-    executive: 5200
-  }),
-  2000: Object.freeze({
-    pilot: 4700,
-    cabin: 1100,
-    maintenance: 1400,
-    ground: 720,
-    admin: 1100,
-    flight_ops: 1300,
-    security: 850,
-    executive: 7200
-  }),
-  2010: Object.freeze({
-    pilot: 6200,
-    cabin: 1600,
-    maintenance: 2000,
-    ground: 1050,
-    admin: 1600,
-    flight_ops: 1850,
-    security: 1200,
-    executive: 9800
-  }),
-  2020: Object.freeze({
-    pilot: 8300,
-    cabin: 2400,
-    maintenance: 2800,
-    ground: 1450,
-    admin: 2300,
-    flight_ops: 2600,
-    security: 1700,
-    executive: 13500
-  })
-});
+const HR_DEPARTMENT_IDS = new Set([
+  "ceo", "vp", "middle", "economics", "comms", "hr", "quality",
+  "security", "customers", "flightops", "maintenance", "ground",
+  "routes", "pilots_small", "pilots_medium", "pilots_large",
+  "pilots_vlarge", "cabin"
+]);
 
-const HR_PILOT_SIZE_MULTIPLIERS = Object.freeze({
-  pilots_small: 0.55,
-  pilots_medium: 0.75,
-  pilots_large: 1,
-  pilots_vlarge: 1.4
-});
+function isHRPilotDepartment(deptId) {
+  return String(deptId || "").startsWith("pilots_");
+}
 
-const HR_DEPARTMENT_SALARY_ROLES = Object.freeze({
-  ceo: "executive",
-  vp: "executive",
-  middle: "admin",
-  economics: "admin",
-  comms: "admin",
-  hr: "admin",
-  quality: "admin",
-  security: "security",
-  customers: "flight_ops",
-  flightops: "flight_ops",
-  maintenance: "maintenance",
-  ground: "ground",
-  routes: "flight_ops",
-  pilots_small: "pilot",
-  pilots_medium: "pilot",
-  pilots_large: "pilot",
-  pilots_vlarge: "pilot",
-  cabin: "cabin"
-});
+function getHRSalaryCycle(year, month) {
+  const cycleYear = Number(year);
+  const simMonth = Number(month);
 
-function getHRSalaryDecade(year) {
-  const normalizedYear = Number(year);
-
-  if (!Number.isInteger(normalizedYear)) {
+  if (!Number.isInteger(cycleYear) || cycleYear < 1940 || cycleYear > 2028) {
     throw new Error("INVALID_HR_SIM_YEAR");
   }
 
-  const decades = Object.keys(HR_HISTORICAL_SALARIES)
-    .map(Number)
-    .filter(decade => normalizedYear >= decade);
-
-  if (decades.length === 0) {
-    return 1940;
-  }
-
-  return Math.max(...decades);
-}
-
-function getHRHistoricalBaseSalary(deptId, year) {
-  const salaryDecade = getHRSalaryDecade(year);
-  const salaryRole = HR_DEPARTMENT_SALARY_ROLES[deptId];
-
-  if (!salaryRole) {
-    throw new Error(`UNKNOWN_HR_DEPARTMENT:${deptId}`);
-  }
-
-  const salaryTable = HR_HISTORICAL_SALARIES[salaryDecade];
-  let salary = Number(salaryTable[salaryRole]);
-
-  if (salaryRole === "pilot") {
-    const multiplier = HR_PILOT_SIZE_MULTIPLIERS[deptId];
-
-    if (!Number.isFinite(multiplier)) {
-      throw new Error(`UNKNOWN_HR_PILOT_SIZE:${deptId}`);
-    }
-
-    salary *= multiplier;
+  if (!Number.isInteger(simMonth) || simMonth < 1 || simMonth > 12) {
+    throw new Error("INVALID_HR_SIM_MONTH");
   }
 
   return {
-    salary: Math.round(salary),
-    salaryDecade
+    year: cycleYear,
+    half: simMonth <= 6 ? 1 : 2,
+    key: `${cycleYear}-H${simMonth <= 6 ? 1 : 2}`
   };
+}
+
+async function getHRSalaryStandard(client, deptId, cycleYear, cycleHalf) {
+  if (!HR_DEPARTMENT_IDS.has(deptId)) {
+    throw new Error(`UNKNOWN_HR_DEPARTMENT:${deptId}`);
+  }
+
+  const result = await client.query(
+    `
+    SELECT
+      cycle_year,
+      cycle_half,
+      dept_id,
+      monthly_salary,
+      captain_salary,
+      first_officer_salary,
+      standard_two_crew_cost,
+      source_class
+    FROM public.hr_salary_standards
+    WHERE cycle_year = $1
+      AND cycle_half = $2
+      AND dept_id = $3
+    LIMIT 1
+    `,
+    [cycleYear, cycleHalf, deptId]
+  );
+
+  if (result.rowCount !== 1) {
+    throw new Error(`HR_SALARY_STANDARD_NOT_FOUND:${cycleYear}-H${cycleHalf}:${deptId}`);
+  }
+
+  const row = result.rows[0];
+  const pilot = isHRPilotDepartment(deptId);
+  const baseSalary = pilot
+    ? Number(row.standard_two_crew_cost)
+    : Number(row.monthly_salary);
+
+  if (!Number.isFinite(baseSalary) || baseSalary <= 0) {
+    throw new Error(`INVALID_HR_SALARY_STANDARD:${deptId}`);
+  }
+
+  return {
+    cycleYear: Number(row.cycle_year),
+    cycleHalf: Number(row.cycle_half),
+    cycleKey: `${row.cycle_year}-H${row.cycle_half}`,
+    salary: Math.round(baseSalary),
+    captainSalary: pilot ? Number(row.captain_salary) : null,
+    firstOfficerSalary: pilot ? Number(row.first_officer_salary) : null,
+    sourceClass: String(row.source_class)
+  };
+}
+
+function applyHRSalaryPercent(value, percent) {
+  if (value === null || value === undefined) return null;
+  return Math.max(1, Math.round(Number(value) * (Number(percent) / 100)));
 }
 
 /* ============================================================
@@ -233,7 +152,7 @@ const HR_DEFAULT = [
    ------------------------------------------------------------
    • Creates missing departments without overwriting existing HR
    • New companies start with the official minimum staff
-   • New companies start with 1940 historical salaries
+   • New companies start with the current simulated semester salary
    • Auto Hire and Auto Salary start enabled
    • CEO always remains at least 1
    ============================================================ */
@@ -281,6 +200,19 @@ async function ensureHRInitialized(airlineId) {
         row => String(row.dept_id)
       )
     );
+
+    const simResult = await client.query(
+      `
+      SELECT
+        EXTRACT(YEAR FROM acs_get_current_sim_time())::int AS sim_year,
+        EXTRACT(MONTH FROM acs_get_current_sim_time())::int AS sim_month
+      `
+    );
+
+    const salaryCycle = getHRSalaryCycle(
+      Number(simResult.rows[0]?.sim_year),
+      Number(simResult.rows[0]?.sim_month)
+    );
      
     for (const department of HR_DEFAULT) {
        
@@ -288,9 +220,11 @@ async function ensureHRInitialized(airlineId) {
         continue;
       }
        
-       const historical = getHRHistoricalBaseSalary(
+       const standard = await getHRSalaryStandard(
+        client,
         department.id,
-        1940
+        salaryCycle.year,
+        salaryCycle.half
       );
 
       await client.query(
@@ -308,7 +242,11 @@ async function ensureHRInitialized(airlineId) {
           bonus,
           years,
           salary_percent,
-          salary_decade
+          salary_decade,
+          salary_cycle_year,
+          salary_cycle_half,
+          captain_salary,
+          first_officer_salary
         )
         VALUES (
           $1,
@@ -326,7 +264,11 @@ async function ensureHRInitialized(airlineId) {
           0,
           0,
           100,
-          $8::INTEGER
+          $8::INTEGER,
+          $8::SMALLINT,
+          $9::SMALLINT,
+          $10::INTEGER,
+          $11::INTEGER
         )
         ON CONFLICT (airline_id, dept_id)
         DO NOTHING
@@ -338,8 +280,11 @@ async function ensureHRInitialized(airlineId) {
           department.role,
           department.staff,
           department.required,
-          historical.salary,
-          historical.salaryDecade
+          standard.salary,
+          salaryCycle.year,
+          salaryCycle.half,
+          standard.captainSalary,
+          standard.firstOfficerSalary
         ]
       );
     }
@@ -522,9 +467,9 @@ GREATEST(0, CEIL(COUNT(*) / 3.0))::int AS security
    ------------------------------------------------------------
    • Reads company_settings from PostgreSQL
    • Auto Hire fills deficits but never dismisses staff
-   • Auto Salary advances all 18 departments historically
+   • Auto Salary applies each semester exactly once
    • Manual salary mode freezes stored salaries
-   • payroll always equals staff × salary
+   • Auto Hire never dismisses surplus staff
    ============================================================ */
 
 async function applyHRAutomation(airlineId) {
@@ -561,17 +506,15 @@ async function applyHRAutomation(airlineId) {
     const simResult = await client.query(
       `
       SELECT
-        EXTRACT(YEAR FROM acs_get_current_sim_time())::int AS sim_year
+        EXTRACT(YEAR FROM acs_get_current_sim_time())::int AS sim_year,
+        EXTRACT(MONTH FROM acs_get_current_sim_time())::int AS sim_month
       `
     );
 
-    const simYear = Number(simResult.rows[0]?.sim_year);
-
-    if (!Number.isInteger(simYear)) {
-      throw new Error("INVALID_HR_SIM_YEAR");
-    }
-
-    const salaryDecade = getHRSalaryDecade(simYear);
+    const salaryCycle = getHRSalaryCycle(
+      Number(simResult.rows[0]?.sim_year),
+      Number(simResult.rows[0]?.sim_month)
+    );
 
     const departmentsResult = await client.query(
       `
@@ -581,7 +524,11 @@ async function applyHRAutomation(airlineId) {
         required,
         salary,
         salary_percent,
-        salary_decade
+        salary_decade,
+        salary_cycle_year,
+        salary_cycle_half,
+        captain_salary,
+        first_officer_salary
       FROM public.hr_departments
       WHERE airline_id = $1
       FOR UPDATE
@@ -598,7 +545,7 @@ async function applyHRAutomation(airlineId) {
     for (const department of departmentsResult.rows) {
       const deptId = String(department.dept_id || "");
 
-      if (!HR_DEPARTMENT_SALARY_ROLES[deptId]) {
+      if (!HR_DEPARTMENT_IDS.has(deptId)) {
         throw new Error(`UNKNOWN_HR_DEPARTMENT:${deptId}`);
       }
 
@@ -618,27 +565,45 @@ async function applyHRAutomation(airlineId) {
 
       let resolvedSalary = Number(department.salary || 0);
       let resolvedPercent = Number(department.salary_percent || 100);
-      let resolvedDecade = Number(department.salary_decade || 1940);
+      let resolvedCaptainSalary = department.captain_salary === null
+        ? null
+        : Number(department.captain_salary);
+      let resolvedFirstOfficerSalary = department.first_officer_salary === null
+        ? null
+        : Number(department.first_officer_salary);
+      let resolvedCycleYear = Number(department.salary_cycle_year);
+      let resolvedCycleHalf = Number(department.salary_cycle_half);
 
       if (!Number.isFinite(resolvedPercent) || resolvedPercent <= 0) {
         resolvedPercent = 100;
       }
 
-      if (autoSalaryEnabled) {
-        const historical = getHRHistoricalBaseSalary(
+      const cycleAlreadyApplied =
+        resolvedCycleYear === salaryCycle.year &&
+        resolvedCycleHalf === salaryCycle.half;
+
+      if (autoSalaryEnabled && !cycleAlreadyApplied) {
+        const standard = await getHRSalaryStandard(
+          client,
           deptId,
-          simYear
+          salaryCycle.year,
+          salaryCycle.half
         );
 
-        resolvedSalary = Math.max(
-          1,
-          Math.round(
-            historical.salary *
-            (resolvedPercent / 100)
-          )
+        resolvedSalary = applyHRSalaryPercent(
+          standard.salary,
+          resolvedPercent
         );
-
-        resolvedDecade = salaryDecade;
+        resolvedCaptainSalary = applyHRSalaryPercent(
+          standard.captainSalary,
+          resolvedPercent
+        );
+        resolvedFirstOfficerSalary = applyHRSalaryPercent(
+          standard.firstOfficerSalary,
+          resolvedPercent
+        );
+        resolvedCycleYear = salaryCycle.year;
+        resolvedCycleHalf = salaryCycle.half;
       }
 
       if (!Number.isFinite(resolvedSalary) || resolvedSalary <= 0) {
@@ -657,6 +622,10 @@ async function applyHRAutomation(airlineId) {
           )::BIGINT,
           salary_percent = $5::NUMERIC,
           salary_decade = $6::INTEGER,
+          salary_cycle_year = $6::SMALLINT,
+          salary_cycle_half = $7::SMALLINT,
+          captain_salary = $8::INTEGER,
+          first_officer_salary = $9::INTEGER,
           updated_at = NOW()
         WHERE airline_id = $1
           AND dept_id = $2
@@ -667,7 +636,10 @@ async function applyHRAutomation(airlineId) {
           resolvedStaff,
           resolvedSalary,
           resolvedPercent,
-          resolvedDecade
+          resolvedCycleYear,
+          resolvedCycleHalf,
+          resolvedCaptainSalary,
+          resolvedFirstOfficerSalary
         ]
       );
     }
@@ -676,8 +648,10 @@ async function applyHRAutomation(airlineId) {
 
     return {
       ok: true,
-      sim_year: simYear,
-      salary_decade: salaryDecade,
+      sim_year: salaryCycle.year,
+      salary_cycle_year: salaryCycle.year,
+      salary_cycle_half: salaryCycle.half,
+      salary_cycle_key: salaryCycle.key,
       auto_hire: autoHireEnabled,
       auto_salary: autoSalaryEnabled,
       manual_salary_override:
@@ -698,7 +672,7 @@ async function applyHRAutomation(airlineId) {
    ------------------------------------------------------------
    - PostgreSQL authority
    - Runs once per sim month per department
-   - Penalizes morale only when staff < required
+   - Penalizes understaffing and salary below the current standard
    - Does not hire staff
    - Does not touch finance
 ============================================================ */
@@ -718,6 +692,8 @@ async function applyHRMoraleMonthlyResolver(airlineId) {
     return { ok: false, skipped: true, reason: "INVALID_SIM_TIME" };
   }
 
+  const salaryCycle = getHRSalaryCycle(simYear, simMonth);
+
   const departmentsResult = await pool.query(
     `
     SELECT
@@ -726,13 +702,23 @@ async function applyHRMoraleMonthlyResolver(airlineId) {
       staff,
       required,
       morale,
+      salary,
       morale_last_sim_year,
-      morale_last_sim_month
-    FROM public.hr_departments
-    WHERE airline_id = $1
+      morale_last_sim_month,
+      CASE
+        WHEN department.dept_id LIKE 'pilots\_%' ESCAPE '\'
+          THEN standard.standard_two_crew_cost
+        ELSE standard.monthly_salary
+      END AS standard_salary
+    FROM public.hr_departments department
+    JOIN public.hr_salary_standards standard
+      ON standard.dept_id = department.dept_id
+     AND standard.cycle_year = $2
+     AND standard.cycle_half = $3
+    WHERE department.airline_id = $1
     FOR UPDATE
     `,
-    [airlineId]
+    [airlineId, salaryCycle.year, salaryCycle.half]
   );
 
   const updates = [];
@@ -742,6 +728,8 @@ async function applyHRMoraleMonthlyResolver(airlineId) {
     const staff = Number(dep.staff || 0);
     const required = Number(dep.required || 0);
     const morale = Number(dep.morale || 100);
+    const salary = Number(dep.salary || 0);
+    const standardSalary = Number(dep.standard_salary || 0);
 
     if (
       Number(dep.morale_last_sim_year) === simYear &&
@@ -752,17 +740,35 @@ async function applyHRMoraleMonthlyResolver(airlineId) {
 
     const deficit = Math.max(0, required - staff);
 
-    let moraleDelta = 0;
+    let staffingDelta = 0;
+    let salaryDelta = 0;
 
     if (required > 0 && deficit > 0) {
       const ratio = deficit / required;
 
-      if (ratio >= 1) moraleDelta = -8;
-      else if (ratio >= 0.76) moraleDelta = -6;
-      else if (ratio >= 0.51) moraleDelta = -4;
-      else if (ratio >= 0.26) moraleDelta = -2;
-      else moraleDelta = -1;
-    } else if (deficit === 0 && morale < 100) {
+      if (ratio >= 1) staffingDelta = -8;
+      else if (ratio >= 0.76) staffingDelta = -6;
+      else if (ratio >= 0.51) staffingDelta = -4;
+      else if (ratio >= 0.26) staffingDelta = -2;
+      else staffingDelta = -1;
+    }
+
+    const salaryShortfall = Math.max(0, standardSalary - salary);
+    const salaryShortfallRatio = standardSalary > 0
+      ? salaryShortfall / standardSalary
+      : 0;
+
+    if (salaryShortfallRatio > 0) {
+      if (salaryShortfallRatio >= 0.5) salaryDelta = -5;
+      else if (salaryShortfallRatio >= 0.3) salaryDelta = -4;
+      else if (salaryShortfallRatio >= 0.15) salaryDelta = -3;
+      else if (salaryShortfallRatio >= 0.05) salaryDelta = -2;
+      else salaryDelta = -1;
+    }
+
+    let moraleDelta = Math.max(-10, staffingDelta + salaryDelta);
+
+    if (deficit === 0 && salaryShortfall === 0 && morale < 100) {
       moraleDelta = 1;
     }
 
@@ -791,6 +797,11 @@ async function applyHRMoraleMonthlyResolver(airlineId) {
       staff,
       required,
       deficit,
+      salary,
+      standard_salary: standardSalary,
+      salary_shortfall: salaryShortfall,
+      staffing_morale_delta: staffingDelta,
+      salary_morale_delta: salaryDelta,
       old_morale: morale,
       morale_delta: moraleDelta,
       new_morale: newMorale
@@ -1439,7 +1450,11 @@ router.get(
           bonus,
           years,
           salary_percent,
-          salary_decade
+          salary_decade,
+          salary_cycle_year,
+          salary_cycle_half,
+          captain_salary,
+          first_officer_salary
         FROM public.hr_departments
         WHERE airline_id = $1
         ORDER BY dept_id
@@ -1489,7 +1504,7 @@ router.patch(
       });
     }
 
-    if (!HR_DEPARTMENT_SALARY_ROLES[deptId]) {
+    if (!HR_DEPARTMENT_IDS.has(deptId)) {
       return res.status(400).json({
         ok: false,
         error: "INVALID_HR_DEPARTMENT"
@@ -1603,7 +1618,11 @@ router.patch(
             bonus,
             years,
             salary_percent,
-            salary_decade
+            salary_decade,
+            salary_cycle_year,
+            salary_cycle_half,
+            captain_salary,
+            first_officer_salary
           `,
           [
             airlineId,
@@ -1658,7 +1677,7 @@ router.patch(
    • Persists salary and company mode atomically
    • Disables Auto Salary
    • Enables manual salary protection
-   • Calculates salary_percent against the historical authority
+   • Calculates salary_percent against the current semester standard
    • Never changes staff
    ============================================================ */
 
@@ -1677,7 +1696,7 @@ router.patch(
       });
     }
 
-    if (!HR_DEPARTMENT_SALARY_ROLES[deptId]) {
+    if (!HR_DEPARTMENT_IDS.has(deptId)) {
       return res.status(400).json({
         ok: false,
         error: "INVALID_HR_DEPARTMENT"
@@ -1708,24 +1727,26 @@ router.patch(
         const simResult = await client.query(
           `
           SELECT
-            EXTRACT(YEAR FROM acs_get_current_sim_time())::int AS sim_year
+            EXTRACT(YEAR FROM acs_get_current_sim_time())::int AS sim_year,
+            EXTRACT(MONTH FROM acs_get_current_sim_time())::int AS sim_month
           `
         );
 
-        const simYear = Number(simResult.rows[0]?.sim_year);
+        const salaryCycle = getHRSalaryCycle(
+          Number(simResult.rows[0]?.sim_year),
+          Number(simResult.rows[0]?.sim_month)
+        );
 
-        if (!Number.isInteger(simYear)) {
-          throw new Error("INVALID_HR_SIM_YEAR");
-        }
-
-        const historical = getHRHistoricalBaseSalary(
+        const standard = await getHRSalaryStandard(
+          client,
           deptId,
-          simYear
+          salaryCycle.year,
+          salaryCycle.half
         );
 
         const salaryPercent = Number(
           (
-            (newSalary / historical.salary) *
+            (newSalary / standard.salary) *
             100
           ).toFixed(2)
         );
@@ -1809,7 +1830,10 @@ router.patch(
             )::BIGINT,
             morale = $4::NUMERIC,
             salary_percent = $5::NUMERIC,
-            salary_decade = $6::INTEGER,
+            captain_salary = $6::INTEGER,
+            first_officer_salary = $7::INTEGER,
+            salary_cycle_year = NULL,
+            salary_cycle_half = NULL,
             updated_at = NOW()
           WHERE airline_id = $1
             AND dept_id = $2
@@ -1825,7 +1849,11 @@ router.patch(
             bonus,
             years,
             salary_percent,
-            salary_decade
+            salary_decade,
+            salary_cycle_year,
+            salary_cycle_half,
+            captain_salary,
+            first_officer_salary
           `,
           [
             airlineId,
@@ -1833,7 +1861,8 @@ router.patch(
             newSalary,
             nextMorale,
             salaryPercent,
-            historical.salaryDecade
+            applyHRSalaryPercent(standard.captainSalary, salaryPercent),
+            applyHRSalaryPercent(standard.firstOfficerSalary, salaryPercent)
           ]
         );
 
