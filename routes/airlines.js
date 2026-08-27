@@ -1254,6 +1254,667 @@ router.get(
 );
 
 /* ============================================================
+   CHANGE COMPANY INFRASTRUCTURE
+   ------------------------------------------------------------
+   PostgreSQL authority:
+   - Existing airlines only.
+   - Upgrade only to the immediately superior level.
+   - Downgrade to any inferior level.
+   - Upgrade charge equals target historical investment.
+   - Downgrade has no charge and no refund.
+   - New monthly cost begins with the next finance period.
+   - Six ACS month cooldown after every successful change.
+   ============================================================ */
+
+router.post(
+  "/airlines/infrastructure/change",
+  requireAuth,
+  async (req, res) => {
+    const targetAirlineType =
+      String(
+        req.body?.target_airline_type || ""
+      )
+        .trim()
+        .toUpperCase();
+
+    if (
+      !ALLOWED_AIRLINE_TYPES.has(
+        targetAirlineType
+      )
+    ) {
+      return res.status(400).json({
+        ok: false,
+        error:
+          "INVALID_TARGET_AIRLINE_TYPE"
+      });
+    }
+
+    const client = await pool.connect();
+    let transactionStarted = false;
+
+    function fail(code, httpStatus = 409) {
+      const error = new Error(code);
+      error.code = code;
+      error.httpStatus = httpStatus;
+      throw error;
+    }
+
+    try {
+      await client.query("BEGIN");
+      transactionStarted = true;
+
+      const authenticatedAirlineResult =
+        await client.query(
+          `
+          SELECT airline_id
+          FROM public.users
+          WHERE user_id = $1
+            AND airline_id IS NOT NULL
+          LIMIT 1
+          `,
+          [req.user_id]
+        );
+
+      if (
+        !authenticatedAirlineResult.rows.length
+      ) {
+        fail(
+          "AUTHENTICATED_AIRLINE_NOT_FOUND",
+          404
+        );
+      }
+
+      const airlineId =
+        Number(
+          authenticatedAirlineResult
+            .rows[0].airline_id
+        );
+
+      /*
+       * Settle any pending finance period using
+       * the infrastructure level that was active
+       * before this change.
+       */
+      await ACS_ensureFinancePeriod(
+        client,
+        airlineId
+      );
+
+      const authorityResult =
+        await client.query(
+          `
+          WITH sim_instant AS (
+            SELECT
+              public.acs_get_current_sim_time()
+                AS current_sim_time
+          ),
+
+          infrastructure_clock AS (
+            SELECT
+              current_sim_time,
+
+              EXTRACT(
+                YEAR FROM current_sim_time
+              )::INTEGER AS sim_year,
+
+              EXTRACT(
+                MONTH FROM current_sim_time
+              )::INTEGER AS sim_month,
+
+              FLOOR(
+                EXTRACT(
+                  EPOCH FROM current_sim_time
+                ) * 1000
+              )::BIGINT AS sim_timestamp_ms
+
+            FROM sim_instant
+          )
+
+          SELECT
+            infrastructure.airline_id,
+
+            UPPER(BTRIM(
+              infrastructure.airline_type
+            )) AS current_airline_type,
+
+            current_policy.type_rank
+              AS current_type_rank,
+
+            target_policy.type_rank
+              AS target_type_rank,
+
+            UPPER(BTRIM(
+              airport.airline_type_limit
+            )) AS airline_type_limit,
+
+            limit_policy.type_rank
+              AS airline_type_limit_rank,
+
+            current_resolved.initial_investment
+              AS current_investment,
+
+            current_resolved.monthly_operating_cost
+              AS current_monthly_cost,
+
+            target_resolved.initial_investment
+              AS target_investment,
+
+            target_resolved.monthly_operating_cost
+              AS target_monthly_cost,
+
+            target_resolved.revision_code
+              AS target_policy_revision_code,
+
+            finance.capital,
+
+            clock.sim_year,
+            clock.sim_month,
+            clock.sim_timestamp_ms,
+
+            (
+              clock.sim_year * 12
+              + clock.sim_month
+              - 1
+            )::INTEGER AS current_period_number,
+
+            latest.next_allowed_period_number
+
+          FROM public.users player
+
+          INNER JOIN
+            public.airline_infrastructure
+              infrastructure
+            ON infrastructure.airline_id =
+               player.airline_id
+
+          INNER JOIN
+            public.acs_infrastructure_type_policy
+              current_policy
+            ON current_policy.airline_type =
+               UPPER(BTRIM(
+                 infrastructure.airline_type
+               ))
+           AND current_policy.is_active = TRUE
+
+          INNER JOIN
+            public.acs_infrastructure_type_policy
+              target_policy
+            ON target_policy.airline_type = $2
+           AND target_policy.is_active = TRUE
+
+          INNER JOIN
+            public.v_acs_airport_authority_current
+              airport
+            ON UPPER(BTRIM(airport.icao)) =
+               UPPER(BTRIM(player.base_icao))
+
+          INNER JOIN
+            public.acs_infrastructure_type_policy
+              limit_policy
+            ON limit_policy.airline_type =
+               UPPER(BTRIM(
+                 airport.airline_type_limit
+               ))
+           AND limit_policy.is_active = TRUE
+
+          INNER JOIN public.company_finance finance
+            ON finance.airline_id =
+               player.airline_id
+
+          CROSS JOIN infrastructure_clock clock
+
+          CROSS JOIN LATERAL
+            public.acs_resolve_infrastructure_policy(
+              infrastructure.airline_type,
+              clock.sim_year
+            ) current_resolved
+
+          CROSS JOIN LATERAL
+            public.acs_resolve_infrastructure_policy(
+              $2,
+              clock.sim_year
+            ) target_resolved
+
+          LEFT JOIN LATERAL (
+            SELECT
+              change.next_allowed_period_number
+
+            FROM
+              public.airline_infrastructure_changes
+                change
+
+            WHERE change.airline_id =
+                  player.airline_id
+
+            ORDER BY
+              change.change_period_number DESC,
+              change.id DESC
+
+            LIMIT 1
+          ) latest
+            ON TRUE
+
+          WHERE player.user_id = $1
+
+          LIMIT 1
+
+          FOR UPDATE OF infrastructure, finance
+          `,
+          [
+            req.user_id,
+            targetAirlineType
+          ]
+        );
+
+      if (!authorityResult.rows.length) {
+        fail(
+          "INFRASTRUCTURE_CHANGE_AUTHORITY_NOT_FOUND",
+          404
+        );
+      }
+
+      const authority =
+        authorityResult.rows[0];
+
+      const currentAirlineType =
+        String(
+          authority.current_airline_type || ""
+        ).trim().toUpperCase();
+
+      const currentRank =
+        Number(
+          authority.current_type_rank
+        );
+
+      const targetRank =
+        Number(
+          authority.target_type_rank
+        );
+
+      const limitRank =
+        Number(
+          authority.airline_type_limit_rank
+        );
+
+      const currentPeriod =
+        Number(
+          authority.current_period_number
+        );
+
+      const nextAllowedPeriod =
+        authority.next_allowed_period_number === null
+          ? null
+          : Number(
+              authority.next_allowed_period_number
+            );
+
+      if (
+        targetAirlineType ===
+        currentAirlineType
+      ) {
+        fail(
+          "INFRASTRUCTURE_LEVEL_ALREADY_CURRENT"
+        );
+      }
+
+      if (
+        Number.isInteger(nextAllowedPeriod) &&
+        currentPeriod < nextAllowedPeriod
+      ) {
+        fail(
+          "INFRASTRUCTURE_CHANGE_COOLDOWN"
+        );
+      }
+
+      const isUpgrade =
+        targetRank > currentRank;
+
+      const isDowngrade =
+        targetRank < currentRank;
+
+      if (!isUpgrade && !isDowngrade) {
+        fail(
+          "INVALID_INFRASTRUCTURE_DIRECTION"
+        );
+      }
+
+      if (
+        isUpgrade &&
+        targetRank !== currentRank + 1
+      ) {
+        fail(
+          "UPGRADE_LEVEL_SKIP"
+        );
+      }
+
+      if (targetRank > limitRank) {
+        fail(
+          "AIRPORT_INFRASTRUCTURE_LIMIT"
+        );
+      }
+
+      const changeKind =
+        isUpgrade
+          ? "UPGRADE"
+          : "DOWNGRADE";
+
+      const targetInvestment =
+        Number(
+          authority.target_investment || 0
+        );
+
+      const currentMonthlyCost =
+        Number(
+          authority.current_monthly_cost || 0
+        );
+
+      const targetMonthlyCost =
+        Number(
+          authority.target_monthly_cost || 0
+        );
+
+      const capitalBefore =
+        Number(authority.capital || 0);
+
+      const upgradeCharge =
+        isUpgrade
+          ? targetInvestment
+          : 0;
+
+      if (
+        isUpgrade &&
+        capitalBefore < upgradeCharge
+      ) {
+        fail("INSUFFICIENT_CAPITAL");
+      }
+
+      const changeUidResult =
+        await client.query(
+          `
+          SELECT gen_random_uuid()
+            AS change_uid
+          `
+        );
+
+      const changeUid =
+        changeUidResult.rows[0]
+          .change_uid;
+
+      const referenceUid =
+        `INFRASTRUCTURE_CHANGE:${changeUid}`;
+
+      let capitalAfter =
+        capitalBefore;
+
+      let financeLogId =
+        null;
+
+      if (isUpgrade) {
+        const financeResult =
+          await client.query(
+            `
+            UPDATE public.company_finance
+            SET
+              capital =
+                COALESCE(capital, 0) - $2,
+
+              expenses =
+                COALESCE(expenses, 0) + $2,
+
+              profit =
+                COALESCE(profit, 0) - $2,
+
+              cost_company_infrastructure =
+                COALESCE(
+                  cost_company_infrastructure,
+                  0
+                ) + $2,
+
+              updated_at = NOW()
+
+            WHERE airline_id = $1
+              AND COALESCE(capital, 0) >= $2
+
+            RETURNING capital
+            `,
+            [
+              airlineId,
+              upgradeCharge
+            ]
+          );
+
+        if (!financeResult.rows.length) {
+          fail("INSUFFICIENT_CAPITAL");
+        }
+
+        capitalAfter =
+          Number(
+            financeResult.rows[0].capital
+          );
+
+        const financeLogResult =
+          await client.query(
+            `
+            INSERT INTO public.finance_log (
+              airline_id,
+              type,
+              source,
+              amount,
+              timestamp,
+              route_plan_id,
+              schedule_item_id,
+              reference_uid,
+              description
+            )
+            VALUES (
+              $1,
+              'EXPENSE',
+              'COMPANY_INFRASTRUCTURE_UPGRADE',
+              $2,
+              $3,
+              NULL,
+              NULL,
+              $4,
+              $5
+            )
+            RETURNING id
+            `,
+            [
+              airlineId,
+              upgradeCharge,
+              Number(
+                authority.sim_timestamp_ms
+              ),
+              referenceUid,
+              (
+                `Company Infrastructure Upgrade: ` +
+                `${currentAirlineType} → ` +
+                `${targetAirlineType}`
+              )
+            ]
+          );
+
+        financeLogId =
+          Number(
+            financeLogResult.rows[0].id
+          );
+      }
+
+      await client.query(
+        `
+        UPDATE public.airline_infrastructure
+        SET
+          airline_type = $2,
+          policy_revision_code = $3,
+          updated_at =
+            (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+
+        WHERE airline_id = $1
+        `,
+        [
+          airlineId,
+          targetAirlineType,
+          authority
+            .target_policy_revision_code
+        ]
+      );
+
+      const nextAllowedPeriod =
+        currentPeriod + 6;
+
+      await client.query(
+        `
+        INSERT INTO
+          public.airline_infrastructure_changes (
+            change_uid,
+            airline_id,
+            previous_airline_type,
+            target_airline_type,
+            previous_type_rank,
+            target_type_rank,
+            change_kind,
+            sim_year,
+            sim_month,
+            sim_timestamp_ms,
+            change_period_number,
+            next_allowed_period_number,
+            target_investment,
+            upgrade_charge,
+            amount_due_now,
+            previous_monthly_cost,
+            new_monthly_cost,
+            capital_before,
+            capital_after,
+            policy_revision_code,
+            finance_log_id,
+            reference_uid
+          )
+        VALUES (
+          $1,
+          $2,
+          $3,
+          $4,
+          $5,
+          $6,
+          $7,
+          $8,
+          $9,
+          $10,
+          $11,
+          $12,
+          $13,
+          $14,
+          $14,
+          $15,
+          $16,
+          $17,
+          $18,
+          $19,
+          $20,
+          $21
+        )
+        `,
+        [
+          changeUid,
+          airlineId,
+          currentAirlineType,
+          targetAirlineType,
+          currentRank,
+          targetRank,
+          changeKind,
+          Number(authority.sim_year),
+          Number(authority.sim_month),
+          Number(
+            authority.sim_timestamp_ms
+          ),
+          currentPeriod,
+          nextAllowedPeriod,
+          targetInvestment,
+          upgradeCharge,
+          currentMonthlyCost,
+          targetMonthlyCost,
+          capitalBefore,
+          capitalAfter,
+          authority
+            .target_policy_revision_code,
+          financeLogId,
+          referenceUid
+        ]
+      );
+
+      await client.query("COMMIT");
+      transactionStarted = false;
+
+      return res.json({
+        ok: true,
+
+        authority:
+          "POSTGRESQL_ACS_INFRASTRUCTURE_CHANGE",
+
+        change: {
+          change_uid:
+            changeUid,
+
+          change_kind:
+            changeKind,
+
+          previous_airline_type:
+            currentAirlineType,
+
+          target_airline_type:
+            targetAirlineType,
+
+          upgrade_charge:
+            upgradeCharge,
+
+          amount_due_now:
+            upgradeCharge,
+
+          previous_monthly_cost:
+            currentMonthlyCost,
+
+          new_monthly_cost:
+            targetMonthlyCost,
+
+          capital_before:
+            capitalBefore,
+
+          capital_after:
+            capitalAfter,
+
+          next_allowed_period_number:
+            nextAllowedPeriod
+        }
+      });
+
+    } catch (error) {
+      if (transactionStarted) {
+        try {
+          await client.query("ROLLBACK");
+        } catch (_) {}
+      }
+
+      console.error(
+        "CHANGE AIRLINE INFRASTRUCTURE ERROR:",
+        error
+      );
+
+      return res
+        .status(error.httpStatus || 500)
+        .json({
+          ok: false,
+          error:
+            error.code ||
+            "AIRLINE_INFRASTRUCTURE_CHANGE_FAILED"
+        });
+
+    } finally {
+      client.release();
+    }
+  }
+);
+
+/* ============================================================
    PREVIEW AIRLINE DESIGNATORS
    ------------------------------------------------------------
    Preview only. Final assignment occurs transactionally
