@@ -1,6 +1,10 @@
 import express from "express";
 import { pool } from "../db/pool.js";
-import { requireAuth } from "../middleware/auth.js"; // 🔥 NUEVO
+import { requireAuth } from "../middleware/auth.js";
+
+import {
+  ACS_ensureFinancePeriod
+} from "./finance_core.js";
 
 const router = express.Router();
 
