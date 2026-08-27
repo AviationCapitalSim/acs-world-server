@@ -1828,7 +1828,7 @@ router.post(
             authority.sim_timestamp_ms
           ),
           currentPeriod,
-          nextAllowedPeriod,
+          newNextAllowedPeriod,
           targetInvestment,
           upgradeCharge,
           currentMonthlyCost,
@@ -1883,7 +1883,7 @@ router.post(
             capitalAfter,
 
           next_allowed_period_number:
-            nextAllowedPeriod
+            newNextAllowedPeriod
         }
       });
 
