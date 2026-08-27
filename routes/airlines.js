@@ -769,6 +769,491 @@ router.get(
 );
 
 /* ============================================================
+   GET COMPANY INFRASTRUCTURE CHANGE CONTEXT
+   ------------------------------------------------------------
+   Railway and PostgreSQL authority:
+   - Reads the authenticated airline.
+   - Resolves historical infrastructure values.
+   - Applies airport limits.
+   - Applies the six-month ACS cooldown.
+   - Determines CURRENT, UPGRADE, DOWNGRADE or LOCKED.
+   - Does not modify infrastructure or finance.
+   ============================================================ */
+
+router.get(
+  "/airlines/infrastructure/context",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const result = await pool.query(
+        `
+        WITH infrastructure_clock AS (
+          SELECT
+            public.acs_get_current_sim_time()
+              AS current_sim_time,
+
+            EXTRACT(
+              YEAR FROM
+              public.acs_get_current_sim_time()
+            )::INTEGER AS sim_year,
+
+            EXTRACT(
+              MONTH FROM
+              public.acs_get_current_sim_time()
+            )::INTEGER AS sim_month
+        ),
+
+        company_context AS (
+          SELECT
+            player.airline_id,
+
+            UPPER(BTRIM(player.base_icao))
+              AS base_icao,
+
+            UPPER(BTRIM(
+              infrastructure.airline_type
+            )) AS current_airline_type,
+
+            current_policy.type_rank
+              AS current_type_rank,
+
+            UPPER(BTRIM(
+              airport.airline_type_limit
+            )) AS airline_type_limit,
+
+            limit_policy.type_rank
+              AS airline_type_limit_rank,
+
+            COALESCE(finance.capital, 0)
+              AS available_capital
+
+          FROM public.users player
+
+          INNER JOIN
+            public.airline_infrastructure
+              infrastructure
+            ON infrastructure.airline_id =
+               player.airline_id
+
+          INNER JOIN
+            public.acs_infrastructure_type_policy
+              current_policy
+            ON current_policy.airline_type =
+               UPPER(BTRIM(
+                 infrastructure.airline_type
+               ))
+           AND current_policy.is_active = TRUE
+
+          INNER JOIN
+            public.v_acs_airport_authority_current
+              airport
+            ON UPPER(BTRIM(airport.icao)) =
+               UPPER(BTRIM(player.base_icao))
+
+          INNER JOIN
+            public.acs_infrastructure_type_policy
+              limit_policy
+            ON limit_policy.airline_type =
+               UPPER(BTRIM(
+                 airport.airline_type_limit
+               ))
+           AND limit_policy.is_active = TRUE
+
+          LEFT JOIN public.company_finance finance
+            ON finance.airline_id =
+               player.airline_id
+
+          WHERE player.user_id = $1
+            AND player.airline_id IS NOT NULL
+
+          LIMIT 1
+        )
+
+        SELECT
+          company.airline_id,
+          company.base_icao,
+          company.current_airline_type,
+          company.current_type_rank,
+          company.airline_type_limit,
+          company.airline_type_limit_rank,
+          company.available_capital,
+
+          clock.current_sim_time,
+          clock.sim_year,
+          clock.sim_month,
+
+          (
+            clock.sim_year * 12
+            + clock.sim_month
+            - 1
+          )::INTEGER AS current_period_number,
+
+          latest.change_kind
+            AS latest_change_kind,
+
+          latest.change_period_number
+            AS latest_change_period_number,
+
+          latest.next_allowed_period_number,
+
+          COALESCE(
+            (
+              SELECT JSONB_AGG(
+                JSONB_BUILD_OBJECT(
+                  'airline_type',
+                    resolved.airline_type,
+
+                  'type_rank',
+                    resolved.type_rank,
+
+                  'initial_investment',
+                    resolved.initial_investment,
+
+                  'monthly_operating_cost',
+                    resolved.monthly_operating_cost,
+
+                  'facility_term_months',
+                    resolved.facility_term_months,
+
+                  'historical_factor',
+                    resolved.historical_factor,
+
+                  'policy_revision_code',
+                    resolved.revision_code
+                )
+                ORDER BY resolved.type_rank
+              )
+
+              FROM
+                public.acs_infrastructure_type_policy
+                  type_policy
+
+              CROSS JOIN LATERAL
+                public.acs_resolve_infrastructure_policy(
+                  type_policy.airline_type,
+                  clock.sim_year
+                ) resolved
+
+              WHERE type_policy.is_active = TRUE
+            ),
+            '[]'::JSONB
+          ) AS infrastructure_options
+
+        FROM company_context company
+
+        CROSS JOIN infrastructure_clock clock
+
+        LEFT JOIN LATERAL (
+          SELECT
+            change.change_kind,
+            change.change_period_number,
+            change.next_allowed_period_number
+
+          FROM
+            public.airline_infrastructure_changes
+              change
+
+          WHERE change.airline_id =
+                company.airline_id
+
+          ORDER BY
+            change.change_period_number DESC,
+            change.id DESC
+
+          LIMIT 1
+        ) latest
+          ON TRUE
+        `,
+        [req.user_id]
+      );
+
+      if (!result.rows.length) {
+        return res.status(404).json({
+          ok: false,
+          error:
+            "AIRLINE_INFRASTRUCTURE_CONTEXT_NOT_FOUND"
+        });
+      }
+
+      const context = result.rows[0];
+
+      const currentType =
+        String(
+          context.current_airline_type || ""
+        ).trim().toUpperCase();
+
+      const currentRank =
+        Number(context.current_type_rank);
+
+      const limitRank =
+        Number(
+          context.airline_type_limit_rank
+        );
+
+      const availableCapital =
+        Number(context.available_capital || 0);
+
+      const currentPeriod =
+        Number(
+          context.current_period_number
+        );
+
+      const nextAllowedPeriod =
+        context.next_allowed_period_number === null
+          ? null
+          : Number(
+              context.next_allowed_period_number
+            );
+
+      const cooldownActive =
+        Number.isInteger(nextAllowedPeriod) &&
+        currentPeriod < nextAllowedPeriod;
+
+      const monthsRemaining =
+        cooldownActive
+          ? nextAllowedPeriod - currentPeriod
+          : 0;
+
+      const options =
+        Array.isArray(
+          context.infrastructure_options
+        )
+          ? context.infrastructure_options
+          : [];
+
+      if (
+        !currentType ||
+        !Number.isInteger(currentRank) ||
+        !Number.isInteger(limitRank) ||
+        options.length !== 4
+      ) {
+        return res.status(409).json({
+          ok: false,
+          error:
+            "AIRLINE_INFRASTRUCTURE_AUTHORITY_INCOMPLETE"
+        });
+      }
+
+      const infrastructureOptions =
+        options.map(option => {
+          const airlineType =
+            String(
+              option.airline_type || ""
+            ).trim().toUpperCase();
+
+          const typeRank =
+            Number(option.type_rank);
+
+          const initialInvestment =
+            Number(
+              option.initial_investment || 0
+            );
+
+          const monthlyCost =
+            Number(
+              option.monthly_operating_cost || 0
+            );
+
+          const isCurrent =
+            airlineType === currentType;
+
+          const isUpgrade =
+            typeRank > currentRank;
+
+          const isDowngrade =
+            typeRank < currentRank;
+
+          let action = "LOCKED";
+          let available = false;
+          let denialCode = null;
+          let upgradeCharge = 0;
+
+          if (isCurrent) {
+            action = "CURRENT";
+            denialCode = "CURRENT_LEVEL";
+
+          } else if (cooldownActive) {
+            action =
+              isUpgrade
+                ? "UPGRADE"
+                : "DOWNGRADE";
+
+            denialCode =
+              "INFRASTRUCTURE_CHANGE_COOLDOWN";
+
+          } else if (isUpgrade) {
+            action = "UPGRADE";
+
+            if (typeRank !== currentRank + 1) {
+              denialCode =
+                "UPGRADE_LEVEL_SKIP";
+
+            } else if (typeRank > limitRank) {
+              denialCode =
+                "AIRPORT_INFRASTRUCTURE_LIMIT";
+
+            } else if (
+              availableCapital <
+              initialInvestment
+            ) {
+              denialCode =
+                "INSUFFICIENT_CAPITAL";
+
+            } else {
+              available = true;
+              upgradeCharge =
+                initialInvestment;
+            }
+
+          } else if (isDowngrade) {
+            action = "DOWNGRADE";
+            available = true;
+          }
+
+          return {
+            airline_type:
+              airlineType,
+
+            type_rank:
+              typeRank,
+
+            current:
+              isCurrent,
+
+            action,
+
+            available,
+
+            disabled:
+              !available,
+
+            denial_code:
+              denialCode,
+
+            initial_investment:
+              initialInvestment,
+
+            upgrade_charge:
+              upgradeCharge,
+
+            amount_due_now:
+              upgradeCharge,
+
+            monthly_operating_cost:
+              monthlyCost,
+
+            facility_term_months:
+              Number(
+                option.facility_term_months || 0
+              ),
+
+            historical_factor:
+              Number(
+                option.historical_factor || 0
+              ),
+
+            policy_revision_code:
+              option.policy_revision_code || null
+          };
+        });
+
+      const nextAllowedYear =
+        cooldownActive
+          ? Math.floor(
+              nextAllowedPeriod / 12
+            )
+          : null;
+
+      const nextAllowedMonth =
+        cooldownActive
+          ? (
+              nextAllowedPeriod % 12
+            ) + 1
+          : null;
+
+      return res.json({
+        ok: true,
+
+        authority:
+          "POSTGRESQL_ACS_INFRASTRUCTURE_AUTHORITY",
+
+        current: {
+          airline_type:
+            currentType,
+
+          type_rank:
+            currentRank,
+
+          monthly_operating_cost:
+            infrastructureOptions.find(
+              option => option.current
+            )?.monthly_operating_cost || 0
+        },
+
+        base: {
+          base_icao:
+            context.base_icao,
+
+          airline_type_limit:
+            context.airline_type_limit,
+
+          airline_type_limit_rank:
+            limitRank
+        },
+
+        finance: {
+          available_capital:
+            availableCapital
+        },
+
+        simulation: {
+          sim_year:
+            Number(context.sim_year),
+
+          sim_month:
+            Number(context.sim_month),
+
+          current_period_number:
+            currentPeriod
+        },
+
+        cooldown: {
+          active:
+            cooldownActive,
+
+          months_remaining:
+            monthsRemaining,
+
+          next_allowed_period_number:
+            nextAllowedPeriod,
+
+          next_allowed_sim_year:
+            nextAllowedYear,
+
+          next_allowed_sim_month:
+            nextAllowedMonth
+        },
+
+        options:
+          infrastructureOptions
+      });
+
+    } catch (error) {
+      console.error(
+        "GET AIRLINE INFRASTRUCTURE CONTEXT ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        ok: false,
+        error:
+          "AIRLINE_INFRASTRUCTURE_CONTEXT_FAILED"
+      });
+    }
+  }
+);
+
+/* ============================================================
    PREVIEW AIRLINE DESIGNATORS
    ------------------------------------------------------------
    Preview only. Final assignment occurs transactionally
