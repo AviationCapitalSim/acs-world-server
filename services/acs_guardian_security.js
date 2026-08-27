@@ -10,8 +10,6 @@ import { pool }
   from "../db/pool.js";
 
 const ACCESS_MINUTES = 30;
-const MAX_FAILED_LOGINS = 5;
-const LOCK_MINUTES = 15;
 
 function sha256(value) {
   return crypto
@@ -348,42 +346,6 @@ async function registerFailedLogin(
   administrator,
   sourceIP
 ) {
-  const attempts =
-    Number(
-      administrator
-        .failed_login_attempts || 0
-    ) + 1;
-
-  const lock =
-    attempts >= MAX_FAILED_LOGINS;
-
-  await pool.query(`
-    UPDATE
-      public.acs_guardian_administrators
-
-    SET
-      failed_login_attempts = $2,
-
-      locked_until =
-        CASE
-          WHEN $3
-          THEN
-            CURRENT_TIMESTAMP +
-            ($4 * INTERVAL '1 minute')
-          ELSE locked_until
-        END,
-
-      updated_at =
-        CURRENT_TIMESTAMP
-
-    WHERE id = $1
-  `, [
-    administrator.id,
-    lock ? 0 : attempts,
-    lock,
-    LOCK_MINUTES
-  ]);
-
   await ACS_writeGuardianAudit({
     administratorId:
       administrator.id,
@@ -398,7 +360,7 @@ async function registerFailedLogin(
         "INVALID_CREDENTIALS",
 
       accountLocked:
-        lock
+        false
     }
   });
 }
@@ -429,9 +391,7 @@ export async function ACS_issueGuardianAccess({
       email,
       display_name,
       password_hash,
-      active,
-      failed_login_attempts,
-      locked_until
+      active
 
     FROM
       public.acs_guardian_administrators
@@ -453,18 +413,6 @@ export async function ACS_issueGuardianAccess({
     throw guardianError(
       "GUARDIAN_CREDENTIALS_INVALID",
       401
-    );
-  }
-
-  if (
-    administrator.locked_until &&
-    new Date(
-      administrator.locked_until
-    ) > new Date()
-  ) {
-    throw guardianError(
-      "GUARDIAN_ACCOUNT_TEMPORARILY_LOCKED",
-      423
     );
   }
 
