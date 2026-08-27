@@ -401,6 +401,24 @@ async function ACS_detectClosedFinanceDetail(
                 ) * 1000
               )::bigint
         )
+
+        AND NOT EXISTS (
+          SELECT
+            1
+          FROM
+            public.corporate_tax tax
+          WHERE
+            tax.finance_log_id = log.id
+        )
+
+        AND NOT EXISTS (
+          SELECT
+            1
+          FROM
+            public.airline_infrastructure_changes infrastructure
+          WHERE
+            infrastructure.finance_log_id = log.id
+        )
     )
 
     SELECT
