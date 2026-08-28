@@ -9,6 +9,12 @@
 
 import { pool } from "../db/pool.js";
 
+import {
+  ACS_getGuardianStorageSnapshot
+} from "./acs_guardian_storage.js";
+
+const ACS_MANUAL_CLEANUP_WARNING_PERCENT = 60;
+
 const ACTIONS = Object.freeze({
   FINANCE:
     "FINANCE_CLOSED_DETAIL_COMPACTION",
@@ -53,8 +59,10 @@ function ACS_buildDiagnostic({
   title,
   table,
   row,
-  policy
+  policy,
+  volumePercent
 }) {
+   
   const eligibleRows =
     ACS_toNumber(row.eligible_rows);
 
@@ -67,20 +75,21 @@ function ACS_buildDiagnostic({
   const indexBytes =
     ACS_toNumber(row.index_bytes);
 
-  const rowThresholdReached =
-    eligibleRows >=
-    policy.eligibleRowThreshold;
-
   const tableThresholdReached =
     totalBytes >=
     policy.tableByteThreshold;
+
+  const volumeThresholdReached =
+    volumePercent >=
+    ACS_MANUAL_CLEANUP_WARNING_PERCENT;
 
   const thresholdReached =
     policy.enabled &&
     eligibleRows > 0 &&
     (
       rowThresholdReached ||
-      tableThresholdReached
+      tableThresholdReached ||
+      volumeThresholdReached
     );
 
   return {
@@ -103,12 +112,15 @@ function ACS_buildDiagnostic({
 
     thresholdReached,
 
-    reasons: {
+        reasons: {
       eligibleRows:
         rowThresholdReached,
 
       tableSize:
-        tableThresholdReached
+        tableThresholdReached,
+
+      volumeWarning:
+        volumeThresholdReached
     },
 
     policy,
@@ -580,6 +592,14 @@ async function ACS_detectDeletedOccAlerts(
    ============================================================ */
 
 export async function ACS_getGuardianDiagnostics() {
+  const storage =
+    await ACS_getGuardianStorageSnapshot();
+
+  const volumePercent =
+    ACS_toNumber(
+      storage.volume?.estimatedPercent
+    );
+
   const client =
     await pool.connect();
 
@@ -643,7 +663,9 @@ export async function ACS_getGuardianDiagnostics() {
           policy:
             policies.get(
               ACTIONS.FINANCE
-            )
+            ),
+
+          volumePercent
         }),
 
         ACS_buildDiagnostic({
@@ -662,7 +684,9 @@ export async function ACS_getGuardianDiagnostics() {
           policy:
             policies.get(
               ACTIONS.FLIGHTS
-            )
+            ),
+
+          volumePercent
         }),
 
         ACS_buildDiagnostic({
@@ -681,7 +705,9 @@ export async function ACS_getGuardianDiagnostics() {
           policy:
             policies.get(
               ACTIONS.OCC_ALERTS
-            )
+            ),
+
+          volumePercent
         })
       ]
     };
