@@ -1473,6 +1473,273 @@ export async function resolveHRSkyTrackRiskFeed(airlineId) {
   };
 }
 
+const HR_LEVEL_RANK = {
+  INFO: 0,
+  WARNING: 1,
+  CRITICAL: 2,
+  SEVERE: 3
+};
+
+const HR_DELAY_MINUTES_BY_LEVEL = {
+  INFO: [0, 0],
+  WARNING: [15, 45],
+  CRITICAL: [45, 120],
+  SEVERE: [90, 240]
+};
+
+function ACS_HR_deterministicInteger(
+  key,
+  minimum,
+  maximum
+) {
+  const text = String(key || "ACS_HR");
+
+  let hash = 2166136261;
+
+  for (
+    let index = 0;
+    index < text.length;
+    index += 1
+  ) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  const min = Math.ceil(Number(minimum));
+  const max = Math.floor(Number(maximum));
+  const span = Math.max(1, max - min + 1);
+
+  return min + ((hash >>> 0) % span);
+}
+
+function ACS_HR_getRelevantDepartments(
+  flight,
+  riskByDept
+) {
+  const seats = Math.max(
+    0,
+    Number(flight.seats || 0)
+  );
+
+  const departmentIds = [
+    ACS_HR_getPilotDeptForSeats(seats),
+    "flightops",
+    "maintenance",
+    "ground"
+  ];
+
+  if (seats > 9) {
+    departmentIds.push("cabin");
+  }
+
+  return departmentIds
+    .map(
+      departmentId =>
+        riskByDept.get(departmentId)
+    )
+    .filter(Boolean);
+}
+
+function ACS_HR_resolveOccurrenceDecision(
+  flight,
+  riskByDept
+) {
+  const relevantDepartments =
+    ACS_HR_getRelevantDepartments(
+      flight,
+      riskByDept
+    );
+
+  const staffProblems =
+    relevantDepartments.filter(
+      department =>
+        Number(department.deficit || 0) > 0
+    );
+
+  const salaryProblems =
+    relevantDepartments.filter(
+      department =>
+        Number(
+          department.salaryShortfall || 0
+        ) > 0
+    );
+
+  const hardBlocked =
+    staffProblems.some(
+      department =>
+        department.hardBlock === true
+    );
+
+  const moraleLevel =
+    relevantDepartments.reduce(
+      (current, department) =>
+        HR_LEVEL_RANK[
+          department.moraleLevel
+        ] > HR_LEVEL_RANK[current]
+          ? department.moraleLevel
+          : current,
+      "INFO"
+    );
+
+  let effectiveLevel = moraleLevel;
+
+  if (
+    staffProblems.some(
+      department =>
+        department.severity === "CRITICAL"
+    )
+  ) {
+    if (
+      HR_LEVEL_RANK[effectiveLevel] <
+      HR_LEVEL_RANK.CRITICAL
+    ) {
+      effectiveLevel = "CRITICAL";
+    }
+
+  } else if (staffProblems.length > 0) {
+    if (
+      HR_LEVEL_RANK[effectiveLevel] <
+      HR_LEVEL_RANK.WARNING
+    ) {
+      effectiveLevel = "WARNING";
+    }
+  }
+
+  if (hardBlocked) {
+    effectiveLevel = "SEVERE";
+  }
+
+  const levelRule =
+    HR_MORALE_OPERATIONAL_LEVELS[
+      effectiveLevel
+    ];
+
+  const decisionKey =
+    `HR_OCCURRENCE:${flight.id}`;
+
+  const cancelRoll =
+    ACS_HR_deterministicInteger(
+      `${decisionKey}:CANCEL`,
+      1,
+      100
+    );
+
+  const delayRoll =
+    ACS_HR_deterministicInteger(
+      `${decisionKey}:DELAY`,
+      1,
+      100
+    );
+
+  const cancelRiskPct = hardBlocked
+    ? 100
+    : Number(levelRule.cancelRiskPct || 0);
+
+  /*
+   * Cualquier déficit de personal operacional
+   * obliga a generar retraso si el vuelo no fue
+   * cancelado primero.
+   */
+  const delayRiskPct =
+    staffProblems.length > 0
+      ? 100
+      : Number(levelRule.delayRiskPct || 0);
+
+  let outcome = "ON_TIME";
+
+  /*
+   * La cancelación siempre se decide primero.
+   */
+  if (cancelRoll <= cancelRiskPct) {
+    outcome = "CANCELLED";
+
+  } else if (delayRoll <= delayRiskPct) {
+    outcome = "DELAYED";
+  }
+
+  const delayRange =
+    HR_DELAY_MINUTES_BY_LEVEL[
+      effectiveLevel
+    ];
+
+  const delayMinutes =
+    outcome === "DELAYED"
+      ? ACS_HR_deterministicInteger(
+          `${decisionKey}:MINUTES`,
+          delayRange[0],
+          delayRange[1]
+        )
+      : 0;
+
+  /*
+   * Un vuelo cancelado pierde el 100% de PAX.
+   * Los demás usan el rango correspondiente.
+   */
+  const paxReductionPct =
+    outcome === "CANCELLED"
+      ? 1
+      : ACS_HR_deterministicInteger(
+          `${decisionKey}:PAX`,
+          levelRule.paxLossMinPct,
+          levelRule.paxLossMaxPct
+        ) / 100;
+
+  const routeImagePenalty =
+    outcome === "CANCELLED"
+      ? -5
+      : outcome === "DELAYED"
+        ? Number(
+            levelRule.routeImagePenalty || 0
+          )
+        : 0;
+
+  let cause = "NONE";
+
+  if (
+    staffProblems.length > 0 &&
+    salaryProblems.length > 0
+  ) {
+    cause = "STAFF_AND_SALARY";
+
+  } else if (staffProblems.length > 0) {
+    cause = "STAFF_SHORTAGE";
+
+  } else if (salaryProblems.length > 0) {
+    cause = "SALARY_SHORTFALL";
+
+  } else if (moraleLevel !== "INFO") {
+    cause = "LOW_MORALE";
+  }
+
+  const cancelReason =
+    outcome === "CANCELLED"
+      ? hardBlocked
+        ? "HR_CRITICAL_STAFF_SHORTAGE"
+        : "HR_LOW_MORALE"
+      : null;
+
+  return {
+    decisionKey,
+    outcome,
+    effectiveLevel,
+    cause,
+
+    delayMinutes,
+    paxReductionPct,
+    routeImagePenalty,
+    cancelReason,
+
+    cancelRoll,
+    cancelRiskPct,
+    delayRoll,
+    delayRiskPct,
+
+    relevantDepartments,
+    staffProblems,
+    salaryProblems
+  };
+}
+
 /* ============================================================
    ACS HR OPS IMPACT WRITER — PHASE 3E
    ------------------------------------------------------------
