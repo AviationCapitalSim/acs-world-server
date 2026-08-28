@@ -159,16 +159,6 @@ router.get("/snapshot", requireAuth, async (req, res) => {
         occurrence.operational_status,
         occurrence.dispatch_status,
         occurrence.dispatch_reason,
-
-        occurrence.hr_impact_level,
-        occurrence.hr_impact_cause,
-        occurrence.hr_operational_outcome,
-        occurrence.hr_delay_minutes,
-        occurrence.hr_release_at,
-        occurrence.hr_cancel_reason,
-        occurrence.hr_pax_reduction_pct,
-        occurrence.hr_route_image_penalty,
-
         occurrence.flight_context,
 
         (
@@ -183,7 +173,7 @@ router.get("/snapshot", requireAuth, async (req, res) => {
           + EXTRACT(MINUTE FROM occurrence.scheduled_arrival_at)::int
         )::int AS arr_abs_min,
 
-                CASE
+        CASE
           WHEN occurrence.flight_context = 'ACTIVE'
             THEN 'EN_ROUTE'
 
@@ -191,15 +181,6 @@ router.get("/snapshot", requireAuth, async (req, res) => {
             THEN COALESCE(
               NULLIF(occurrence.dispatch_reason, ''),
               'NOT_DISPATCHED'
-            )
-
-          WHEN occurrence.flight_context = 'HR_DELAYED'
-            THEN 'DELAYED_HR'
-
-          WHEN occurrence.flight_context = 'HR_CANCELLED'
-            THEN COALESCE(
-              NULLIF(occurrence.hr_cancel_reason, ''),
-              'CANCELLED_HR'
             )
 
           WHEN UPPER(
@@ -226,17 +207,11 @@ router.get("/snapshot", requireAuth, async (req, res) => {
           ELSE 'AIRPORT'
         END AS position_type,
 
-            CASE
+        CASE
           WHEN occurrence.flight_context = 'ACTIVE'
             THEN NULL
 
           WHEN occurrence.flight_context = 'HELD'
-            THEN occurrence.origin
-
-          WHEN occurrence.flight_context IN (
-            'HR_DELAYED',
-            'HR_CANCELLED'
-          )
             THEN occurrence.origin
 
           WHEN UPPER(
@@ -247,10 +222,10 @@ router.get("/snapshot", requireAuth, async (req, res) => {
             'UNSERVICEABLE'
           )
             THEN COALESCE(
-              fleet.base_icao,
-              fleet.current_airport,
-              occurrence.origin
-            )
+             fleet.base_icao,
+             fleet.current_airport,
+             occurrence.origin
+          )
 
           WHEN occurrence.flight_context = 'LAST'
             THEN occurrence.destination
@@ -315,7 +290,7 @@ router.get("/snapshot", requireAuth, async (req, res) => {
         SELECT
           candidate.*,
 
-         CASE
+          CASE
             WHEN candidate.dispatch_status = 'RELEASED'
              AND candidate.operational_status IN (
                'DISPATCHED',
@@ -333,20 +308,6 @@ router.get("/snapshot", requireAuth, async (req, res) => {
              AND candidate.scheduled_departure_at <= sim.sim_time
              AND candidate.scheduled_arrival_at > sim.sim_time
               THEN 'HELD'
-
-            WHEN candidate.dispatch_status = 'PENDING'
-             AND candidate.operational_status = 'PLANNED'
-             AND candidate.hr_operational_outcome = 'DELAYED'
-             AND candidate.scheduled_departure_at <= sim.sim_time
-             AND candidate.hr_release_at > sim.sim_time
-              THEN 'HR_DELAYED'
-
-            WHEN candidate.dispatch_status = 'NOT_DISPATCHED'
-             AND candidate.operational_status = 'CANCELLED'
-             AND candidate.hr_operational_outcome = 'CANCELLED'
-             AND candidate.scheduled_departure_at <= sim.sim_time
-             AND candidate.scheduled_arrival_at > sim.sim_time
-              THEN 'HR_CANCELLED'
 
             WHEN candidate.dispatch_status = 'PENDING'
              AND candidate.operational_status = 'PLANNED'
@@ -389,7 +350,7 @@ router.get("/snapshot", requireAuth, async (req, res) => {
               'D_CHECK_OVERDUE'
             )
           )
-          
+
           AND (
             (
               candidate.dispatch_status = 'RELEASED'
@@ -418,26 +379,6 @@ router.get("/snapshot", requireAuth, async (req, res) => {
             (
               candidate.dispatch_status = 'PENDING'
               AND candidate.operational_status = 'PLANNED'
-              AND candidate.hr_operational_outcome = 'DELAYED'
-              AND candidate.scheduled_departure_at <= sim.sim_time
-              AND candidate.hr_release_at > sim.sim_time
-            )
-
-            OR
-
-            (
-              candidate.dispatch_status = 'NOT_DISPATCHED'
-              AND candidate.operational_status = 'CANCELLED'
-              AND candidate.hr_operational_outcome = 'CANCELLED'
-              AND candidate.scheduled_departure_at <= sim.sim_time
-              AND candidate.scheduled_arrival_at > sim.sim_time
-            )
-
-            OR
-
-            (
-              candidate.dispatch_status = 'PENDING'
-              AND candidate.operational_status = 'PLANNED'
               AND candidate.scheduled_departure_at > sim.sim_time
             )
 
@@ -449,7 +390,7 @@ router.get("/snapshot", requireAuth, async (req, res) => {
             )
           )
 
-         ORDER BY
+        ORDER BY
           CASE
             WHEN candidate.dispatch_status = 'RELEASED'
              AND candidate.scheduled_departure_at <= sim.sim_time
@@ -459,12 +400,6 @@ router.get("/snapshot", requireAuth, async (req, res) => {
             WHEN candidate.dispatch_status = 'NOT_DISPATCHED'
              AND candidate.scheduled_departure_at <= sim.sim_time
              AND candidate.scheduled_arrival_at > sim.sim_time
-              THEN 2
-
-            WHEN candidate.dispatch_status = 'PENDING'
-             AND candidate.hr_operational_outcome = 'DELAYED'
-             AND candidate.scheduled_departure_at <= sim.sim_time
-             AND candidate.hr_release_at > sim.sim_time
               THEN 2
 
             WHEN candidate.dispatch_status = 'PENDING'
@@ -503,8 +438,7 @@ router.get("/snapshot", requireAuth, async (req, res) => {
       ]
     );
 
-  const flights = result.rows.map(row => {
-     
+    const flights = result.rows.map(row => {
   const rawAircraftId =
     String(row.aircraft_id);
 
@@ -603,27 +537,12 @@ router.get("/snapshot", requireAuth, async (req, res) => {
         flightDirection:
           row.flight_direction || null,
 
-                scheduleStatus:
+        scheduleStatus:
           row.operational_status || null,
         dispatchStatus:
           row.dispatch_status || null,
         dispatchReason:
           row.dispatch_reason || null,
-
-        hrImpactLevel:
-          row.hr_impact_level || null,
-        hrImpactCause:
-          row.hr_impact_cause || null,
-        hrOperationalOutcome:
-          row.hr_operational_outcome || null,
-        hrReleaseAt:
-          row.hr_release_at || null,
-        hrCancelReason:
-          row.hr_cancel_reason || null,
-        hrPaxReductionPct:
-          Number(row.hr_pax_reduction_pct || 0),
-        hrRouteImagePenalty:
-          Number(row.hr_route_image_penalty || 0),
 
         flightContext:
           row.flight_context || "NO_FLIGHT",
@@ -631,15 +550,11 @@ router.get("/snapshot", requireAuth, async (req, res) => {
         generatedReturn:
           row.flight_direction === "RETURN",
 
-        arrived:
-          row.arrived === true,
+        arrived: row.arrived === true,
 
-        opsStatus:
-          row.hr_operational_outcome || "ON_TIME",
-        delayed:
-          row.hr_operational_outcome === "DELAYED",
-        delayMinutes:
-          Number(row.hr_delay_minutes || 0),
+        opsStatus: "ON_TIME",
+        delayed: false,
+        delayMinutes: 0,
 
         __canonicalBackend: true,
         __snapshotAuthority: true,
