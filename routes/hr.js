@@ -889,8 +889,67 @@ const HR_OPERATIONAL_RULES = {
   hr:        { area: "admin", critical: false, hardBlock: false, weight: 5 }
 };
 
+const HR_OPERATIONAL_DEPARTMENT_IDS = new Set([
+  "pilots_small",
+  "pilots_medium",
+  "pilots_large",
+  "pilots_vlarge",
+  "cabin",
+  "flightops",
+  "maintenance",
+  "ground"
+]);
+
+const HR_MORALE_OPERATIONAL_LEVELS = {
+  INFO: {
+    delayRiskPct: 0,
+    cancelRiskPct: 0,
+    paxLossMinPct: 1,
+    paxLossMaxPct: 1,
+    routeImagePenalty: 0
+  },
+
+  WARNING: {
+    delayRiskPct: 10,
+    cancelRiskPct: 0,
+    paxLossMinPct: 2,
+    paxLossMaxPct: 5,
+    routeImagePenalty: -1
+  },
+
+  CRITICAL: {
+    delayRiskPct: 50,
+    cancelRiskPct: 0,
+    paxLossMinPct: 8,
+    paxLossMaxPct: 15,
+    routeImagePenalty: -3
+  },
+
+  SEVERE: {
+    delayRiskPct: 60,
+    cancelRiskPct: 15,
+    paxLossMinPct: 20,
+    paxLossMaxPct: 35,
+    routeImagePenalty: -5
+  }
+};
+
+function ACS_HR_getMoraleOperationalLevel(value) {
+  const morale = Math.max(
+    40,
+    Math.min(100, Number(value || 100))
+  );
+
+  if (morale <= 55) return "SEVERE";
+  if (morale <= 70) return "CRITICAL";
+  if (morale <= 80) return "WARNING";
+
+  return "INFO";
+}
+
 function ACS_HR_classifyDepartmentRisk(dept) {
   const deptId = String(dept.dept_id || "");
+
   const rule = HR_OPERATIONAL_RULES[deptId] || {
     area: "general",
     critical: false,
@@ -898,19 +957,83 @@ function ACS_HR_classifyDepartmentRisk(dept) {
     weight: 5
   };
 
-  const staff = Math.max(0, Number(dept.staff || 0));
-  const required = Math.max(0, Number(dept.required || 0));
-  const deficit = Math.max(0, required - staff);
+  const staff = Math.max(
+    0,
+    Number(dept.staff || 0)
+  );
+
+  const required = Math.max(
+    0,
+    Number(dept.required || 0)
+  );
+
+  const deficit = Math.max(
+    0,
+    required - staff
+  );
+
+  const morale = Math.max(
+    40,
+    Math.min(100, Number(dept.morale || 100))
+  );
+
+  const salary = Math.max(
+    0,
+    Number(dept.salary || 0)
+  );
+
+  const standardSalary = Math.max(
+    0,
+    Number(dept.standard_salary || 0)
+  );
+
+  const salaryShortfall = Math.max(
+    0,
+    standardSalary - salary
+  );
+
+  const salaryShortfallPct =
+    standardSalary > 0
+      ? Math.round(
+          (salaryShortfall / standardSalary) * 10000
+        ) / 100
+      : 0;
+
+  const moraleLevel =
+    ACS_HR_getMoraleOperationalLevel(morale);
+
+  const moraleRule =
+    HR_MORALE_OPERATIONAL_LEVELS[moraleLevel];
+
+  const affectsFlights =
+    HR_OPERATIONAL_DEPARTMENT_IDS.has(deptId);
 
   if (required <= 0 || deficit <= 0) {
     return {
       dept_id: deptId,
       dept_name: dept.dept_name,
       area: rule.area,
+
       staff,
       required,
       deficit: 0,
       coveragePct: 100,
+
+      morale,
+      moraleLevel,
+
+      salary,
+      standardSalary,
+      salaryShortfall,
+      salaryShortfallPct,
+      salaryCurrent: salaryShortfall === 0,
+
+      affectsFlights,
+
+      moraleOperationalRisk: {
+        ...moraleRule
+      },
+
       severity: "OK",
       hardBlock: false,
       riskPoints: 0
@@ -918,7 +1041,11 @@ function ACS_HR_classifyDepartmentRisk(dept) {
   }
 
   const coverage = staff / required;
-  const coveragePct = Math.round(coverage * 100);
+
+  const coveragePct = Math.round(
+    coverage * 100
+  );
+
   const deficitRatio = deficit / required;
 
   let severity = "WARNING";
@@ -927,22 +1054,43 @@ function ACS_HR_classifyDepartmentRisk(dept) {
   if (rule.hardBlock && staff <= 0) {
     severity = "BLOCKED";
     hardBlock = true;
+
   } else if (rule.critical && coverage < 0.5) {
     severity = "CRITICAL";
+
   } else if (deficitRatio >= 0.5) {
     severity = "CRITICAL";
   }
 
-  const riskPoints = Math.round(rule.weight * deficitRatio);
+  const riskPoints = Math.round(
+    rule.weight * deficitRatio
+  );
 
   return {
     dept_id: deptId,
     dept_name: dept.dept_name,
     area: rule.area,
+
     staff,
     required,
     deficit,
     coveragePct,
+
+    morale,
+    moraleLevel,
+
+    salary,
+    standardSalary,
+    salaryShortfall,
+    salaryShortfallPct,
+    salaryCurrent: salaryShortfall === 0,
+
+    affectsFlights,
+
+    moraleOperationalRisk: {
+      ...moraleRule
+    },
+
     severity,
     hardBlock,
     riskPoints
@@ -952,65 +1100,206 @@ function ACS_HR_classifyDepartmentRisk(dept) {
 export async function resolveHROperationalRisk(airlineId) {
   await ensureHRInitialized(airlineId);
 
-if (typeof recalculateHRRequired === "function") {
+  if (typeof recalculateHRRequired === "function") {
     await recalculateHRRequired(airlineId);
   }
 
   await applyHRAutomation(airlineId);
 
+  const simResult = await pool.query(
+    `
+    SELECT
+      EXTRACT(
+        YEAR FROM acs_get_current_sim_time()
+      )::int AS sim_year,
+
+      EXTRACT(
+        MONTH FROM acs_get_current_sim_time()
+      )::int AS sim_month
+    `
+  );
+
+  const salaryCycle = getHRSalaryCycle(
+    Number(simResult.rows[0]?.sim_year),
+    Number(simResult.rows[0]?.sim_month)
+  );
+
   const result = await pool.query(
     `
     SELECT
-      dept_id,
-      dept_name,
-      staff,
-      required,
-      morale
-    FROM public.hr_departments
-    WHERE airline_id = $1
-    ORDER BY dept_id
+      department.dept_id,
+      department.dept_name,
+      department.staff,
+      department.required,
+      department.morale,
+      department.salary,
+
+      CASE
+        WHEN LEFT(
+          department.dept_id,
+          7
+        ) = 'pilots_'
+          THEN standard.standard_two_crew_cost
+
+        ELSE standard.monthly_salary
+      END AS standard_salary
+
+    FROM public.hr_departments department
+
+    JOIN public.hr_salary_standards standard
+      ON standard.dept_id =
+         department.dept_id
+
+     AND standard.cycle_year = $2
+     AND standard.cycle_half = $3
+
+    WHERE department.airline_id = $1
+
+    ORDER BY department.dept_id
     `,
-    [airlineId]
+    [
+      airlineId,
+      salaryCycle.year,
+      salaryCycle.half
+    ]
   );
 
-  const departments = result.rows.map(ACS_HR_classifyDepartmentRisk);
+  const departments = result.rows.map(
+    ACS_HR_classifyDepartmentRisk
+  );
+
+  const operationalDepartments =
+    departments.filter(
+      department =>
+        department.affectsFlights === true
+    );
 
   const totalRiskPoints = departments.reduce(
-    (sum, d) => sum + Number(d.riskPoints || 0),
+    (sum, department) =>
+      sum + Number(department.riskPoints || 0),
     0
   );
 
-  const blockedDepartments = departments.filter(d => d.severity === "BLOCKED");
-  const criticalDepartments = departments.filter(d => d.severity === "CRITICAL");
-  const warningDepartments = departments.filter(d => d.severity === "WARNING");
+  const blockedDepartments =
+    departments.filter(
+      department =>
+        department.severity === "BLOCKED"
+    );
 
-  const dispatchBlocked = blockedDepartments.length > 0;
+  const criticalDepartments =
+    departments.filter(
+      department =>
+        department.severity === "CRITICAL"
+    );
+
+  const warningDepartments =
+    departments.filter(
+      department =>
+        department.severity === "WARNING"
+    );
+
+  const salaryAffectedDepartments =
+    departments.filter(
+      department =>
+        department.salaryCurrent !== true
+    );
+
+  const moraleAffectedDepartments =
+    operationalDepartments.filter(
+      department =>
+        department.moraleLevel !== "INFO"
+    );
+
+  const moraleRank = {
+    INFO: 0,
+    WARNING: 1,
+    CRITICAL: 2,
+    SEVERE: 3
+  };
+
+  const proposedMoraleLevel =
+    operationalDepartments.reduce(
+      (current, department) =>
+        moraleRank[department.moraleLevel] >
+        moraleRank[current]
+          ? department.moraleLevel
+          : current,
+      "INFO"
+    );
+
+  const proposedMoraleRule =
+    HR_MORALE_OPERATIONAL_LEVELS[
+      proposedMoraleLevel
+    ];
+
+  const dispatchBlocked =
+    blockedDepartments.length > 0;
 
   let operationalStatus = "OK";
 
   if (dispatchBlocked) {
     operationalStatus = "BLOCKED";
+
   } else if (criticalDepartments.length > 0) {
     operationalStatus = "CRITICAL";
+
   } else if (warningDepartments.length > 0) {
     operationalStatus = "WARNING";
   }
 
-  const delayRiskPct = Math.min(95, Math.max(0, totalRiskPoints));
+  const delayRiskPct = Math.min(
+    95,
+    Math.max(0, totalRiskPoints)
+  );
+
   const cancelRiskPct = dispatchBlocked
-    ? Math.min(85, Math.max(35, Math.round(totalRiskPoints * 0.75)))
-    : Math.min(70, Math.max(0, Math.round(totalRiskPoints * 0.45)));
+    ? Math.min(
+        85,
+        Math.max(
+          35,
+          Math.round(totalRiskPoints * 0.75)
+        )
+      )
+    : Math.min(
+        70,
+        Math.max(
+          0,
+          Math.round(totalRiskPoints * 0.45)
+        )
+      );
 
   return {
     ok: true,
+
     airline_id: Number(airlineId),
+
+    salary_cycle_year:
+      salaryCycle.year,
+
+    salary_cycle_half:
+      salaryCycle.half,
+
+    salary_cycle_key:
+      salaryCycle.key,
+
     operationalStatus,
     dispatchBlocked,
     delayRiskPct,
     cancelRiskPct,
+
+    proposedMoraleLevel,
+
+    proposedMoraleOperationalRisk: {
+      ...proposedMoraleRule
+    },
+
+    salaryAffectedDepartments,
+    moraleAffectedDepartments,
+
     blockedDepartments,
     criticalDepartments,
     warningDepartments,
+
     departments
   };
 }
