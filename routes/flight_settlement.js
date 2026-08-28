@@ -271,8 +271,35 @@ export async function ACS_runFlightSettlementRuntime({
             * COALESCE(overflight_usd_per_nm, 0)
           )::bigint AS overflight_amount
 
-        FROM adjusted_amounts
+               FROM adjusted_amounts
       ),
+
+      updated_passenger_results AS MATERIALIZED (
+        UPDATE public.acs_passenger_flight_results
+          AS passenger_result
+
+        SET
+          captured_y =
+            amounts.adjusted_captured_y,
+
+          captured_c =
+            amounts.adjusted_captured_c,
+
+          captured_f =
+            amounts.adjusted_captured_f,
+
+          updated_at =
+            CURRENT_TIMESTAMP
+
+        FROM amounts
+
+        WHERE passenger_result.occurrence_id =
+              amounts.id
+
+        RETURNING
+          passenger_result.occurrence_id
+      ),
+
       inserted_logs AS MATERIALIZED (
         INSERT INTO public.finance_log (
           airline_id,
