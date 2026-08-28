@@ -2000,12 +2000,12 @@ export async function applyHROpsImpactForAirline(
             hr_impact_level = $7,
             hr_impact_cause = $8,
 
-            hr_operational_outcome = $9,
+            hr_operational_outcome = $9::varchar,
 
             hr_delay_minutes = $10,
 
             hr_release_at = CASE
-              WHEN $9 = 'DELAYED'
+              WHEN $9::varchar = 'DELAYED'
                 THEN
                   scheduled_departure_at
                   +
