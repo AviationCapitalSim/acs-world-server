@@ -295,9 +295,7 @@ async function ACS_assertPolicyStillAllowsAction(
   const result = await client.query(
     `
     SELECT
-      enabled,
-      eligible_row_threshold,
-      table_byte_threshold
+      enabled
     FROM public.acs_guardian_cleanup_policies
     WHERE action_type = $1
     FOR SHARE
@@ -305,32 +303,27 @@ async function ACS_assertPolicyStillAllowsAction(
     [actionType]
   );
 
-  if (!result.rows.length || result.rows[0].enabled !== true) {
+  if (
+    !result.rows.length ||
+    result.rows[0].enabled !== true
+  ) {
     throw ACS_actionError(
       "GUARDIAN_CLEANUP_POLICY_DISABLED",
       409
     );
   }
 
-  const size = await ACS_measureTable(client, targetTable);
-  const rowThreshold = Number(
-    result.rows[0].eligible_row_threshold || 0
-  );
-  const byteThreshold = Number(
-    result.rows[0].table_byte_threshold || 0
-  );
-
-  if (
-    signature.eligibleRows < rowThreshold &&
-    size.totalBytes < byteThreshold
-  ) {
+  if (signature.eligibleRows <= 0) {
     throw ACS_actionError(
-      "GUARDIAN_ACTION_THRESHOLD_NOT_REACHED",
+      "GUARDIAN_ACTION_HAS_NO_ELIGIBLE_ROWS",
       409
     );
   }
 
-  return size;
+  return ACS_measureTable(
+    client,
+    targetTable
+  );
 }
 
 async function ACS_compactClosedFinance(client, action) {
