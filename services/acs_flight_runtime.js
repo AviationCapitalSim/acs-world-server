@@ -50,8 +50,7 @@ async function ACS_ensureHRDecisionsForDueFlights() {
       AND occurrence.hr_impact_resolved_at
           IS NULL
 
-      AND occurrence
-            .scheduled_departure_at::date =
+      AND occurrence.scheduled_departure_at::date <=
           clock.sim_time::date
 
       AND occurrence.scheduled_departure_at <=
