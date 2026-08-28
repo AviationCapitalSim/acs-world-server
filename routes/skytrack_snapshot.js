@@ -449,7 +449,7 @@ router.get("/snapshot", requireAuth, async (req, res) => {
             )
           )
 
-        ORDER BY
+         ORDER BY
           CASE
             WHEN candidate.dispatch_status = 'RELEASED'
              AND candidate.scheduled_departure_at <= sim.sim_time
@@ -465,23 +465,6 @@ router.get("/snapshot", requireAuth, async (req, res) => {
              AND candidate.hr_operational_outcome = 'DELAYED'
              AND candidate.scheduled_departure_at <= sim.sim_time
              AND candidate.hr_release_at > sim.sim_time
-              THEN 2
-
-            WHEN candidate.dispatch_status = 'PENDING'
-             AND candidate.scheduled_departure_at > sim.sim_time
-              THEN 3
-
-            ELSE 4
-          END,
-          
-            WHEN candidate.dispatch_status = 'RELEASED'
-             AND candidate.scheduled_departure_at <= sim.sim_time
-             AND candidate.scheduled_arrival_at > sim.sim_time
-              THEN 1
-
-            WHEN candidate.dispatch_status = 'NOT_DISPATCHED'
-             AND candidate.scheduled_departure_at <= sim.sim_time
-             AND candidate.scheduled_arrival_at > sim.sim_time
               THEN 2
 
             WHEN candidate.dispatch_status = 'PENDING'
