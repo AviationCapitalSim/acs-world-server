@@ -21,6 +21,77 @@
 
 import { pool } from "../db/pool.js";
 
+import {
+  applyHROpsImpactForAirline
+} from "../routes/hr.js";
+
+async function ACS_ensureHRDecisionsForDueFlights() {
+  const airlinesResult = await pool.query(
+    `
+    WITH clock AS MATERIALIZED (
+      SELECT
+        acs_get_current_sim_time()
+          AS sim_time
+    )
+
+    SELECT DISTINCT
+      occurrence.airline_id
+
+    FROM public.flight_occurrences occurrence
+
+    CROSS JOIN clock
+
+    WHERE occurrence.operational_status =
+          'PLANNED'
+
+      AND occurrence.dispatch_status =
+          'PENDING'
+
+      AND occurrence.hr_impact_resolved_at
+          IS NULL
+
+      AND occurrence
+            .scheduled_departure_at::date =
+          clock.sim_time::date
+
+      AND occurrence.scheduled_departure_at <=
+          clock.sim_time
+
+    ORDER BY occurrence.airline_id
+    `
+  );
+
+  let resolvedAirlines = 0;
+  let resolvedOccurrences = 0;
+
+  for (const row of airlinesResult.rows) {
+    const airlineId = Number(row.airline_id);
+
+    if (
+      !Number.isInteger(airlineId) ||
+      airlineId <= 0
+    ) {
+      continue;
+    }
+
+    const result =
+      await applyHROpsImpactForAirline(
+        airlineId
+      );
+
+    resolvedAirlines += 1;
+
+    resolvedOccurrences += Number(
+      result?.applied_count || 0
+    );
+  }
+
+  return {
+    resolvedAirlines,
+    resolvedOccurrences
+  };
+}
+
 function ACS_normalizeHorizonDays(value) {
   const days = Number(value);
 
@@ -347,6 +418,10 @@ async function ACS_materializeFlightOccurrences(
 export async function ACS_dispatchFlightOccurrences({
   batchSize = 500
 } = {}) {
+
+  const hrResolution =
+  await ACS_ensureHRDecisionsForDueFlights();
+   
   const client = await pool.connect();
 
   const normalizedBatchSize = Math.min(
@@ -705,10 +780,11 @@ export async function ACS_dispatchFlightOccurrences({
     ).length;
 
     return {
-      processedCount: result.rowCount,
-      heldCount,
-      releasedCount
-    };
+     processedCount: result.rowCount,
+     heldCount,
+     releasedCount,
+     hrResolution
+   };
   } catch (error) {
     if (transactionStarted) {
       try {
