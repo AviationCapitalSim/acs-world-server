@@ -1880,9 +1880,8 @@ export async function applyHROpsImpactForAirline(
 
         WHERE occurrence.airline_id = $1
 
-          AND occurrence
-                .scheduled_departure_at::date =
-              $2::timestamp::date
+          AND occurrence.scheduled_departure_at::date <=
+             $2::timestamp::date
 
           AND occurrence.operational_status
               IN (
