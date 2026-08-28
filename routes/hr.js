@@ -1772,212 +1772,494 @@ function ACS_HR_shouldCancelForPersonnel(flightRisk, carriedDelay) {
   return false;
 }
 
-export async function applyHROpsImpactForAirline(airlineId) {
-  const simResult = await pool.query(`
-    SELECT
-      EXTRACT(YEAR FROM acs_get_current_sim_time())::int AS sim_year,
-      EXTRACT(MONTH FROM acs_get_current_sim_time())::int AS sim_month,
-      EXTRACT(DAY FROM acs_get_current_sim_time())::int AS sim_day,
-      LOWER(TRIM(TO_CHAR(acs_get_current_sim_time(), 'dy'))) AS sim_dow
-  `);
+export async function applyHROpsImpactForAirline(
+  airlineId
+) {
+  const normalizedAirlineId = Number(airlineId);
 
-  const sim = simResult.rows[0];
-
-  const simYear = Number(sim?.sim_year);
-  const simMonth = Number(sim?.sim_month);
-  const simDay = Number(sim?.sim_day);
-  const simDow = String(sim?.sim_dow || "").slice(0, 3);
-
-  if (!Number.isInteger(simYear) || !Number.isInteger(simMonth) || !Number.isInteger(simDay) || !simDow) {
-    return {
-      ok: false,
-      skipped: true,
-      reason: "INVALID_SIM_TIME"
-    };
+  if (
+    !Number.isInteger(normalizedAirlineId) ||
+    normalizedAirlineId <= 0
+  ) {
+    throw new Error("INVALID_AIRLINE_ID");
   }
 
-  const globalRisk = await resolveHROperationalRisk(airlineId);
-
-  const riskByDept = new Map(
-    globalRisk.departments.map(dep => [dep.dept_id, dep])
-  );
-
-  const flightsResult = await pool.query(
-    `
-    SELECT
-      si.id,
-      si.airline_id,
-      si.route_plan_id,
-      si.aircraft_id,
-      si.flight_number,
-      si.origin,
-      si.destination,
-      si.selected_day,
-      si.departure,
-      si.arrival,
-      si.status,
-      si.dep_abs_min,
-      si.arr_abs_min,
-      si.turnaround_min,
-      si.aircraft_registration,
-      si.aircraft,
-      COALESCE(af.model_key, si.model_key, rp.model_key) AS model_key,
-      COALESCE(ac.seats, 0)::int AS seats
-    FROM public.schedule_items si
-    LEFT JOIN public.route_plans rp
-      ON rp.id = si.route_plan_id
-     AND rp.airline_id = si.airline_id
-    LEFT JOIN public.aircraft_fleet af
-      ON af.id = si.aircraft_id
-     AND af.airline_id = si.airline_id
-    LEFT JOIN public.aircraft_catalog ac
-      ON LOWER(ac.model_key) = LOWER(COALESCE(af.model_key, si.model_key, rp.model_key))
-    WHERE si.airline_id = $1
-      AND si.item_type = 'flight'
-      AND LOWER(COALESCE(si.status, '')) = 'assigned'
-      AND LOWER(COALESCE(si.selected_day, '')) = $2
-      AND si.aircraft_id IS NOT NULL
-    ORDER BY
-      si.aircraft_registration ASC NULLS LAST,
-      COALESCE(si.dep_abs_min, 0) ASC,
-      si.id ASC
-    `,
-    [airlineId, simDow]
-  );
-
-  const carryByAircraft = new Map();
-  const applied = [];
-
-  for (const flight of flightsResult.rows) {
-    const aircraftReg = String(flight.aircraft_registration || `AIRCRAFT-${flight.aircraft_id}`);
-    const baseRisk = ACS_HR_buildFlightPersonnelRisk(flight, riskByDept, globalRisk);
-
-    const previousCarry = Number(carryByAircraft.get(aircraftReg) || 0);
-    const baseDelay = ACS_HR_clampDelayMinutes(baseRisk.delayMinutes || 0);
-    let finalDelay = Math.max(baseDelay, previousCarry);
-
-    let opsStatus = "ON TIME";
-    let cancelReason = null;
-
-    if (ACS_HR_shouldCancelForPersonnel(baseRisk, finalDelay)) {
-      opsStatus = "CANCELLED - PERSONNEL";
-      finalDelay = 0;
-      cancelReason = "HR_PERSONNEL_SHORTAGE";
-      carryByAircraft.set(aircraftReg, Math.max(previousCarry, 90));
-    } else if (finalDelay > 0) {
-      opsStatus = "DELAYED - PERSONNEL";
-
-      const recovery = ACS_HR_getDayCarryRecoveryMinutes(flight);
-      const nextCarry = Math.max(0, finalDelay - recovery);
-
-      carryByAircraft.set(aircraftReg, nextCarry);
-    } else {
-      carryByAircraft.set(aircraftReg, 0);
-    }
-
-    const riskPayload = {
-      globalStatus: globalRisk.operationalStatus,
-      dispatchBlocked: globalRisk.dispatchBlocked,
-      delayRiskPct: globalRisk.delayRiskPct,
-      cancelRiskPct: globalRisk.cancelRiskPct,
-      personnelRisk: baseRisk.personnelRisk,
-      reasons: baseRisk.reasons,
-      carriedDelayIn: previousCarry,
-      finalDelayMinutes: finalDelay
-    };
-
-    await pool.query(
-      `
-      INSERT INTO public.skytrack_ops_impacts (
-        airline_id,
-        schedule_item_id,
-        sim_year,
-        sim_month,
-        sim_day,
-        sim_dow,
-        aircraft_registration,
-        flight_number,
-        origin,
-        destination,
-        ops_status,
-        delay_minutes,
-        delay_source,
-        cancel_reason,
-        risk_source,
-        risk_payload,
-        updated_at
-      )
-      VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
-        CASE WHEN $12 > 0 THEN 'HR_PERSONNEL' ELSE NULL END,
-        $13,
-        'HR_PERSONNEL_RISK',
-        $14::jsonb,
-        NOW()
-      )
-      ON CONFLICT (airline_id, schedule_item_id, sim_year, sim_month, sim_day)
-      DO UPDATE SET
-        sim_dow = EXCLUDED.sim_dow,
-        aircraft_registration = EXCLUDED.aircraft_registration,
-        flight_number = EXCLUDED.flight_number,
-        origin = EXCLUDED.origin,
-        destination = EXCLUDED.destination,
-        ops_status = EXCLUDED.ops_status,
-        delay_minutes = EXCLUDED.delay_minutes,
-        delay_source = EXCLUDED.delay_source,
-        cancel_reason = EXCLUDED.cancel_reason,
-        risk_source = EXCLUDED.risk_source,
-        risk_payload = EXCLUDED.risk_payload,
-        updated_at = NOW()
-      `,
-      [
-        airlineId,
-        flight.id,
-        simYear,
-        simMonth,
-        simDay,
-        simDow,
-        flight.aircraft_registration,
-        flight.flight_number,
-        flight.origin,
-        flight.destination,
-        opsStatus,
-        finalDelay,
-        cancelReason,
-        JSON.stringify(riskPayload)
-      ]
+  const globalRisk =
+    await resolveHROperationalRisk(
+      normalizedAirlineId
     );
 
-    applied.push({
-      schedule_item_id: flight.id,
-      flight_number: flight.flight_number,
-      aircraft_registration: flight.aircraft_registration,
-      origin: flight.origin,
-      destination: flight.destination,
-      opsStatus,
-      delayMinutes: finalDelay,
-      carriedDelayIn: previousCarry,
-      reasons: baseRisk.reasons
-    });
-  }
+  const riskByDept = new Map(
+    globalRisk.departments.map(
+      department => [
+        department.dept_id,
+        department
+      ]
+    )
+  );
 
-  return {
-    ok: true,
-    mode: "PERSISTED",
-    airline_id: Number(airlineId),
-    sim_year: simYear,
-    sim_month: simMonth,
-    sim_day: simDay,
-    sim_dow: simDow,
-    globalRisk: {
-      operationalStatus: globalRisk.operationalStatus,
-      dispatchBlocked: globalRisk.dispatchBlocked,
-      delayRiskPct: globalRisk.delayRiskPct,
-      cancelRiskPct: globalRisk.cancelRiskPct
-    },
-    applied_count: applied.length,
-    applied
-  };
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const simResult = await client.query(`
+      SELECT
+        acs_get_current_sim_time()
+          AS sim_time,
+
+        EXTRACT(
+          YEAR FROM acs_get_current_sim_time()
+        )::int AS sim_year,
+
+        EXTRACT(
+          MONTH FROM acs_get_current_sim_time()
+        )::int AS sim_month,
+
+        EXTRACT(
+          DAY FROM acs_get_current_sim_time()
+        )::int AS sim_day,
+
+        LOWER(
+          TRIM(
+            TO_CHAR(
+              acs_get_current_sim_time(),
+              'dy'
+            )
+          )
+        ) AS sim_dow
+    `);
+
+    const sim = simResult.rows[0] || {};
+
+    const simYear = Number(sim.sim_year);
+    const simMonth = Number(sim.sim_month);
+    const simDay = Number(sim.sim_day);
+
+    const simDow = String(
+      sim.sim_dow || ""
+    ).slice(0, 3);
+
+    if (
+      !sim.sim_time ||
+      !Number.isInteger(simYear) ||
+      !Number.isInteger(simMonth) ||
+      !Number.isInteger(simDay)
+    ) {
+      throw new Error("INVALID_SIM_TIME");
+    }
+
+    const occurrencesResult =
+      await client.query(
+        `
+        SELECT
+          occurrence.id,
+          occurrence.airline_id,
+          occurrence.route_plan_id,
+          occurrence.schedule_item_id,
+          occurrence.aircraft_id,
+          occurrence.aircraft_registration,
+          occurrence.flight_number,
+          occurrence.origin,
+          occurrence.destination,
+          occurrence.model_key,
+          occurrence.scheduled_departure_at,
+          occurrence.scheduled_arrival_at,
+          occurrence.hr_impact_resolved_at,
+
+          COALESCE(
+            catalog.seats,
+            0
+          )::int AS seats
+
+        FROM public.flight_occurrences occurrence
+
+        LEFT JOIN public.aircraft_catalog catalog
+          ON LOWER(catalog.model_key) =
+             LOWER(occurrence.model_key)
+
+        WHERE occurrence.airline_id = $1
+
+          AND occurrence
+                .scheduled_departure_at::date =
+              $2::timestamp::date
+
+          AND occurrence.operational_status
+              IN (
+                'PLANNED',
+                'HELD'
+              )
+
+          AND occurrence.settled_at IS NULL
+
+          AND occurrence
+                .hr_impact_resolved_at
+              IS NULL
+
+        ORDER BY
+          occurrence.scheduled_departure_at,
+          occurrence.id
+
+        FOR UPDATE OF occurrence
+        SKIP LOCKED
+        `,
+        [
+          normalizedAirlineId,
+          sim.sim_time
+        ]
+      );
+
+    const applied = [];
+
+    for (
+      const occurrence
+      of occurrencesResult.rows
+    ) {
+      const decision =
+        ACS_HR_resolveOccurrenceDecision(
+          occurrence,
+          riskByDept
+        );
+
+      const payload = {
+        version:
+          "ACS_HR_FLIGHT_IMPACT_V1",
+
+        outcome:
+          decision.outcome,
+
+        level:
+          decision.effectiveLevel,
+
+        cause:
+          decision.cause,
+
+        delayRoll:
+          decision.delayRoll,
+
+        delayRiskPct:
+          decision.delayRiskPct,
+
+        cancelRoll:
+          decision.cancelRoll,
+
+        cancelRiskPct:
+          decision.cancelRiskPct,
+
+        affectedDepartments:
+          decision.relevantDepartments.map(
+            department => ({
+              dept_id:
+                department.dept_id,
+
+              dept_name:
+                department.dept_name,
+
+              staff:
+                department.staff,
+
+              required:
+                department.required,
+
+              deficit:
+                department.deficit,
+
+              morale:
+                department.morale,
+
+              moraleLevel:
+                department.moraleLevel,
+
+              salary:
+                department.salary,
+
+              standardSalary:
+                department.standardSalary,
+
+              salaryShortfall:
+                department.salaryShortfall
+            })
+          )
+      };
+
+      const updateResult =
+        await client.query(
+          `
+          UPDATE public.flight_occurrences
+
+          SET
+            hr_impact_decision_key = $2,
+
+            hr_impact_resolved_at =
+              $3::timestamp,
+
+            hr_impact_sim_year = $4,
+            hr_impact_sim_month = $5,
+            hr_impact_sim_day = $6,
+
+            hr_impact_level = $7,
+            hr_impact_cause = $8,
+
+            hr_operational_outcome = $9,
+
+            hr_delay_minutes = $10,
+
+            hr_release_at = CASE
+              WHEN $9 = 'DELAYED'
+                THEN
+                  scheduled_departure_at
+                  +
+                  (
+                    $10::integer *
+                    INTERVAL '1 minute'
+                  )
+              ELSE NULL
+            END,
+
+            hr_cancel_reason = $11,
+
+            hr_pax_reduction_pct = $12,
+
+            hr_pax_lost = NULL,
+
+            hr_route_image_penalty = $13,
+
+            hr_impact_payload = $14::jsonb,
+
+            updated_at = CURRENT_TIMESTAMP
+
+          WHERE id = $1
+
+            AND hr_impact_resolved_at
+                IS NULL
+
+          RETURNING id
+          `,
+          [
+            occurrence.id,
+            decision.decisionKey,
+            sim.sim_time,
+            simYear,
+            simMonth,
+            simDay,
+            decision.effectiveLevel,
+            decision.cause,
+            decision.outcome,
+            decision.delayMinutes,
+            decision.cancelReason,
+            decision.paxReductionPct,
+            decision.routeImagePenalty,
+            JSON.stringify(payload)
+          ]
+        );
+
+      if (updateResult.rowCount !== 1) {
+        continue;
+      }
+
+      const skyTrackStatus =
+        decision.outcome === "CANCELLED"
+          ? "CANCELLED - HR"
+
+          : decision.outcome === "DELAYED"
+            ? "DELAYED - HR"
+
+            : "ON TIME";
+
+      await client.query(
+        `
+        INSERT INTO public.skytrack_ops_impacts (
+          airline_id,
+          schedule_item_id,
+
+          sim_year,
+          sim_month,
+          sim_day,
+          sim_dow,
+
+          aircraft_registration,
+          flight_number,
+          origin,
+          destination,
+
+          ops_status,
+          delay_minutes,
+          delay_source,
+          cancel_reason,
+
+          risk_source,
+          risk_payload,
+          updated_at
+        )
+
+        VALUES (
+          $1,
+          $2,
+          $3,
+          $4,
+          $5,
+          $6,
+          $7,
+          $8,
+          $9,
+          $10,
+          $11,
+          $12,
+          $13,
+          $14,
+
+          'HR_OPERATIONAL_RISK',
+
+          $15::jsonb,
+
+          NOW()
+        )
+
+        ON CONFLICT (
+          airline_id,
+          schedule_item_id,
+          sim_year,
+          sim_month,
+          sim_day
+        )
+
+        DO UPDATE SET
+          sim_dow =
+            EXCLUDED.sim_dow,
+
+          aircraft_registration =
+            EXCLUDED.aircraft_registration,
+
+          flight_number =
+            EXCLUDED.flight_number,
+
+          origin =
+            EXCLUDED.origin,
+
+          destination =
+            EXCLUDED.destination,
+
+          ops_status =
+            EXCLUDED.ops_status,
+
+          delay_minutes =
+            EXCLUDED.delay_minutes,
+
+          delay_source =
+            EXCLUDED.delay_source,
+
+          cancel_reason =
+            EXCLUDED.cancel_reason,
+
+          risk_source =
+            EXCLUDED.risk_source,
+
+          risk_payload =
+            EXCLUDED.risk_payload,
+
+          updated_at = NOW()
+        `,
+        [
+          normalizedAirlineId,
+          occurrence.schedule_item_id,
+
+          simYear,
+          simMonth,
+          simDay,
+          simDow,
+
+          occurrence.aircraft_registration,
+          occurrence.flight_number,
+          occurrence.origin,
+          occurrence.destination,
+
+          skyTrackStatus,
+          decision.delayMinutes,
+
+          decision.outcome === "DELAYED"
+            ? "HR"
+            : null,
+
+          decision.cancelReason,
+
+          JSON.stringify(payload)
+        ]
+      );
+
+      applied.push({
+        occurrence_id:
+          Number(occurrence.id),
+
+        schedule_item_id:
+          Number(
+            occurrence.schedule_item_id
+          ),
+
+        flight_number:
+          occurrence.flight_number,
+
+        origin:
+          occurrence.origin,
+
+        destination:
+          occurrence.destination,
+
+        outcome:
+          decision.outcome,
+
+        level:
+          decision.effectiveLevel,
+
+        cause:
+          decision.cause,
+
+        delay_minutes:
+          decision.delayMinutes,
+
+        pax_reduction_pct:
+          decision.paxReductionPct,
+
+        route_image_penalty:
+          decision.routeImagePenalty
+      });
+    }
+
+    await client.query("COMMIT");
+
+    return {
+      ok: true,
+
+      mode:
+        "FLIGHT_OCCURRENCE_PERSISTED",
+
+      airline_id:
+        normalizedAirlineId,
+
+      sim_year:
+        simYear,
+
+      sim_month:
+        simMonth,
+
+      sim_day:
+        simDay,
+
+      sim_dow:
+        simDow,
+
+      applied_count:
+        applied.length,
+
+      applied
+    };
+
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+
+  } finally {
+    client.release();
+  }
 }
 
 /* ============================================================
