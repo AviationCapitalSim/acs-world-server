@@ -75,6 +75,10 @@ function ACS_buildDiagnostic({
   const indexBytes =
     ACS_toNumber(row.index_bytes);
 
+  const rowThresholdReached =
+    eligibleRows >=
+    policy.eligibleRowThreshold;
+
   const tableThresholdReached =
     totalBytes >=
     policy.tableByteThreshold;
