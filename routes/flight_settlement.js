@@ -142,44 +142,136 @@ export async function ACS_runFlightSettlementRuntime({
           due.id
         ) allocation ON true
       ),
-      base_amounts AS MATERIALIZED (
+            base_amounts AS MATERIALIZED (
         SELECT
           economics.*,
-          COALESCE(allocated_load_factor, 0)::numeric AS load_factor,
+
+          LEAST(
+            1::numeric,
+            GREATEST(
+              0::numeric,
+              COALESCE(
+                economics.hr_pax_reduction_pct,
+                0
+              )::numeric
+            )
+          ) AS hr_reduction_fraction,
+
           GREATEST(
             0.25,
             COALESCE(block_time_min, 60)::numeric / 60
           ) AS block_hours
+
         FROM economics
       ),
-      amounts AS MATERIALIZED (
+
+      adjusted_amounts AS MATERIALIZED (
         SELECT
           base_amounts.*,
-          COALESCE(allocated_passengers, 0)::integer AS passengers,
+
+          CASE
+            WHEN hr_operational_outcome = 'CANCELLED'
+              THEN 0
+            ELSE FLOOR(
+              COALESCE(captured_y, 0)::numeric
+              * (1::numeric - hr_reduction_fraction)
+            )::integer
+          END AS adjusted_captured_y,
+
+          CASE
+            WHEN hr_operational_outcome = 'CANCELLED'
+              THEN 0
+            ELSE FLOOR(
+              COALESCE(captured_c, 0)::numeric
+              * (1::numeric - hr_reduction_fraction)
+            )::integer
+          END AS adjusted_captured_c,
+
+          CASE
+            WHEN hr_operational_outcome = 'CANCELLED'
+              THEN 0
+            ELSE FLOOR(
+              COALESCE(captured_f, 0)::numeric
+              * (1::numeric - hr_reduction_fraction)
+            )::integer
+          END AS adjusted_captured_f
+
+        FROM base_amounts
+      ),
+
+      amounts AS MATERIALIZED (
+        SELECT
+          adjusted_amounts.*,
+
+          (
+            adjusted_captured_y
+            + adjusted_captured_c
+            + adjusted_captured_f
+          )::integer AS passengers,
+
+          GREATEST(
+            COALESCE(allocated_passengers, 0)::integer
+            - (
+                adjusted_captured_y
+                + adjusted_captured_c
+                + adjusted_captured_f
+              ),
+            0
+          )::integer AS hr_pax_lost_amount,
+
+          CASE
+            WHEN COALESCE(offered_seats, 0) > 0
+              THEN (
+                adjusted_captured_y
+                + adjusted_captured_c
+                + adjusted_captured_f
+              )::numeric
+              / offered_seats::numeric
+            ELSE 0::numeric
+          END AS load_factor,
+
           ROUND(
-            COALESCE(allocated_passengers, 0)
+            (
+              adjusted_captured_y
+              + adjusted_captured_c
+              + adjusted_captured_f
+            )
             * COALESCE(distance_nm, 0)
-            * COALESCE(passenger_yield_usd_per_pax_mile, 0)
+            * COALESCE(
+                passenger_yield_usd_per_pax_mile,
+                0
+              )
             * COALESCE(demand_multiplier, 1)
           )::bigint AS revenue_amount,
-         ROUND(
-         (
-          fuel_burn_kgph
-          * block_hours
-         / density_kg_per_us_gallon
-         ) * price_usd_per_us_gallon
-         )::bigint AS fuel_amount,
-          ROUND(COALESCE(handling_base_usd, 0))::bigint AS handling_amount,
-          ROUND(COALESCE(landing_fee_base_usd, 0))::bigint AS landing_amount,
+
+          ROUND(
+            (
+              fuel_burn_kgph
+              * block_hours
+              / density_kg_per_us_gallon
+            )
+            * price_usd_per_us_gallon
+          )::bigint AS fuel_amount,
+
+          ROUND(
+            COALESCE(handling_base_usd, 0)
+          )::bigint AS handling_amount,
+
+          ROUND(
+            COALESCE(landing_fee_base_usd, 0)
+          )::bigint AS landing_amount,
+
           ROUND(
             COALESCE(distance_nm, 0)
             * COALESCE(navigation_usd_per_nm, 0)
           )::bigint AS navigation_amount,
+
           ROUND(
             COALESCE(distance_nm, 0)
             * COALESCE(overflight_usd_per_nm, 0)
           )::bigint AS overflight_amount
-        FROM base_amounts
+
+        FROM adjusted_amounts
       ),
       inserted_logs AS MATERIALIZED (
         INSERT INTO public.finance_log (
@@ -306,10 +398,19 @@ export async function ACS_runFlightSettlementRuntime({
       updated_occurrences AS (
         UPDATE public.flight_occurrences occurrence
         SET
-          settled_at = clock.sim_time,
-          settled_passengers = amounts.passengers,
-          settled_load_factor = amounts.load_factor,
-          settled_revenue = amounts.revenue_amount,
+         settled_at = clock.sim_time,
+
+          settled_passengers =
+            amounts.passengers,
+
+          settled_load_factor =
+            amounts.load_factor,
+
+          hr_pax_lost =
+            amounts.hr_pax_lost_amount,
+
+          settled_revenue =
+            amounts.revenue_amount,
           settled_expenses = (
             amounts.fuel_amount
             + amounts.handling_amount
