@@ -450,6 +450,14 @@ export async function ACS_dispatchFlightOccurrences({
           occurrence.airline_id,
           occurrence.scheduled_departure_at,
           occurrence.scheduled_arrival_at,
+
+          occurrence.hr_impact_level,
+          occurrence.hr_impact_cause,
+          occurrence.hr_operational_outcome,
+          occurrence.hr_delay_minutes,
+          occurrence.hr_release_at,
+          occurrence.hr_cancel_reason,
+
           clock.sim_time,
 
           maintenance_status.a_check_status,
@@ -558,9 +566,34 @@ export async function ACS_dispatchFlightOccurrences({
         ) AS blocking_event ON TRUE
 
         WHERE occurrence.operational_status = 'PLANNED'
-          AND occurrence.dispatch_status = 'PENDING'
-          AND occurrence.scheduled_departure_at <=
-              clock.sim_time
+
+  AND occurrence.dispatch_status = 'PENDING'
+
+  AND occurrence.hr_impact_resolved_at
+      IS NOT NULL
+
+  AND (
+    (
+      occurrence.hr_operational_outcome =
+        'DELAYED'
+
+      AND occurrence.hr_release_at <=
+          clock.sim_time
+    )
+
+    OR
+
+    (
+      occurrence.hr_operational_outcome
+        IN (
+          'ON_TIME',
+          'CANCELLED'
+        )
+
+      AND occurrence.scheduled_departure_at <=
+          clock.sim_time
+    )
+  )
 
         ORDER BY
           occurrence.scheduled_departure_at,
@@ -575,7 +608,12 @@ export async function ACS_dispatchFlightOccurrences({
         SELECT
           due.*,
 
+       (
+        due.hr_operational_outcome =
+             'CANCELLED'
+        ) AS is_hr_cancelled,
           (
+          
             due.maintenance_event_id IS NOT NULL
 
             OR UPPER(
@@ -606,6 +644,17 @@ export async function ACS_dispatchFlightOccurrences({
           ) AS is_blocked,
 
           CASE
+            
+            WHEN due.hr_operational_outcome =
+            'CANCELLED'
+            THEN COALESCE(
+            NULLIF(
+            due.hr_cancel_reason,
+             ''
+             ),
+           'HR_OPERATIONAL_CANCELLATION'
+            )
+  
             WHEN due.maintenance_event_id IS NOT NULL
             THEN due.maintenance_check_type
 
@@ -667,16 +716,24 @@ export async function ACS_dispatchFlightOccurrences({
 
       SET
         operational_status = CASE
-          WHEN classified.is_blocked
-            THEN 'HELD'
-          ELSE 'DISPATCHED'
-        END,
+  WHEN classified.is_hr_cancelled
+    THEN 'CANCELLED'
+
+  WHEN classified.is_blocked
+    THEN 'HELD'
+
+  ELSE 'DISPATCHED'
+END,
 
         dispatch_status = CASE
-          WHEN classified.is_blocked
-            THEN 'NOT_DISPATCHED'
-          ELSE 'RELEASED'
-        END,
+  WHEN classified.is_hr_cancelled
+    THEN 'NOT_DISPATCHED'
+
+  WHEN classified.is_blocked
+    THEN 'NOT_DISPATCHED'
+
+  ELSE 'RELEASED'
+END,
 
         dispatch_reason =
           classified.final_dispatch_reason,
@@ -732,29 +789,101 @@ export async function ACS_dispatchFlightOccurrences({
           ELSE NULL
         END,
 
-        blocking_maintenance_start_at = CASE
-          WHEN classified.is_blocked
-            THEN classified.maintenance_start_at
-          ELSE NULL
-        END,
+        blocking_maintenance_event_id = CASE
+  WHEN classified.is_blocked
+   AND NOT classified.is_hr_cancelled
+    THEN classified.maintenance_event_id
 
-        blocking_maintenance_end_at = CASE
-          WHEN classified.is_blocked
-            THEN classified.maintenance_end_at
-          ELSE NULL
-        END,
+  ELSE NULL
+END,
 
-        held_at = CASE
-          WHEN classified.is_blocked
-            THEN classified.sim_time
-          ELSE NULL
-        END,
+blocking_maintenance_event_uid = CASE
+  WHEN classified.is_blocked
+   AND NOT classified.is_hr_cancelled
+    THEN classified.maintenance_event_uid
+
+  ELSE NULL
+END,
+
+blocking_maintenance_check_type = CASE
+  WHEN classified.is_blocked
+   AND NOT classified.is_hr_cancelled
+    THEN COALESCE(
+      classified.maintenance_check_type,
+
+      CASE
+        WHEN UPPER(
+          COALESCE(
+            classified.d_check_status,
+            ''
+          )
+        ) = 'OVERDUE'
+          THEN 'D_CHECK'
+
+        WHEN UPPER(
+          COALESCE(
+            classified.c_check_status,
+            ''
+          )
+        ) = 'OVERDUE'
+          THEN 'C_CHECK'
+
+        WHEN UPPER(
+          COALESCE(
+            classified.b_check_status,
+            ''
+          )
+        ) = 'OVERDUE'
+          THEN 'B_CHECK'
+
+        WHEN UPPER(
+          COALESCE(
+            classified.a_check_status,
+            ''
+          )
+        ) = 'OVERDUE'
+          THEN 'A_CHECK'
+
+        ELSE NULL
+      END
+    )
+
+  ELSE NULL
+END,
+
+blocking_maintenance_start_at = CASE
+  WHEN classified.is_blocked
+   AND NOT classified.is_hr_cancelled
+    THEN classified.maintenance_start_at
+
+  ELSE NULL
+END,
+
+blocking_maintenance_end_at = CASE
+  WHEN classified.is_blocked
+   AND NOT classified.is_hr_cancelled
+    THEN classified.maintenance_end_at
+
+  ELSE NULL
+END,
+
+held_at = CASE
+  WHEN classified.is_blocked
+   AND NOT classified.is_hr_cancelled
+    THEN classified.sim_time
+
+  ELSE NULL
+END,
 
         dispatched_at = CASE
-          WHEN classified.is_blocked
-            THEN NULL
-          ELSE classified.sim_time
-        END,
+  WHEN classified.is_hr_cancelled
+    THEN NULL
+
+  WHEN classified.is_blocked
+    THEN NULL
+
+  ELSE classified.sim_time
+END,
 
         updated_at = CURRENT_TIMESTAMP
 
