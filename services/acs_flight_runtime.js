@@ -21,123 +21,6 @@
 
 import { pool } from "../db/pool.js";
 
-import {
-  applyHROpsImpactForAirline
-} from "../routes/hr.js";
-
-/* ============================================================
-   ACS HR PRE-DISPATCH RESOLVER
-   ------------------------------------------------------------
-   Fail-open protection:
-
-   - Attempts to resolve pending HR decisions.
-   - Never stops the global Flight Runtime.
-   - A failure for one airline does not affect another airline.
-   - The dispatcher remains the operational authority.
-   ============================================================ */
-
-async function ACS_ensureHRDecisionsForDueFlights() {
-  try {
-    const airlinesResult = await pool.query(
-      `
-      WITH clock AS MATERIALIZED (
-        SELECT
-          acs_get_current_sim_time()
-            AS sim_time
-      )
-
-      SELECT DISTINCT
-        occurrence.airline_id
-
-      FROM public.flight_occurrences occurrence
-
-      CROSS JOIN clock
-
-      WHERE occurrence.operational_status =
-            'PLANNED'
-
-        AND occurrence.dispatch_status =
-            'PENDING'
-
-        AND occurrence.hr_impact_resolved_at
-            IS NULL
-
-        AND occurrence.scheduled_departure_at <=
-            clock.sim_time
-
-      ORDER BY
-        occurrence.airline_id
-      `
-    );
-
-    let resolvedAirlines = 0;
-    let resolvedOccurrences = 0;
-    const failedAirlines = [];
-
-    for (const row of airlinesResult.rows) {
-      const airlineId =
-        Number(row.airline_id);
-
-      if (
-        !Number.isInteger(airlineId) ||
-        airlineId <= 0
-      ) {
-        continue;
-      }
-
-      try {
-        const result =
-          await applyHROpsImpactForAirline(
-            airlineId
-          );
-
-        resolvedAirlines += 1;
-
-        resolvedOccurrences += Number(
-          result?.applied_count || 0
-        );
-      } catch (error) {
-        failedAirlines.push({
-          airlineId,
-          error:
-            error?.message ||
-            "HR_DECISION_RESOLUTION_FAILED"
-        });
-
-        console.error(
-          "ACS_HR_PRE_DISPATCH_AIRLINE_ERROR",
-          {
-            airlineId,
-            error
-          }
-        );
-      }
-    }
-
-    return {
-      ok: failedAirlines.length === 0,
-      resolvedAirlines,
-      resolvedOccurrences,
-      failedAirlines
-    };
-  } catch (error) {
-    console.error(
-      "ACS_HR_PRE_DISPATCH_GLOBAL_ERROR",
-      error
-    );
-
-    return {
-      ok: false,
-      resolvedAirlines: 0,
-      resolvedOccurrences: 0,
-      failedAirlines: [],
-      error:
-        error?.message ||
-        "HR_PRE_DISPATCH_GLOBAL_ERROR"
-    };
-  }
-}
-
 function ACS_normalizeHorizonDays(value) {
   const days = Number(value);
 
@@ -464,9 +347,6 @@ async function ACS_materializeFlightOccurrences(
 export async function ACS_dispatchFlightOccurrences({
   batchSize = 500
 } = {}) {
-  const hrResolution =
-    await ACS_ensureHRDecisionsForDueFlights();
-
   const client = await pool.connect();
 
   const normalizedBatchSize = Math.min(
@@ -496,15 +376,6 @@ export async function ACS_dispatchFlightOccurrences({
           occurrence.airline_id,
           occurrence.scheduled_departure_at,
           occurrence.scheduled_arrival_at,
-
-          occurrence.hr_impact_resolved_at,
-          occurrence.hr_impact_level,
-          occurrence.hr_impact_cause,
-          occurrence.hr_operational_outcome,
-          occurrence.hr_delay_minutes,
-          occurrence.hr_release_at,
-          occurrence.hr_cancel_reason,
-
           clock.sim_time,
 
           maintenance_status.a_check_status,
@@ -612,26 +483,10 @@ export async function ACS_dispatchFlightOccurrences({
           LIMIT 1
         ) AS blocking_event ON TRUE
 
-      WHERE occurrence.operational_status = 'PLANNED'
+        WHERE occurrence.operational_status = 'PLANNED'
           AND occurrence.dispatch_status = 'PENDING'
-
           AND occurrence.scheduled_departure_at <=
               clock.sim_time
-
-          AND NOT (
-            occurrence.hr_impact_resolved_at
-              IS NOT NULL
-
-            AND COALESCE(
-              occurrence.hr_operational_outcome,
-              'ON_TIME'
-            ) = 'DELAYED'
-
-            AND COALESCE(
-              occurrence.hr_release_at,
-              occurrence.scheduled_departure_at
-            ) > clock.sim_time
-          )
 
         ORDER BY
           occurrence.scheduled_departure_at,
@@ -643,18 +498,8 @@ export async function ACS_dispatchFlightOccurrences({
       ),
 
       classified AS MATERIALIZED (
-       SELECT
+        SELECT
           due.*,
-
-          (
-            due.hr_impact_resolved_at
-              IS NOT NULL
-
-            AND COALESCE(
-              due.hr_operational_outcome,
-              'ON_TIME'
-            ) = 'CANCELLED'
-          ) AS is_hr_cancelled,
 
           (
             due.maintenance_event_id IS NOT NULL
@@ -686,24 +531,7 @@ export async function ACS_dispatchFlightOccurrences({
             )
           ) AS is_blocked,
 
-         CASE
-            WHEN (
-              due.hr_impact_resolved_at
-                IS NOT NULL
-
-              AND COALESCE(
-                due.hr_operational_outcome,
-                'ON_TIME'
-              ) = 'CANCELLED'
-            )
-              THEN COALESCE(
-                NULLIF(
-                  due.hr_cancel_reason,
-                  ''
-                ),
-                'HR_OPERATIONAL_CANCELLATION'
-              )
-
+          CASE
             WHEN due.maintenance_event_id IS NOT NULL
             THEN due.maintenance_check_type
 
@@ -763,24 +591,16 @@ export async function ACS_dispatchFlightOccurrences({
 
       UPDATE public.flight_occurrences occurrence
 
-       SET
+      SET
         operational_status = CASE
-          WHEN classified.is_hr_cancelled
-            THEN 'CANCELLED'
-
           WHEN classified.is_blocked
             THEN 'HELD'
-
           ELSE 'DISPATCHED'
         END,
 
         dispatch_status = CASE
-          WHEN classified.is_hr_cancelled
-            THEN 'NOT_DISPATCHED'
-
           WHEN classified.is_blocked
             THEN 'NOT_DISPATCHED'
-
           ELSE 'RELEASED'
         END,
 
@@ -789,26 +609,20 @@ export async function ACS_dispatchFlightOccurrences({
 
         blocking_maintenance_event_id = CASE
           WHEN classified.is_blocked
-           AND NOT classified.is_hr_cancelled
             THEN classified.maintenance_event_id
-
           ELSE NULL
         END,
 
         blocking_maintenance_event_uid = CASE
           WHEN classified.is_blocked
-           AND NOT classified.is_hr_cancelled
             THEN classified.maintenance_event_uid
-
           ELSE NULL
         END,
 
         blocking_maintenance_check_type = CASE
           WHEN classified.is_blocked
-           AND NOT classified.is_hr_cancelled
             THEN COALESCE(
               classified.maintenance_check_type,
-
               CASE
                 WHEN UPPER(
                   COALESCE(
@@ -817,7 +631,6 @@ export async function ACS_dispatchFlightOccurrences({
                   )
                 ) = 'OVERDUE'
                   THEN 'D_CHECK'
-
                 WHEN UPPER(
                   COALESCE(
                     classified.c_check_status,
@@ -825,7 +638,6 @@ export async function ACS_dispatchFlightOccurrences({
                   )
                 ) = 'OVERDUE'
                   THEN 'C_CHECK'
-
                 WHEN UPPER(
                   COALESCE(
                     classified.b_check_status,
@@ -833,7 +645,6 @@ export async function ACS_dispatchFlightOccurrences({
                   )
                 ) = 'OVERDUE'
                   THEN 'B_CHECK'
-
                 WHEN UPPER(
                   COALESCE(
                     classified.a_check_status,
@@ -841,45 +652,33 @@ export async function ACS_dispatchFlightOccurrences({
                   )
                 ) = 'OVERDUE'
                   THEN 'A_CHECK'
-
                 ELSE NULL
               END
             )
-
           ELSE NULL
         END,
 
         blocking_maintenance_start_at = CASE
           WHEN classified.is_blocked
-           AND NOT classified.is_hr_cancelled
             THEN classified.maintenance_start_at
-
           ELSE NULL
         END,
 
         blocking_maintenance_end_at = CASE
           WHEN classified.is_blocked
-           AND NOT classified.is_hr_cancelled
             THEN classified.maintenance_end_at
-
           ELSE NULL
         END,
 
         held_at = CASE
           WHEN classified.is_blocked
-           AND NOT classified.is_hr_cancelled
             THEN classified.sim_time
-
           ELSE NULL
         END,
 
         dispatched_at = CASE
-          WHEN classified.is_hr_cancelled
-            THEN NULL
-
           WHEN classified.is_blocked
             THEN NULL
-
           ELSE classified.sim_time
         END,
 
@@ -908,10 +707,8 @@ export async function ACS_dispatchFlightOccurrences({
     return {
       processedCount: result.rowCount,
       heldCount,
-      releasedCount,
-      hrResolution
+      releasedCount
     };
-     
   } catch (error) {
     if (transactionStarted) {
       try {
