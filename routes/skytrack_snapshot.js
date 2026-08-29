@@ -159,6 +159,16 @@ router.get("/snapshot", requireAuth, async (req, res) => {
         occurrence.operational_status,
         occurrence.dispatch_status,
         occurrence.dispatch_reason,
+
+        occurrence.hr_impact_level,
+        occurrence.hr_impact_cause,
+        occurrence.hr_operational_outcome,
+        occurrence.hr_delay_minutes,
+        occurrence.hr_release_at,
+        occurrence.hr_cancel_reason,
+        occurrence.hr_pax_reduction_pct,
+        occurrence.hr_route_image_penalty,
+
         occurrence.flight_context,
 
         (
@@ -438,7 +448,8 @@ router.get("/snapshot", requireAuth, async (req, res) => {
       ]
     );
 
-    const flights = result.rows.map(row => {
+  const flights = result.rows.map(row => {
+     
   const rawAircraftId =
     String(row.aircraft_id);
 
@@ -539,10 +550,36 @@ router.get("/snapshot", requireAuth, async (req, res) => {
 
         scheduleStatus:
           row.operational_status || null,
+     
         dispatchStatus:
           row.dispatch_status || null,
+       
         dispatchReason:
           row.dispatch_reason || null,
+
+        hrImpactLevel:
+          row.hr_impact_level || null,
+
+        hrImpactCause:
+          row.hr_impact_cause || null,
+
+        hrOperationalOutcome:
+          row.hr_operational_outcome || null,
+
+        hrDelayMinutes:
+          Number(row.hr_delay_minutes || 0),
+
+        hrReleaseAt:
+          row.hr_release_at || null,
+
+        hrCancelReason:
+          row.hr_cancel_reason || null,
+
+        hrPaxReductionPct:
+          Number(row.hr_pax_reduction_pct || 0),
+
+        hrRouteImagePenalty:
+          Number(row.hr_route_image_penalty || 0),
 
         flightContext:
           row.flight_context || "NO_FLIGHT",
