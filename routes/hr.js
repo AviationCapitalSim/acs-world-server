@@ -719,142 +719,371 @@ async function applyHRAutomation(airlineId) {
 
 async function applyHRMoraleMonthlyResolver(airlineId) {
 
-  const simResult = await pool.query(`
-    SELECT
-      EXTRACT(YEAR FROM acs_get_current_sim_time())::int AS sim_year,
-      EXTRACT(MONTH FROM acs_get_current_sim_time())::int AS sim_month
-  `);
+  const normalizedAirlineId = Number(airlineId);
 
-  const simYear = Number(simResult.rows[0]?.sim_year);
-  const simMonth = Number(simResult.rows[0]?.sim_month);
-
-  if (!Number.isInteger(simYear) || !Number.isInteger(simMonth)) {
-    return { ok: false, skipped: true, reason: "INVALID_SIM_TIME" };
+  if (
+    !Number.isInteger(normalizedAirlineId) ||
+    normalizedAirlineId <= 0
+  ) {
+    return {
+      ok: false,
+      skipped: true,
+      reason: "INVALID_AIRLINE_ID"
+    };
   }
 
-  const salaryCycle = getHRSalaryCycle(simYear, simMonth);
+  const client = await pool.connect();
+  let transactionStarted = false;
 
-  const departmentsResult = await pool.query(
-    `
-    SELECT
-     department.dept_id,
-     department.dept_name,
-     department.staff,
-     department.required,
-     department.morale,
-     department.salary,
-     department.morale_last_sim_year,
-     department.morale_last_sim_month,
-      CASE
-        WHEN department.dept_id LIKE 'pilots\_%' ESCAPE '\'
-          THEN standard.standard_two_crew_cost
-        ELSE standard.monthly_salary
-      END AS standard_salary
-    FROM public.hr_departments department
-    JOIN public.hr_salary_standards standard
-      ON standard.dept_id = department.dept_id
-     AND standard.cycle_year = $2
-     AND standard.cycle_half = $3
-    WHERE department.airline_id = $1
-    FOR UPDATE
-    `,
-    [airlineId, salaryCycle.year, salaryCycle.half]
-  );
+  try {
 
-  const updates = [];
+    await client.query("BEGIN");
+    transactionStarted = true;
 
-  for (const dep of departmentsResult.rows) {
+    /* ========================================================
+       ONE AIRLINE AT A TIME
 
-    const staff = Number(dep.staff || 0);
-    const required = Number(dep.required || 0);
-    const morale = Number(dep.morale || 100);
-    const salary = Number(dep.salary || 0);
-    const standardSalary = Number(dep.standard_salary || 0);
+       Prevents the scheduler, page load and endpoints from
+       processing the same airline simultaneously.
+       The lock is released automatically on COMMIT or ROLLBACK.
+       ======================================================== */
+
+    await client.query(
+      `
+      SELECT pg_advisory_xact_lock(
+        hashtext(
+          'ACS_HR_MORALE_MONTHLY_RESOLVER'
+        ),
+        $1::INTEGER
+      )
+      `,
+      [normalizedAirlineId]
+    );
+
+    /* ========================================================
+       CURRENT SIMULATED MONTH
+
+       Read after acquiring the airline lock so a waiting
+       execution always uses the latest simulated month.
+       ======================================================== */
+
+    const simResult = await client.query(`
+      SELECT
+        EXTRACT(
+          YEAR FROM acs_get_current_sim_time()
+        )::INTEGER AS sim_year,
+
+        EXTRACT(
+          MONTH FROM acs_get_current_sim_time()
+        )::INTEGER AS sim_month
+    `);
+
+    const simYear = Number(
+      simResult.rows[0]?.sim_year
+    );
+
+    const simMonth = Number(
+      simResult.rows[0]?.sim_month
+    );
 
     if (
-      Number(dep.morale_last_sim_year) === simYear &&
-      Number(dep.morale_last_sim_month) === simMonth
+      !Number.isInteger(simYear) ||
+      !Number.isInteger(simMonth) ||
+      simMonth < 1 ||
+      simMonth > 12
     ) {
-      continue;
+      await client.query("ROLLBACK");
+      transactionStarted = false;
+
+      return {
+        ok: false,
+        skipped: true,
+        reason: "INVALID_SIM_TIME"
+      };
     }
 
-    const deficit = Math.max(0, required - staff);
-
-    let staffingDelta = 0;
-    let salaryDelta = 0;
-
-    if (required > 0 && deficit > 0) {
-      const ratio = deficit / required;
-
-      if (ratio >= 1) staffingDelta = -8;
-      else if (ratio >= 0.76) staffingDelta = -6;
-      else if (ratio >= 0.51) staffingDelta = -4;
-      else if (ratio >= 0.26) staffingDelta = -2;
-      else staffingDelta = -1;
-    }
-
-    const salaryShortfall = Math.max(0, standardSalary - salary);
-    const salaryShortfallRatio = standardSalary > 0
-      ? salaryShortfall / standardSalary
-      : 0;
-
-    if (salaryShortfallRatio > 0) {
-      if (salaryShortfallRatio >= 0.5) salaryDelta = -5;
-      else if (salaryShortfallRatio >= 0.3) salaryDelta = -4;
-      else if (salaryShortfallRatio >= 0.15) salaryDelta = -3;
-      else if (salaryShortfallRatio >= 0.05) salaryDelta = -2;
-      else salaryDelta = -1;
-    }
-
-    let moraleDelta = Math.max(-10, staffingDelta + salaryDelta);
-
-    if (deficit === 0 && salaryShortfall === 0 && morale < 100) {
-      moraleDelta = 1;
-    }
-
-    const newMorale = Math.max(
-      40,
-      Math.min(100, morale + moraleDelta)
+    const salaryCycle = getHRSalaryCycle(
+      simYear,
+      simMonth
     );
 
-    await pool.query(
+    /* ========================================================
+       LOCK THE COMPLETE HR DEPARTMENT SET
+
+       The 18 departments remain locked until the transaction
+       finishes. Salary standards remain read-only.
+       ======================================================== */
+
+    const departmentsResult = await client.query(
       `
-      UPDATE public.hr_departments
-      SET
-        morale = $3,
-        morale_last_sim_year = $4,
-        morale_last_sim_month = $5,
-        updated_at = NOW()
-      WHERE airline_id = $1
-        AND dept_id = $2
+      SELECT
+        department.dept_id,
+        department.dept_name,
+        department.staff,
+        department.required,
+        department.morale,
+        department.salary,
+        department.morale_last_sim_year,
+        department.morale_last_sim_month,
+
+        CASE
+          WHEN LEFT(
+            department.dept_id,
+            7
+          ) = 'pilots_'
+            THEN standard.standard_two_crew_cost
+          ELSE standard.monthly_salary
+        END AS standard_salary
+
+      FROM public.hr_departments AS department
+
+      JOIN public.hr_salary_standards AS standard
+        ON standard.dept_id = department.dept_id
+       AND standard.cycle_year = $2
+       AND standard.cycle_half = $3
+
+      WHERE department.airline_id = $1
+
+      ORDER BY department.dept_id
+
+      FOR UPDATE OF department
       `,
-      [airlineId, dep.dept_id, newMorale, simYear, simMonth]
+      [
+        normalizedAirlineId,
+        salaryCycle.year,
+        salaryCycle.half
+      ]
     );
 
-    updates.push({
-      dept_id: dep.dept_id,
-      dept_name: dep.dept_name,
-      staff,
-      required,
-      deficit,
-      salary,
-      standard_salary: standardSalary,
-      salary_shortfall: salaryShortfall,
-      staffing_morale_delta: staffingDelta,
-      salary_morale_delta: salaryDelta,
-      old_morale: morale,
-      morale_delta: moraleDelta,
-      new_morale: newMorale
-    });
-  }
+    if (
+      departmentsResult.rowCount !==
+      HR_DEPARTMENT_IDS.size
+    ) {
+      throw new Error(
+        `HR_MORALE_DEPARTMENT_SET_INCOMPLETE:` +
+        `${normalizedAirlineId}:` +
+        `${departmentsResult.rowCount}/` +
+        `${HR_DEPARTMENT_IDS.size}`
+      );
+    }
 
-  return {
-    ok: true,
-    sim_year: simYear,
-    sim_month: simMonth,
-    updated_count: updates.length,
-    updates
-  };
+    const updates = [];
+
+    for (const dep of departmentsResult.rows) {
+
+      const staff = Number(dep.staff || 0);
+      const required = Number(dep.required || 0);
+      const morale = Number(dep.morale || 100);
+      const salary = Number(dep.salary || 0);
+
+      const standardSalary = Number(
+        dep.standard_salary || 0
+      );
+
+      if (
+        !Number.isFinite(standardSalary) ||
+        standardSalary <= 0
+      ) {
+        throw new Error(
+          `INVALID_HR_SALARY_STANDARD:` +
+          `${normalizedAirlineId}:` +
+          `${dep.dept_id}:` +
+          `${salaryCycle.year}-H${salaryCycle.half}`
+        );
+      }
+
+      /* ======================================================
+         ALREADY PROCESSED THIS SIMULATED MONTH
+         ====================================================== */
+
+      if (
+        Number(dep.morale_last_sim_year) ===
+          simYear &&
+        Number(dep.morale_last_sim_month) ===
+          simMonth
+      ) {
+        continue;
+      }
+
+      const deficit = Math.max(
+        0,
+        required - staff
+      );
+
+      let staffingDelta = 0;
+      let salaryDelta = 0;
+
+      /* ======================================================
+         STAFFING PENALTY
+         ====================================================== */
+
+      if (
+        required > 0 &&
+        deficit > 0
+      ) {
+        const ratio = deficit / required;
+
+        if (ratio >= 1) {
+          staffingDelta = -8;
+
+        } else if (ratio >= 0.76) {
+          staffingDelta = -6;
+
+        } else if (ratio >= 0.51) {
+          staffingDelta = -4;
+
+        } else if (ratio >= 0.26) {
+          staffingDelta = -2;
+
+        } else {
+          staffingDelta = -1;
+        }
+      }
+
+      /* ======================================================
+         SALARY PENALTY
+         ====================================================== */
+
+      const salaryShortfall = Math.max(
+        0,
+        standardSalary - salary
+      );
+
+      const salaryShortfallRatio =
+        standardSalary > 0
+          ? salaryShortfall / standardSalary
+          : 0;
+
+      if (salaryShortfallRatio > 0) {
+
+        if (salaryShortfallRatio >= 0.5) {
+          salaryDelta = -5;
+
+        } else if (salaryShortfallRatio >= 0.3) {
+          salaryDelta = -4;
+
+        } else if (salaryShortfallRatio >= 0.15) {
+          salaryDelta = -3;
+
+        } else if (salaryShortfallRatio >= 0.05) {
+          salaryDelta = -2;
+
+        } else {
+          salaryDelta = -1;
+        }
+      }
+
+      let moraleDelta = Math.max(
+        -10,
+        staffingDelta + salaryDelta
+      );
+
+      /* ======================================================
+         MONTHLY RECOVERY
+
+         Only when salary and staffing are both correct.
+         ====================================================== */
+
+      if (
+        deficit === 0 &&
+        salaryShortfall === 0 &&
+        morale < 100
+      ) {
+        moraleDelta = 1;
+      }
+
+      const newMorale = Math.max(
+        40,
+        Math.min(
+          100,
+          morale + moraleDelta
+        )
+      );
+
+      const updateResult = await client.query(
+        `
+        UPDATE public.hr_departments
+
+        SET
+          morale = $3,
+          morale_last_sim_year = $4,
+          morale_last_sim_month = $5,
+          updated_at = NOW()
+
+        WHERE airline_id = $1
+          AND dept_id = $2
+        `,
+        [
+          normalizedAirlineId,
+          dep.dept_id,
+          newMorale,
+          simYear,
+          simMonth
+        ]
+      );
+
+      if (updateResult.rowCount !== 1) {
+        throw new Error(
+          `HR_MORALE_UPDATE_FAILED:` +
+          `${normalizedAirlineId}:` +
+          `${dep.dept_id}`
+        );
+      }
+
+      updates.push({
+        dept_id: dep.dept_id,
+        dept_name: dep.dept_name,
+        staff,
+        required,
+        deficit,
+        salary,
+        standard_salary: standardSalary,
+        salary_shortfall: salaryShortfall,
+        staffing_morale_delta:
+          staffingDelta,
+        salary_morale_delta:
+          salaryDelta,
+        old_morale: morale,
+        morale_delta: moraleDelta,
+        new_morale: newMorale
+      });
+    }
+
+    await client.query("COMMIT");
+    transactionStarted = false;
+
+    return {
+      ok: true,
+      airline_id: normalizedAirlineId,
+      sim_year: simYear,
+      sim_month: simMonth,
+      department_count:
+        departmentsResult.rowCount,
+      updated_count: updates.length,
+      skipped_count:
+        departmentsResult.rowCount -
+        updates.length,
+      updates
+    };
+
+  } catch (error) {
+
+    if (transactionStarted) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        console.error(
+          "ACS HR MORALE ROLLBACK ERROR:",
+          rollbackError
+        );
+      }
+    }
+
+    throw error;
+
+  } finally {
+    client.release();
+  }
 }
 
 /* ============================================================
