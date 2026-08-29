@@ -1139,7 +1139,7 @@ const HR_MORALE_OPERATIONAL_LEVELS = {
   },
 
   WARNING: {
-    delayRiskPct: 10,
+    delayRiskPct: 100,
     cancelRiskPct: 0,
     paxLossMinPct: 2,
     paxLossMaxPct: 5,
@@ -1327,6 +1327,7 @@ function ACS_HR_classifyDepartmentRisk(dept) {
 }
 
 export async function resolveHROperationalRisk(airlineId) {
+   
   await ensureHRInitialized(airlineId);
 
   if (typeof recalculateHRRequired === "function") {
@@ -1640,6 +1641,7 @@ function ACS_HR_buildFlightPersonnelRisk(flight, riskByDept, globalRisk) {
 }
 
 export async function resolveHRSkyTrackRiskFeed(airlineId) {
+   
   const globalRisk = await resolveHROperationalRisk(airlineId);
 
   const riskByDept = new Map(
@@ -1711,7 +1713,7 @@ const HR_LEVEL_RANK = {
 
 const HR_DELAY_MINUTES_BY_LEVEL = {
   INFO: [0, 0],
-  WARNING: [15, 45],
+  WARNING: [15, 15],
   CRITICAL: [45, 120],
   SEVERE: [90, 240]
 };
