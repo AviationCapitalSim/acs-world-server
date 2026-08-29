@@ -2864,12 +2864,98 @@ router.put("/routes/plans/:route_plan_id", requireAuth, async (req, res) => {
       aircraft.aircraft_name || body.aircraft || body.aircraftName
     );
 
-    const registration = ACS_normalizeText(
+        const registration = ACS_normalizeText(
       aircraft.registration || body.registration
     );
 
     /* ========================================================
-       3) UPDATE ROUTE PLAN — SAME ROUTE, SAME FLIGHT NUMBERS
+       3) LOCK OLD OPERATIONAL VERSION
+       --------------------------------------------------------
+       The route and selected aircraft are already locked.
+       Lock the old flight items and all their occurrences
+       before changing or deleting anything.
+       ======================================================== */
+
+    const officialTime = await ACS_getOfficialSimTime(client);
+
+    const originAirport = await ACS_getAirportHistoricalAuthority(
+      client,
+      oldRoute.origin,
+      officialTime.sim_year
+    );
+
+    const destinationAirport = await ACS_getAirportHistoricalAuthority(
+      client,
+      oldRoute.destination,
+      officialTime.sim_year
+    );
+
+    const oldScheduleItemsResult = await client.query(
+      `
+      SELECT id
+      FROM public.schedule_items
+      WHERE route_plan_id = $1
+        AND airline_id = $2
+        AND item_type = 'flight'
+      ORDER BY id
+      FOR UPDATE
+      `,
+      [routePlanId, airlineId]
+    );
+
+    const oldScheduleItemIds = oldScheduleItemsResult.rows.map(
+      row => Number(row.id)
+    );
+
+    let oldOccurrenceIds = [];
+
+    if (oldScheduleItemIds.length) {
+      const oldOccurrencesResult = await client.query(
+        `
+        SELECT
+          id,
+          schedule_item_id,
+          flight_number,
+          aircraft_registration,
+          operational_status,
+          dispatch_status,
+          scheduled_departure_at,
+          scheduled_arrival_at
+        FROM public.flight_occurrences
+        WHERE airline_id = $1
+          AND schedule_item_id = ANY($2::BIGINT[])
+        ORDER BY id
+        FOR UPDATE
+        `,
+        [airlineId, oldScheduleItemIds]
+      );
+
+      const activeOccurrences = oldOccurrencesResult.rows.filter(
+        row => ["DISPATCHED", "EN_ROUTE"].includes(
+          ACS_normalizeText(
+            row.operational_status
+          ).toUpperCase()
+        )
+      );
+
+      if (activeOccurrences.length) {
+        await client.query("ROLLBACK");
+        transactionStarted = false;
+
+        return res.status(409).json({
+          ok: false,
+          error: "ROUTE_EDIT_BLOCKED_BY_ACTIVE_FLIGHT",
+          active_occurrences: activeOccurrences
+        });
+      }
+
+      oldOccurrenceIds = oldOccurrencesResult.rows.map(
+        row => Number(row.id)
+      );
+    }
+
+    /* ========================================================
+       4) UPDATE ROUTE PLAN — SAME ROUTE, SAME FLIGHT NUMBERS
        ======================================================== */
 
     const updatedRouteResult = await client.query(
@@ -2912,38 +2998,219 @@ router.put("/routes/plans/:route_plan_id", requireAuth, async (req, res) => {
     const routePlan = updatedRouteResult.rows[0];
 
     /* ========================================================
-       4) REMOVE OLD FLIGHT ITEMS FOR THIS ROUTE
+       5) REMOVE THE OLD OPERATIONAL VERSION ATOMICALLY
+       --------------------------------------------------------
+       Only IDs captured and locked before the route update
+       can be removed. Maintenance schedule items are excluded.
        ======================================================== */
 
-    await client.query(
+    const cleanupSummary = {
+      passenger_results: 0,
+      skytrack_impacts: 0,
+      flight_occurrences: 0,
+      slot_bookings: 0,
+      schedule_items: 0
+    };
+
+    if (oldOccurrenceIds.length) {
+      const passengerDeleteResult = await client.query(
+        `
+        DELETE FROM public.acs_passenger_flight_results
+        WHERE occurrence_id = ANY($1::BIGINT[])
+        `,
+        [oldOccurrenceIds]
+      );
+
+      cleanupSummary.passenger_results =
+        passengerDeleteResult.rowCount;
+    }
+
+    if (oldScheduleItemIds.length) {
+      const impactsDeleteResult = await client.query(
+        `
+        DELETE FROM public.skytrack_ops_impacts
+        WHERE airline_id = $1
+          AND schedule_item_id = ANY($2::BIGINT[])
+        `,
+        [airlineId, oldScheduleItemIds]
+      );
+
+      cleanupSummary.skytrack_impacts =
+        impactsDeleteResult.rowCount;
+    }
+
+    if (oldOccurrenceIds.length) {
+      const occurrencesDeleteResult = await client.query(
+        `
+        DELETE FROM public.flight_occurrences
+        WHERE airline_id = $1
+          AND id = ANY($2::BIGINT[])
+        `,
+        [airlineId, oldOccurrenceIds]
+      );
+
+      cleanupSummary.flight_occurrences =
+        occurrencesDeleteResult.rowCount;
+    }
+
+    const slotsDeleteResult = await client.query(
       `
-      UPDATE public.schedule_items
-      SET
-        status = 'cancelled',
-        updated_at = NOW()
+      DELETE FROM public.airport_slot_bookings
       WHERE route_plan_id = $1
         AND airline_id = $2
-        AND item_type = 'flight'
-        AND LOWER(COALESCE(status, 'planned')) <> 'cancelled'
       `,
       [routePlanId, airlineId]
     );
 
-    await client.query(
-      `
-      UPDATE public.airport_slot_bookings
-      SET
-        slot_status = 'CANCELLED',
-        updated_at = NOW()
-      WHERE route_plan_id = $1
-        AND airline_id = $2
-        AND slot_status = 'RESERVED'
-      `,
-      [routePlanId, airlineId]
+    cleanupSummary.slot_bookings =
+      slotsDeleteResult.rowCount;
+
+    if (oldScheduleItemIds.length) {
+      const scheduleDeleteResult = await client.query(
+        `
+        DELETE FROM public.schedule_items
+        WHERE route_plan_id = $1
+          AND airline_id = $2
+          AND item_type = 'flight'
+          AND id = ANY($3::BIGINT[])
+        `,
+        [
+          routePlanId,
+          airlineId,
+          oldScheduleItemIds
+        ]
+      );
+
+      cleanupSummary.schedule_items =
+        scheduleDeleteResult.rowCount;
+    }
+
+      /* ========================================================
+       6) VALIDATE AND CREATE THE NEW SLOT VERSION
+       ======================================================== */
+
+    const slotMovements = ACS_sortSlotMovementsForLocking(
+      ACS_buildSlotMovements({
+        origin: routePlan.origin,
+        destination: routePlan.destination,
+        selectedDays,
+        departure,
+        blockTimeMin:
+          Number(routePlan.block_time_min || 0),
+        turnaroundMin:
+          Number(routePlan.turnaround_min || 0),
+        flightNumberOut:
+          routePlan.flight_number_out,
+        flightNumberIn:
+          routePlan.flight_number_in
+      })
     );
+
+    if (!slotMovements.length) {
+      const error = new Error("NO_SLOT_MOVEMENTS_BUILT");
+      error.code = "NO_SLOT_MOVEMENTS_BUILT";
+      throw error;
+    }
+
+    for (const movement of slotMovements) {
+      await ACS_lockSlotKey(client, movement);
+
+      const used = await ACS_getReservedSlotCount(
+        client,
+        movement
+      );
+
+      const capacity =
+        movement.airport_icao === routePlan.origin
+          ? originAirport.slot_capacity
+          : destinationAirport.slot_capacity;
+
+      if (used >= capacity) {
+        await client.query("ROLLBACK");
+        transactionStarted = false;
+
+        return res.status(409).json({
+          ok: false,
+          error: "SLOT_UNAVAILABLE",
+          slot: {
+            airport_icao: movement.airport_icao,
+            weekday: movement.weekday,
+            time_local: movement.time_local,
+            movement_type: movement.movement_type,
+            used,
+            max: capacity,
+            free: Math.max(0, capacity - used)
+          }
+        });
+      }
+    }
+
+    const insertedSlots = [];
+
+    for (const movement of slotMovements) {
+      const slotResult = await client.query(
+        `
+        INSERT INTO public.airport_slot_bookings (
+          airline_id,
+          route_plan_id,
+          aircraft_id,
+          airport_icao,
+          movement_type,
+          weekday,
+          time_local,
+          origin,
+          destination,
+          flight_number,
+          registration,
+          model_key,
+          slot_status,
+          source,
+          reserved_sim_time,
+          created_at,
+          updated_at
+        )
+        VALUES (
+          $1,
+          $2,
+          $3,
+          $4,
+          $5,
+          $6,
+          $7,
+          $8,
+          $9,
+          $10,
+          $11,
+          $12,
+          'RESERVED',
+          'ACS_ROUTE_PLAN_SLOT_RESERVATION_V2_1',
+          acs_get_current_sim_time(),
+          NOW(),
+          NOW()
+        )
+        RETURNING *
+        `,
+        [
+          airlineId,
+          routePlan.id,
+          aircraftId,
+          movement.airport_icao,
+          movement.movement_type,
+          movement.weekday,
+          movement.time_local,
+          movement.origin,
+          movement.destination,
+          movement.flight_number,
+          routePlan.registration,
+          routePlan.model_key
+        ]
+      );
+
+      insertedSlots.push(slotResult.rows[0]);
+    }
 
     /* ========================================================
-       5) CREATE NEW FLIGHT ITEMS FOR SAME ROUTE
+       7) CREATE NEW FLIGHT ITEMS FOR THE SAME ROUTE
        ======================================================== */
 
     const insertedScheduleItems = [];
@@ -3047,7 +3314,9 @@ router.put("/routes/plans/:route_plan_id", requireAuth, async (req, res) => {
       endpoint: "ACS_ROUTE_PLAN_EDIT",
       version: "v1.0",
       route_plan: routePlan,
-      schedule_items: insertedScheduleItems
+      slot_bookings: insertedSlots,
+      schedule_items: insertedScheduleItems,
+      cleanup_summary: cleanupSummary
     });
 
   } catch (error) {
