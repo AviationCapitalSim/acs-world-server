@@ -52,7 +52,18 @@ export async function requireAuth(req, res, next) {
       .digest("hex");
 
     const result = await pool.query(`
-      SELECT user_id, airline_id, expires_at, active, ip_address, user_agent
+      SELECT
+        user_id,
+        airline_id,
+        expires_at,
+        active,
+        ip_address,
+        user_agent,
+        last_seen_at,
+        (
+          last_seen_at IS NULL OR
+          last_seen_at <= NOW() - INTERVAL '5 minutes'
+        ) AS heartbeat_due
       FROM sessions
       WHERE token_hash = $1
       LIMIT 1
@@ -65,51 +76,70 @@ export async function requireAuth(req, res, next) {
     const session = result.rows[0];
 
     /* ============================================================
-   DEVICE / IP VALIDATION (SAFE MODE — NO BLOCK)
-   ============================================================ */
+       DEVICE / IP VALIDATION (SAFE MODE — NO BLOCK)
+       ============================================================ */
 
-const currentIP =
-  req.headers["x-forwarded-for"]?.split(",")[0] ||
-  req.socket.remoteAddress ||
-  "";
+    const currentIP =
+      req.headers["x-forwarded-for"]?.split(",")[0] ||
+      req.socket.remoteAddress ||
+      "";
 
-const currentUA = req.headers["user-agent"] || "";
+    const currentUA = req.headers["user-agent"] || "";
 
-// ⚠️ Comparación simple (no estricta)
-if (session.ip_address && session.user_agent) {
+    if (session.ip_address && session.user_agent) {
 
-  const ipChanged = session.ip_address !== currentIP;
-  const uaChanged = session.user_agent !== currentUA;
+      const ipChanged = session.ip_address !== currentIP;
+      const uaChanged = session.user_agent !== currentUA;
 
-  if (ipChanged || uaChanged) {
+      if (ipChanged || uaChanged) {
 
-/* ============================================================
-   SECURITY LOG — SUSPICIOUS SESSION
-   ============================================================ */
+        await pool.query(`
+          INSERT INTO security_log
+          (user_id, action, ip_address, date)
+          VALUES ($1, $2, $3, NOW())
+        `, [
+          session.user_id,
+          "SUSPICIOUS_SESSION",
+          currentIP
+        ]);
+      }
+    }
 
-await pool.query(`
-  INSERT INTO security_log
-  (user_id, action, ip_address, date)
-  VALUES ($1, $2, $3, NOW())
-`, [
-  session.user_id,
-  "SUSPICIOUS_SESSION",
-  currentIP
-]);
-
-    // (FUTURO) aquí puedes registrar en DB o security_log
-  }
-}
-     
     if (!session.active) {
-      return res.status(401).json({ ok: false, error: "SESSION_INACTIVE" });
+      return res.status(401).json({
+        ok: false,
+        error: "SESSION_INACTIVE"
+      });
     }
 
     if (new Date(session.expires_at) < new Date()) {
-      return res.status(401).json({ ok: false, error: "SESSION_EXPIRED" });
+      return res.status(401).json({
+        ok: false,
+        error: "SESSION_EXPIRED"
+      });
     }
 
-    // 🔐 attach to request
+    if (session.heartbeat_due) {
+      try {
+        await pool.query(`
+          UPDATE sessions
+          SET last_seen_at = NOW()
+          WHERE token_hash = $1
+            AND active = true
+            AND expires_at > NOW()
+            AND (
+              last_seen_at IS NULL OR
+              last_seen_at <= NOW() - INTERVAL '5 minutes'
+            )
+        `, [tokenHash]);
+      } catch (heartbeatError) {
+        console.error(
+          "AUTH HEARTBEAT UPDATE ERROR:",
+          heartbeatError
+        );
+      }
+    }
+
     req.user_id = session.user_id;
     req.airline_id = session.airline_id;
 
