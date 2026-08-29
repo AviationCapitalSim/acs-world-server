@@ -2288,13 +2288,13 @@ export async function applyHROpsImpactForAirline(
       }
 
       const skyTrackStatus =
-        decision.outcome === "CANCELLED"
-          ? "CANCELLED - HR"
+      decision.outcome === "CANCELLED"
+       ? "CANCELLED - PERSONNEL"
 
-          : decision.outcome === "DELAYED"
-            ? "DELAYED - HR"
+       : decision.outcome === "DELAYED"
+       ? "DELAYED - PERSONNEL"
 
-            : "ON TIME";
+       : "ON TIME";
 
       await client.query(
         `
