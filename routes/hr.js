@@ -2105,33 +2105,55 @@ export async function applyHROpsImpactForAirline(
 
         FROM public.flight_occurrences occurrence
 
-        LEFT JOIN public.aircraft_catalog catalog
-          ON LOWER(catalog.model_key) =
-             LOWER(occurrence.model_key)
+INNER JOIN public.schedule_items schedule
+  ON schedule.id =
+     occurrence.schedule_item_id
+ AND schedule.airline_id =
+     occurrence.airline_id
+ AND schedule.item_type = 'flight'
+ AND LOWER(
+       COALESCE(schedule.status, '')
+     ) NOT IN (
+       'cancelled',
+       'canceled'
+     )
 
-        WHERE occurrence.airline_id = $1
+LEFT JOIN public.aircraft_catalog catalog
+  ON LOWER(catalog.model_key) =
+     LOWER(occurrence.model_key)
 
-          AND occurrence.scheduled_departure_at::date <=
-             $2::timestamp::date
+WHERE occurrence.airline_id = $1
 
-          AND occurrence.operational_status
-              IN (
-                'PLANNED',
-                'HELD'
-              )
+  AND occurrence.scheduled_departure_at >=
+      DATE_TRUNC(
+        'day',
+        $2::timestamp
+      )
 
-          AND occurrence.settled_at IS NULL
+  AND occurrence.scheduled_departure_at <
+      DATE_TRUNC(
+        'day',
+        $2::timestamp
+      ) + INTERVAL '1 day'
 
-          AND occurrence
-                .hr_impact_resolved_at
-              IS NULL
+  AND occurrence.operational_status =
+      'PLANNED'
 
-        ORDER BY
-          occurrence.scheduled_departure_at,
-          occurrence.id
+  AND occurrence.dispatch_status =
+      'PENDING'
 
-        FOR UPDATE OF occurrence
-        SKIP LOCKED
+  AND occurrence.settled_at IS NULL
+
+  AND occurrence
+        .hr_impact_resolved_at
+      IS NULL
+
+ORDER BY
+  occurrence.scheduled_departure_at,
+  occurrence.id
+
+FOR UPDATE OF occurrence
+SKIP LOCKED
         `,
         [
           normalizedAirlineId,
