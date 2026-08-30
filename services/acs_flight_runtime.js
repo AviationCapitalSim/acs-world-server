@@ -21,223 +21,6 @@
 
 import { pool } from "../db/pool.js";
 
-import {
-  applyHROpsImpactForAirline
-} from "../routes/hr.js";
-
-/* ============================================================
-   ACS HR PRE-DISPATCH RESOLVER
-   ------------------------------------------------------------
-   Fail-open protection:
-
-   - Attempts to resolve pending HR decisions.
-   - Never stops the global Flight Runtime.
-   - A failure for one airline does not affect another airline.
-   - The dispatcher remains the operational authority.
-   ============================================================ */
-
-async function ACS_ensureHRDecisionsForDueFlights() {
-  try {
-    const airlinesResult = await pool.query(
-      `
-      WITH clock AS MATERIALIZED (
-        SELECT
-          acs_get_current_sim_time()
-            AS sim_time
-      )
-
-      SELECT DISTINCT
-        occurrence.airline_id
-
-      FROM public.flight_occurrences occurrence
-
-      CROSS JOIN clock
-
-      WHERE occurrence.operational_status =
-            'PLANNED'
-
-        AND occurrence.dispatch_status =
-            'PENDING'
-
-        AND occurrence.hr_impact_resolved_at
-            IS NULL
-
-        AND EXISTS (
-          SELECT 1
-          FROM public.schedule_items schedule
-          WHERE schedule.id =
-                occurrence.schedule_item_id
-            AND schedule.airline_id =
-                occurrence.airline_id
-            AND schedule.item_type = 'flight'
-            AND LOWER(
-                  COALESCE(schedule.status, '')
-                ) NOT IN (
-                  'cancelled',
-                  'canceled'
-                )
-        )
-
-        AND occurrence.scheduled_departure_at >=
-            DATE_TRUNC(
-              'day',
-              clock.sim_time
-            ) - INTERVAL '1 day'
-
-        AND occurrence.scheduled_departure_at <
-            DATE_TRUNC(
-              'day',
-              clock.sim_time
-            ) + INTERVAL '1 day'
-
-      ORDER BY
-        occurrence.airline_id
-
-      LIMIT 40
-      `
-    );
-
-    let resolvedAirlines = 0;
-    let resolvedOccurrences = 0;
-    const failedAirlines = [];
-
-    const airlineIds = airlinesResult.rows
-      .map(row => Number(row.airline_id))
-      .filter(
-        airlineId =>
-          Number.isInteger(airlineId) &&
-          airlineId > 0
-      );
-
-    let nextAirlineIndex = 0;
-
-    const workerCount = Math.min(
-      4,
-      airlineIds.length
-    );
-
-    async function resolveNextAirline() {
-      while (true) {
-        const currentIndex = nextAirlineIndex;
-        nextAirlineIndex += 1;
-
-        if (currentIndex >= airlineIds.length) {
-          return;
-        }
-
-        const airlineId = airlineIds[currentIndex];
-
-        try {
-          const result =
-            await applyHROpsImpactForAirline(
-              airlineId
-            );
-
-          resolvedAirlines += 1;
-
-          resolvedOccurrences += Number(
-            result?.applied_count || 0
-          );
-        } catch (error) {
-          failedAirlines.push({
-            airlineId,
-            error:
-              error?.message ||
-              "HR_DECISION_RESOLUTION_FAILED"
-          });
-
-          console.error(
-            "ACS_HR_PRE_DISPATCH_AIRLINE_ERROR",
-            {
-              airlineId,
-              error
-            }
-          );
-        }
-      }
-    }
-
-    await Promise.all(
-      Array.from(
-        { length: workerCount },
-        () => resolveNextAirline()
-      )
-    );
-
-    return {
-      ok: failedAirlines.length === 0,
-      globalFailure: false,
-      selectedAirlines: airlineIds.length,
-      resolvedAirlines,
-      resolvedOccurrences,
-      failedAirlines
-    };
-  } catch (error) {
-    console.error(
-      "ACS_HR_PRE_DISPATCH_GLOBAL_ERROR",
-      error
-    );
-
-    return {
-      ok: false,
-      globalFailure: true,
-      selectedAirlines: 0,
-      resolvedAirlines: 0,
-      resolvedOccurrences: 0,
-      failedAirlines: [],
-      error:
-        error?.message ||
-        "HR_PRE_DISPATCH_GLOBAL_ERROR"
-    };
-  }
-}
-
-let ACS_HR_decisionWorkerPromise = null;
-
-function ACS_startHRDecisionWorker() {
-  if (ACS_HR_decisionWorkerPromise) {
-    return false;
-  }
-
-  ACS_HR_decisionWorkerPromise = (async () => {
-    while (true) {
-      const result =
-        await ACS_ensureHRDecisionsForDueFlights();
-
-      if (result?.globalFailure === true) {
-        break;
-      }
-
-      const selectedAirlines = Number(
-        result?.selectedAirlines || 0
-      );
-
-      const resolvedOccurrences = Number(
-        result?.resolvedOccurrences || 0
-      );
-
-      if (selectedAirlines <= 0) {
-        break;
-      }
-
-      if (resolvedOccurrences <= 0) {
-        break;
-      }
-    }
-  })()
-    .catch(error => {
-      console.error(
-        "ACS_HR_DECISION_WORKER_ERROR",
-        error
-      );
-    })
-    .finally(() => {
-      ACS_HR_decisionWorkerPromise = null;
-    });
-
-  return true;
-}
-
 function ACS_normalizeHorizonDays(value) {
   const days = Number(value);
 
@@ -283,10 +66,8 @@ async function ACS_cancelFutureFlightOccurrences(
         'PLANNED',
         'HELD'
       )
-      AND occurrence.dispatch_status IN (
-        'PENDING',
-        'NOT_DISPATCHED'
-      )
+      AND occurrence.scheduled_arrival_at >
+          clock.sim_time
     RETURNING occurrence.id
     `
   );
@@ -530,14 +311,8 @@ async function ACS_materializeFlightOccurrences(
       updated_at =
         CURRENT_TIMESTAMP
     WHERE
-      flight_occurrences.operational_status IN (
-        'PLANNED',
-        'HELD'
-      )
-      AND flight_occurrences.dispatch_status IN (
-        'PENDING',
-        'NOT_DISPATCHED'
-      )
+      flight_occurrences.operational_status =
+        'PLANNED'
       AND ROW(
         flight_occurrences.aircraft_id,
         flight_occurrences.aircraft_registration,
@@ -572,25 +347,6 @@ async function ACS_materializeFlightOccurrences(
 export async function ACS_dispatchFlightOccurrences({
   batchSize = 500
 } = {}) {
-
-   const hrResolution =
-    await ACS_ensureHRDecisionsForDueFlights();
-
-  const hrGlobalFailOpen =
-    hrResolution?.globalFailure === true;
-
-  const hrFailedAirlineIds = Array.isArray(
-    hrResolution?.failedAirlines
-  )
-    ? hrResolution.failedAirlines
-        .map(item => Number(item?.airlineId))
-        .filter(
-          airlineId =>
-            Number.isInteger(airlineId) &&
-            airlineId > 0
-        )
-    : [];
-
   const client = await pool.connect();
 
   const normalizedBatchSize = Math.min(
@@ -609,211 +365,85 @@ export async function ACS_dispatchFlightOccurrences({
 
     const result = await client.query(
       `
-        WITH clock AS MATERIALIZED (
+      WITH clock AS MATERIALIZED (
+        SELECT acs_get_current_sim_time() AS sim_time
+      ),
+
+      due_occurrences AS MATERIALIZED (
+        SELECT
+          occurrence.id,
+          occurrence.aircraft_id,
+          occurrence.airline_id,
+          occurrence.scheduled_departure_at,
+          occurrence.scheduled_arrival_at,
+          clock.sim_time,
+
+          maintenance_status.a_check_status,
+          maintenance_status.b_check_status,
+          maintenance_status.c_check_status,
+          maintenance_status.d_check_status,
+          maintenance_status.maintenance_control_status,
+          maintenance_status.maintenance_control_reason,
+
+          blocking_event.id AS maintenance_event_id,
+          blocking_event.event_uid AS maintenance_event_uid,
+          blocking_event.check_type AS maintenance_check_type,
+          blocking_event.maintenance_start_at,
+          blocking_event.maintenance_end_at
+
+        FROM public.flight_occurrences occurrence
+
+        CROSS JOIN clock
+
+        LEFT JOIN public.aircraft_maintenance_status
+          AS maintenance_status
+          ON maintenance_status.aircraft_id =
+             occurrence.aircraft_id
+         AND maintenance_status.airline_id =
+             occurrence.airline_id
+
+        LEFT JOIN LATERAL (
           SELECT
-            acs_get_current_sim_time() AS sim_time
-        ),
+            event.id,
+            event.event_uid,
+            event.check_type,
 
-        due_occurrences AS MATERIALIZED (
-          SELECT
-            occurrence.id,
-            occurrence.aircraft_id,
-            occurrence.airline_id,
-            occurrence.origin,
-            occurrence.destination,
-            occurrence.scheduled_departure_at,
-            occurrence.scheduled_arrival_at,
-            occurrence.block_time_min,
-            occurrence.turnaround_min,
-
-            occurrence.hr_impact_resolved_at,
-            occurrence.hr_impact_level,
-            occurrence.hr_impact_cause,
-            occurrence.hr_operational_outcome,
-            occurrence.hr_delay_minutes,
-            occurrence.hr_release_at,
-            occurrence.hr_cancel_reason,
-
-            clock.sim_time,
-
-            UPPER(
-              COALESCE(fleet.current_airport, '')
-            ) AS fleet_current_airport,
-
-            UPPER(
-              COALESCE(occurrence.origin, '')
-            ) AS occurrence_origin,
-
-            previous_arrival.arrived_at
-              AS previous_arrived_at,
-
-            previous_arrival.turnaround_min
-              AS previous_turnaround_min,
-
-            (
-              previous_arrival.arrived_at IS NULL
-
-              OR clock.sim_time >=
-                previous_arrival.arrived_at
-                + (
-                    previous_arrival.turnaround_min
-                    * INTERVAL '1 minute'
-                  )
-            ) AS turnaround_ready,
-
-            EXISTS (
-              SELECT 1
-              FROM public.flight_occurrences active
-              WHERE active.airline_id =
-                    occurrence.airline_id
-                AND active.aircraft_id =
-                    occurrence.aircraft_id
-                AND active.id <>
-                    occurrence.id
-                AND active.dispatch_status =
-                    'RELEASED'
-                AND active.operational_status IN (
-                  'DISPATCHED',
-                  'EN_ROUTE'
+            CASE
+              WHEN event.event_status = 'IN_PROGRESS'
+                THEN COALESCE(
+                  event.started_at,
+                  event.scheduled_start_at
                 )
-            ) AS has_active_occurrence,
-
-            EXISTS (
-              SELECT 1
-              FROM public.flight_occurrences earlier
-              WHERE earlier.airline_id =
-                    occurrence.airline_id
-                AND earlier.aircraft_id =
-                    occurrence.aircraft_id
-                AND earlier.id <>
-                    occurrence.id
-                AND (
-                  (
-                    earlier.operational_status =
-                      'PLANNED'
-                    AND earlier.dispatch_status =
-                      'PENDING'
-                  )
-                  OR
-                  (
-                    earlier.operational_status =
-                      'HELD'
-                    AND earlier.dispatch_status =
-                      'NOT_DISPATCHED'
-                  )
-                )
-                AND earlier.scheduled_departure_at >=
-                    DATE_TRUNC(
-                      'day',
-                      occurrence.scheduled_departure_at
-                    )
-                AND (
-                  earlier.scheduled_departure_at <
-                    occurrence.scheduled_departure_at
-
-                  OR (
-                    earlier.scheduled_departure_at =
-                      occurrence.scheduled_departure_at
-
-                    AND earlier.id <
-                      occurrence.id
-                  )
-                )
-            ) AS has_earlier_unresolved,
-
-            maintenance_status.a_check_status,
-            maintenance_status.b_check_status,
-            maintenance_status.c_check_status,
-            maintenance_status.d_check_status,
-            maintenance_status.maintenance_control_status,
-            maintenance_status.maintenance_control_reason,
-
-            blocking_event.id
-              AS maintenance_event_id,
-            blocking_event.event_uid
-              AS maintenance_event_uid,
-            blocking_event.check_type
-              AS maintenance_check_type,
-            blocking_event.maintenance_start_at,
-            blocking_event.maintenance_end_at
-
-          FROM public.flight_occurrences occurrence
-
-          CROSS JOIN clock
-
-          INNER JOIN public.aircraft_fleet fleet
-            ON fleet.id =
-               occurrence.aircraft_id
-           AND fleet.airline_id =
-               occurrence.airline_id
-
-          LEFT JOIN LATERAL (
-            SELECT
-              previous_occurrence.arrived_at,
-
-              COALESCE(
-                previous_occurrence.turnaround_min,
-                0
-              )::integer AS turnaround_min
-
-            FROM public.flight_occurrences
-              previous_occurrence
-
-            WHERE previous_occurrence.airline_id =
-                  occurrence.airline_id
-
-              AND previous_occurrence.aircraft_id =
-                  occurrence.aircraft_id
-
-              AND previous_occurrence.id <>
-                  occurrence.id
-
-              AND previous_occurrence.dispatch_status =
-                  'RELEASED'
-
-              AND previous_occurrence.operational_status IN (
-                'ARRIVED',
-                'SETTLED'
+              ELSE COALESCE(
+                event.scheduled_start_at,
+                event.started_at
               )
+            END AS maintenance_start_at,
 
-              AND previous_occurrence.arrived_at
-                  IS NOT NULL
-
-              AND previous_occurrence.arrived_at <=
-                  clock.sim_time
-
-            ORDER BY
-              previous_occurrence.arrived_at DESC,
-              previous_occurrence.id DESC
-
-            LIMIT 1
-          ) AS previous_arrival ON TRUE
-
-          LEFT JOIN public.aircraft_maintenance_status
-            AS maintenance_status
-            ON maintenance_status.aircraft_id =
-               occurrence.aircraft_id
-           AND maintenance_status.airline_id =
-               occurrence.airline_id
-
-          LEFT JOIN LATERAL (
-            SELECT
-              event.id,
-              event.event_uid,
-              event.check_type,
-
-              CASE
-                WHEN event.event_status = 'IN_PROGRESS'
-                  THEN COALESCE(
-                    event.started_at,
-                    event.scheduled_start_at
-                  )
-                ELSE COALESCE(
-                  event.scheduled_start_at,
-                  event.started_at
+            CASE
+              WHEN event.event_status = 'IN_PROGRESS'
+                THEN COALESCE(
+                  event.expected_completion_at,
+                  event.scheduled_end_at
                 )
-              END AS maintenance_start_at,
+              ELSE COALESCE(
+                event.scheduled_end_at,
+                event.expected_completion_at
+              )
+            END AS maintenance_end_at
 
+          FROM public.aircraft_maintenance_events event
+
+          WHERE event.aircraft_id =
+                occurrence.aircraft_id
+            AND event.airline_id =
+                occurrence.airline_id
+            AND event.event_status IN (
+              'SCHEDULED',
+              'IN_PROGRESS'
+            )
+
+            AND occurrence.scheduled_departure_at <
               CASE
                 WHEN event.event_status = 'IN_PROGRESS'
                   THEN COALESCE(
@@ -824,467 +454,250 @@ export async function ACS_dispatchFlightOccurrences({
                   event.scheduled_end_at,
                   event.expected_completion_at
                 )
-              END AS maintenance_end_at
+              END
 
-            FROM public.aircraft_maintenance_events event
-
-            WHERE event.aircraft_id =
-                  occurrence.aircraft_id
-
-              AND event.airline_id =
-                  occurrence.airline_id
-
-              AND event.event_status IN (
-                'SCHEDULED',
-                'IN_PROGRESS'
-              )
-
-              AND clock.sim_time <
-                CASE
-                  WHEN event.event_status = 'IN_PROGRESS'
-                    THEN COALESCE(
-                      event.expected_completion_at,
-                      event.scheduled_end_at
-                    )
-                  ELSE COALESCE(
-                    event.scheduled_end_at,
-                    event.expected_completion_at
+            AND occurrence.scheduled_arrival_at >
+              CASE
+                WHEN event.event_status = 'IN_PROGRESS'
+                  THEN COALESCE(
+                    event.started_at,
+                    event.scheduled_start_at
                   )
-                END
-
-              AND (
-                clock.sim_time
-                + (
-                    occurrence.block_time_min
-                    * INTERVAL '1 minute'
-                  )
-              ) >
-                CASE
-                  WHEN event.event_status = 'IN_PROGRESS'
-                    THEN COALESCE(
-                      event.started_at,
-                      event.scheduled_start_at
-                    )
-                  ELSE COALESCE(
-                    event.scheduled_start_at,
-                    event.started_at
-                  )
-                END
-
-            ORDER BY
-              maintenance_start_at,
-              CASE event.check_type
-                WHEN 'D_CHECK' THEN 1
-                WHEN 'C_CHECK' THEN 2
-                WHEN 'B_CHECK' THEN 3
-                WHEN 'A_CHECK' THEN 4
-                ELSE 5
-              END,
-              event.id
-
-            LIMIT 1
-          ) AS blocking_event ON TRUE
-
-          WHERE (
-            (
-              occurrence.operational_status =
-                'PLANNED'
-              AND occurrence.dispatch_status =
-                'PENDING'
-            )
-            OR
-            (
-              occurrence.operational_status =
-                'HELD'
-              AND occurrence.dispatch_status =
-                'NOT_DISPATCHED'
-            )
-          )
-
-            AND (
-              occurrence.hr_impact_resolved_at
-                IS NOT NULL
-
-              OR $2::boolean
-
-              OR occurrence.airline_id =
-                 ANY($3::bigint[])
-            )
-
-            AND occurrence.scheduled_departure_at <=
-                clock.sim_time
-
-            AND NOT (
-              occurrence.hr_impact_resolved_at
-                IS NOT NULL
-
-              AND COALESCE(
-                occurrence.hr_operational_outcome,
-                'ON_TIME'
-              ) = 'DELAYED'
-
-              AND COALESCE(
-                occurrence.hr_release_at,
-                occurrence.scheduled_departure_at
-              ) > clock.sim_time
-            )
+                ELSE COALESCE(
+                  event.scheduled_start_at,
+                  event.started_at
+                )
+              END
 
           ORDER BY
-            occurrence.scheduled_departure_at,
-            occurrence.id
+            maintenance_start_at,
+            CASE event.check_type
+              WHEN 'D_CHECK' THEN 1
+              WHEN 'C_CHECK' THEN 2
+              WHEN 'B_CHECK' THEN 3
+              WHEN 'A_CHECK' THEN 4
+              ELSE 5
+            END,
+            event.id
 
-          LIMIT $1
+          LIMIT 1
+        ) AS blocking_event ON TRUE
 
-          FOR UPDATE OF occurrence SKIP LOCKED
-        ),
+        WHERE occurrence.operational_status = 'PLANNED'
+          AND occurrence.dispatch_status = 'PENDING'
+          AND occurrence.scheduled_departure_at <=
+              clock.sim_time
 
-        classified AS MATERIALIZED (
-          SELECT
-            due.*,
+        ORDER BY
+          occurrence.scheduled_departure_at,
+          occurrence.id
 
-            (
-              due.hr_impact_resolved_at
-                IS NOT NULL
+        LIMIT $1
 
-              AND COALESCE(
-                due.hr_operational_outcome,
-                'ON_TIME'
-              ) = 'CANCELLED'
-            ) AS is_hr_cancelled,
+        FOR UPDATE OF occurrence SKIP LOCKED
+      ),
 
-            (
-              due.maintenance_event_id IS NOT NULL
+      classified AS MATERIALIZED (
+        SELECT
+          due.*,
 
-              OR UPPER(
-                COALESCE(due.a_check_status, '')
-              ) = 'OVERDUE'
+          (
+            due.maintenance_event_id IS NOT NULL
 
-              OR UPPER(
-                COALESCE(due.b_check_status, '')
-              ) = 'OVERDUE'
+            OR UPPER(
+              COALESCE(due.a_check_status, '')
+            ) = 'OVERDUE'
 
-              OR UPPER(
-                COALESCE(due.c_check_status, '')
-              ) = 'OVERDUE'
+            OR UPPER(
+              COALESCE(due.b_check_status, '')
+            ) = 'OVERDUE'
 
-              OR UPPER(
-                COALESCE(due.d_check_status, '')
-              ) = 'OVERDUE'
+            OR UPPER(
+              COALESCE(due.c_check_status, '')
+            ) = 'OVERDUE'
 
-              OR UPPER(
-                COALESCE(
-                  due.maintenance_control_status,
-                  ''
-                )
-              ) IN (
-                'IN_MAINTENANCE',
-                'MAINTENANCE_REQUIRED',
-                'UNSERVICEABLE'
+            OR UPPER(
+              COALESCE(due.d_check_status, '')
+            ) = 'OVERDUE'
+
+            OR UPPER(
+              COALESCE(
+                due.maintenance_control_status,
+                ''
               )
-            ) AS is_maintenance_blocked,
+            ) IN (
+              'MAINTENANCE_REQUIRED',
+              'UNSERVICEABLE'
+            )
+          ) AS is_blocked,
 
-            (
-              due.fleet_current_airport <>
-              due.occurrence_origin
-            ) AS is_location_blocked,
+          CASE
+            WHEN due.maintenance_event_id IS NOT NULL
+            THEN due.maintenance_check_type
 
-            (
-              NOT due.turnaround_ready
-            ) AS is_turnaround_blocked,
+            WHEN UPPER(
+              COALESCE(due.d_check_status, '')
+            ) = 'OVERDUE'
+              THEN 'D_CHECK_OVERDUE'
 
-            due.has_active_occurrence
-              AS is_active_blocked,
+            WHEN UPPER(
+              COALESCE(due.c_check_status, '')
+            ) = 'OVERDUE'
+              THEN 'C_CHECK_OVERDUE'
 
-            due.has_earlier_unresolved
-              AS is_sequence_blocked
+            WHEN UPPER(
+              COALESCE(due.b_check_status, '')
+            ) = 'OVERDUE'
+              THEN 'B_CHECK_OVERDUE'
 
-          FROM due_occurrences due
-        ),
+            WHEN UPPER(
+              COALESCE(due.a_check_status, '')
+            ) = 'OVERDUE'
+              THEN 'A_CHECK_OVERDUE'
 
-        resolved AS MATERIALIZED (
-          SELECT
-            classified.*,
-
-            (
-              classified.is_maintenance_blocked
-              OR classified.is_location_blocked
-              OR classified.is_turnaround_blocked
-              OR classified.is_active_blocked
-              OR classified.is_sequence_blocked
-            ) AS is_blocked,
-
-            CASE
-              WHEN classified.is_hr_cancelled
-                THEN COALESCE(
-                  NULLIF(
-                    classified.hr_cancel_reason,
-                    ''
-                  ),
-                  'HR_OPERATIONAL_CANCELLATION'
-                )
-
-              WHEN classified.is_active_blocked
-                THEN 'AIRCRAFT_ALREADY_ACTIVE'
-
-              WHEN classified.is_sequence_blocked
-                THEN 'PREVIOUS_OCCURRENCE_UNRESOLVED'
-
-              WHEN classified.is_location_blocked
-                THEN 'AIRCRAFT_LOCATION_MISMATCH'
-
-              WHEN classified.is_turnaround_blocked
-                THEN 'TURNAROUND_NOT_COMPLETE'
-
-              WHEN classified.maintenance_event_id
-                   IS NOT NULL
-                THEN classified.maintenance_check_type
-
-              WHEN UPPER(
-                COALESCE(
-                  classified.d_check_status,
-                  ''
-                )
-              ) = 'OVERDUE'
-                THEN 'D_CHECK_OVERDUE'
-
-              WHEN UPPER(
-                COALESCE(
-                  classified.c_check_status,
-                  ''
-                )
-              ) = 'OVERDUE'
-                THEN 'C_CHECK_OVERDUE'
-
-              WHEN UPPER(
-                COALESCE(
-                  classified.b_check_status,
-                  ''
-                )
-              ) = 'OVERDUE'
-                THEN 'B_CHECK_OVERDUE'
-
-              WHEN UPPER(
-                COALESCE(
-                  classified.a_check_status,
-                  ''
-                )
-              ) = 'OVERDUE'
-                THEN 'A_CHECK_OVERDUE'
-
-              WHEN UPPER(
-                COALESCE(
-                  classified.maintenance_control_status,
-                  ''
-                )
-              ) = 'UNSERVICEABLE'
-                THEN COALESCE(
-                  NULLIF(
-                    classified.maintenance_control_reason,
-                    ''
-                  ),
-                  'AIRCRAFT_UNSERVICEABLE'
-                )
-
-              WHEN UPPER(
-                COALESCE(
-                  classified.maintenance_control_status,
-                  ''
-                )
-              ) = 'MAINTENANCE_REQUIRED'
-                THEN COALESCE(
-                  NULLIF(
-                    classified.maintenance_control_reason,
-                    ''
-                  ),
-                  'MAINTENANCE_REQUIRED'
-                )
-
-              WHEN UPPER(
-                COALESCE(
-                  classified.maintenance_control_status,
-                  ''
-                )
-              ) = 'IN_MAINTENANCE'
-                THEN COALESCE(
-                  NULLIF(
-                    classified.maintenance_control_reason,
-                    ''
-                  ),
-                  'IN_MAINTENANCE'
-                )
-
-              ELSE NULL
-            END AS final_dispatch_reason
-
-          FROM classified
-        )
-
-        UPDATE public.flight_occurrences occurrence
-
-        SET
-          operational_status = CASE
-            WHEN resolved.is_hr_cancelled
-              THEN 'CANCELLED'
-
-            WHEN resolved.is_blocked
-              THEN 'HELD'
-
-            ELSE 'DISPATCHED'
-          END,
-
-          dispatch_status = CASE
-            WHEN resolved.is_hr_cancelled
-              THEN 'NOT_DISPATCHED'
-
-            WHEN resolved.is_blocked
-              THEN 'NOT_DISPATCHED'
-
-            ELSE 'RELEASED'
-          END,
-
-          dispatch_reason =
-            resolved.final_dispatch_reason,
-
-          blocking_maintenance_event_id = CASE
-            WHEN resolved.is_maintenance_blocked
-             AND NOT resolved.is_hr_cancelled
-              THEN resolved.maintenance_event_id
-
-            ELSE NULL
-          END,
-
-          blocking_maintenance_event_uid = CASE
-            WHEN resolved.is_maintenance_blocked
-             AND NOT resolved.is_hr_cancelled
-              THEN resolved.maintenance_event_uid
-
-            ELSE NULL
-          END,
-
-          blocking_maintenance_check_type = CASE
-            WHEN resolved.is_maintenance_blocked
-             AND NOT resolved.is_hr_cancelled
+            WHEN UPPER(
+              COALESCE(
+                due.maintenance_control_status,
+                ''
+              )
+            ) = 'UNSERVICEABLE'
               THEN COALESCE(
-                resolved.maintenance_check_type,
-
-                CASE
-                  WHEN UPPER(
-                    COALESCE(
-                      resolved.d_check_status,
-                      ''
-                    )
-                  ) = 'OVERDUE'
-                    THEN 'D_CHECK'
-
-                  WHEN UPPER(
-                    COALESCE(
-                      resolved.c_check_status,
-                      ''
-                    )
-                  ) = 'OVERDUE'
-                    THEN 'C_CHECK'
-
-                  WHEN UPPER(
-                    COALESCE(
-                      resolved.b_check_status,
-                      ''
-                    )
-                  ) = 'OVERDUE'
-                    THEN 'B_CHECK'
-
-                  WHEN UPPER(
-                    COALESCE(
-                      resolved.a_check_status,
-                      ''
-                    )
-                  ) = 'OVERDUE'
-                    THEN 'A_CHECK'
-
-                  ELSE NULL
-                END
+                NULLIF(
+                  due.maintenance_control_reason,
+                  ''
+                ),
+                'AIRCRAFT_UNSERVICEABLE'
               )
 
-            ELSE NULL
-          END,
-
-          blocking_maintenance_start_at = CASE
-            WHEN resolved.is_maintenance_blocked
-             AND NOT resolved.is_hr_cancelled
-              THEN resolved.maintenance_start_at
-
-            ELSE NULL
-          END,
-
-          blocking_maintenance_end_at = CASE
-            WHEN resolved.is_maintenance_blocked
-             AND NOT resolved.is_hr_cancelled
-              THEN resolved.maintenance_end_at
-
-            ELSE NULL
-          END,
-
-          held_at = CASE
-            WHEN resolved.is_blocked
-             AND NOT resolved.is_hr_cancelled
+            WHEN UPPER(
+              COALESCE(
+                due.maintenance_control_status,
+                ''
+              )
+            ) = 'MAINTENANCE_REQUIRED'
               THEN COALESCE(
-                occurrence.held_at,
-                resolved.sim_time
+                NULLIF(
+                  due.maintenance_control_reason,
+                  ''
+                ),
+                'MAINTENANCE_REQUIRED'
               )
 
             ELSE NULL
-          END,
+          END AS final_dispatch_reason
 
-          dispatched_at = CASE
-            WHEN resolved.is_hr_cancelled
-              THEN NULL
+        FROM due_occurrences due
+      )
 
-            WHEN resolved.is_blocked
-              THEN NULL
+      UPDATE public.flight_occurrences occurrence
 
-            ELSE resolved.sim_time
-          END,
+      SET
+        operational_status = CASE
+          WHEN classified.is_blocked
+            THEN 'HELD'
+          ELSE 'DISPATCHED'
+        END,
 
-          departed_at = CASE
-            WHEN resolved.is_hr_cancelled
-              THEN NULL
+        dispatch_status = CASE
+          WHEN classified.is_blocked
+            THEN 'NOT_DISPATCHED'
+          ELSE 'RELEASED'
+        END,
 
-            WHEN resolved.is_blocked
-              THEN NULL
+        dispatch_reason =
+          classified.final_dispatch_reason,
 
-            ELSE resolved.sim_time
-          END,
+        blocking_maintenance_event_id = CASE
+          WHEN classified.is_blocked
+            THEN classified.maintenance_event_id
+          ELSE NULL
+        END,
 
-          updated_at = CURRENT_TIMESTAMP
+        blocking_maintenance_event_uid = CASE
+          WHEN classified.is_blocked
+            THEN classified.maintenance_event_uid
+          ELSE NULL
+        END,
 
-        FROM resolved
+        blocking_maintenance_check_type = CASE
+          WHEN classified.is_blocked
+            THEN COALESCE(
+              classified.maintenance_check_type,
+              CASE
+                WHEN UPPER(
+                  COALESCE(
+                    classified.d_check_status,
+                    ''
+                  )
+                ) = 'OVERDUE'
+                  THEN 'D_CHECK'
+                WHEN UPPER(
+                  COALESCE(
+                    classified.c_check_status,
+                    ''
+                  )
+                ) = 'OVERDUE'
+                  THEN 'C_CHECK'
+                WHEN UPPER(
+                  COALESCE(
+                    classified.b_check_status,
+                    ''
+                  )
+                ) = 'OVERDUE'
+                  THEN 'B_CHECK'
+                WHEN UPPER(
+                  COALESCE(
+                    classified.a_check_status,
+                    ''
+                  )
+                ) = 'OVERDUE'
+                  THEN 'A_CHECK'
+                ELSE NULL
+              END
+            )
+          ELSE NULL
+        END,
 
-        WHERE occurrence.id = resolved.id
+        blocking_maintenance_start_at = CASE
+          WHEN classified.is_blocked
+            THEN classified.maintenance_start_at
+          ELSE NULL
+        END,
 
-        RETURNING
-          occurrence.dispatch_status,
-          occurrence.operational_status,
-          occurrence.dispatch_reason
+        blocking_maintenance_end_at = CASE
+          WHEN classified.is_blocked
+            THEN classified.maintenance_end_at
+          ELSE NULL
+        END,
+
+        held_at = CASE
+          WHEN classified.is_blocked
+            THEN classified.sim_time
+          ELSE NULL
+        END,
+
+        dispatched_at = CASE
+          WHEN classified.is_blocked
+            THEN NULL
+          ELSE classified.sim_time
+        END,
+
+        updated_at = CURRENT_TIMESTAMP
+
+      FROM classified
+
+      WHERE occurrence.id = classified.id
+
+      RETURNING occurrence.dispatch_status
       `,
-      [
-        normalizedBatchSize,
-        hrGlobalFailOpen,
-        hrFailedAirlineIds
-      ]
+      [normalizedBatchSize]
     );
 
     await client.query("COMMIT");
     transactionStarted = false;
 
     const heldCount = result.rows.filter(
-      row =>
-        row.dispatch_status === "NOT_DISPATCHED" &&
-        row.operational_status === "HELD"
-    ).length;
-
-    const cancelledCount = result.rows.filter(
-      row =>
-        row.dispatch_status === "NOT_DISPATCHED" &&
-        row.operational_status === "CANCELLED"
+      row => row.dispatch_status === "NOT_DISPATCHED"
     ).length;
 
     const releasedCount = result.rows.filter(
@@ -1294,11 +707,8 @@ export async function ACS_dispatchFlightOccurrences({
     return {
       processedCount: result.rowCount,
       heldCount,
-      cancelledCount,
-      releasedCount,
-      hrResolution
+      releasedCount
     };
-
   } catch (error) {
     if (transactionStarted) {
       try {
@@ -1337,30 +747,11 @@ export async function ACS_advanceFlightOccurrences({
         SELECT acs_get_current_sim_time() AS sim_time
       ),
       due_occurrences AS MATERIALIZED (
-  SELECT
-    occurrence.id,
-    occurrence.scheduled_departure_at,
-    occurrence.scheduled_arrival_at,
-
-    COALESCE(
-      occurrence.departed_at,
-      occurrence.dispatched_at,
-      occurrence.scheduled_departure_at
-    ) AS effective_departure_at,
-
-    (
-      COALESCE(
-        occurrence.departed_at,
-        occurrence.dispatched_at,
-        occurrence.scheduled_departure_at
-      )
-      + (
-          occurrence.block_time_min
-          * INTERVAL '1 minute'
-        )
-    ) AS effective_arrival_at,
-
-    clock.sim_time
+        SELECT
+          occurrence.id,
+          occurrence.scheduled_departure_at,
+          occurrence.scheduled_arrival_at,
+          clock.sim_time
         FROM public.flight_occurrences occurrence
         CROSS JOIN clock
         WHERE occurrence.dispatch_status = 'RELEASED'
@@ -1368,43 +759,32 @@ export async function ACS_advanceFlightOccurrences({
             'DISPATCHED',
             'EN_ROUTE'
           )
-          AND COALESCE(
-      occurrence.departed_at,
-      occurrence.dispatched_at,
-      occurrence.scheduled_departure_at
-    ) <= clock.sim_time
-
-ORDER BY
-  COALESCE(
-    occurrence.departed_at,
-    occurrence.dispatched_at,
-    occurrence.scheduled_departure_at
-  ),
-  occurrence.id
+          AND occurrence.scheduled_departure_at <= clock.sim_time
+        ORDER BY
+          occurrence.scheduled_departure_at,
+          occurrence.id
         LIMIT $1
         FOR UPDATE OF occurrence SKIP LOCKED
       )
       UPDATE public.flight_occurrences occurrence
       SET
         operational_status = CASE
-  WHEN due.effective_arrival_at <= due.sim_time
-    THEN 'ARRIVED'
-  ELSE 'EN_ROUTE'
-END,
-
-departed_at = COALESCE(
-  occurrence.departed_at,
-  due.effective_departure_at
-),
-
-arrived_at = CASE
-  WHEN due.effective_arrival_at <= due.sim_time
-    THEN COALESCE(
-      occurrence.arrived_at,
-      due.effective_arrival_at
-    )
-  ELSE occurrence.arrived_at
-END,
+          WHEN due.scheduled_arrival_at <= due.sim_time
+            THEN 'ARRIVED'
+          ELSE 'EN_ROUTE'
+        END,
+        departed_at = COALESCE(
+          occurrence.departed_at,
+          due.scheduled_departure_at
+        ),
+        arrived_at = CASE
+          WHEN due.scheduled_arrival_at <= due.sim_time
+            THEN COALESCE(
+              occurrence.arrived_at,
+              due.scheduled_arrival_at
+            )
+          ELSE occurrence.arrived_at
+        END,
         updated_at = CURRENT_TIMESTAMP
       FROM due_occurrences due
       WHERE occurrence.id = due.id
@@ -1413,8 +793,8 @@ END,
       occurrence.airline_id,
       occurrence.aircraft_id,
       occurrence.destination,
-occurrence.block_time_min,
-occurrence.arrived_at AS scheduled_arrival_at
+      occurrence.block_time_min,
+      occurrence.scheduled_arrival_at
       `,
       [normalizedBatchSize]
     );
