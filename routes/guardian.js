@@ -24,6 +24,10 @@ import {
 } from "../services/acs_guardian_diagnostics.js";
 
 import {
+  ACS_getGuardianUsersSnapshot
+} from "../services/acs_guardian_users.js";
+
+import {
   ACS_cancelGuardianActionPreview,
   ACS_createGuardianActionPreview
 } from "../services/acs_guardian_action_preview.js";
@@ -282,6 +286,31 @@ router.get(
         res,
         error,
         "GUARDIAN_DIAGNOSTICS_FAILED"
+      );
+    }
+  }
+);
+
+
+/* ============================================================
+   PRIVATE — USERS AND SESSIONS
+   ============================================================ */
+
+router.get(
+  "/guardian/users-sessions",
+  async (_req, res) => {
+    try {
+      const result =
+        await ACS_getGuardianUsersSnapshot();
+
+      return res.json(result);
+
+    } catch (error) {
+
+      return ACS_sendGuardianError(
+        res,
+        error,
+        "GUARDIAN_USERS_SESSIONS_FAILED"
       );
     }
   }
