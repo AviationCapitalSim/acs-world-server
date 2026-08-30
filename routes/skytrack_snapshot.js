@@ -221,8 +221,11 @@ router.get("/snapshot", requireAuth, async (req, res) => {
           WHEN occurrence.flight_context = 'ACTIVE'
             THEN NULL
 
-          WHEN occurrence.flight_context = 'HELD'
-            THEN occurrence.origin
+         WHEN occurrence.flight_context IN (
+  'HELD',
+  'DUE_PENDING'
+)
+  THEN occurrence.origin
 
           WHEN UPPER(
             COALESCE(fleet.maintenance_control_status, '')
@@ -277,7 +280,7 @@ router.get("/snapshot", requireAuth, async (req, res) => {
         END AS progress,
 
         (
-          occurrence.flight_context <> 'ACTIVE'
+          occurrence.flight_context = 'LAST'
           AND EXISTS (
             SELECT 1
             FROM public.flight_occurrences arrived_occurrence
@@ -319,6 +322,11 @@ router.get("/snapshot", requireAuth, async (req, res) => {
              AND candidate.scheduled_arrival_at > sim.sim_time
               THEN 'HELD'
 
+            WHEN candidate.dispatch_status = 'PENDING'
+ AND candidate.operational_status = 'PLANNED'
+ AND candidate.scheduled_departure_at <= sim.sim_time
+  THEN 'DUE_PENDING'
+            
             WHEN candidate.dispatch_status = 'PENDING'
              AND candidate.operational_status = 'PLANNED'
              AND candidate.scheduled_departure_at > sim.sim_time
@@ -386,6 +394,14 @@ router.get("/snapshot", requireAuth, async (req, res) => {
 
             OR
 
+             (
+  candidate.dispatch_status = 'PENDING'
+  AND candidate.operational_status = 'PLANNED'
+  AND candidate.scheduled_departure_at <= sim.sim_time
+)
+
+OR
+
             (
               candidate.dispatch_status = 'PENDING'
               AND candidate.operational_status = 'PLANNED'
@@ -412,11 +428,17 @@ router.get("/snapshot", requireAuth, async (req, res) => {
              AND candidate.scheduled_arrival_at > sim.sim_time
               THEN 2
 
-            WHEN candidate.dispatch_status = 'PENDING'
-             AND candidate.scheduled_departure_at > sim.sim_time
-              THEN 3
+           WHEN candidate.dispatch_status = 'PENDING'
+ AND candidate.operational_status = 'PLANNED'
+ AND candidate.scheduled_departure_at <= sim.sim_time
+  THEN 3
 
-            ELSE 4
+WHEN candidate.dispatch_status = 'PENDING'
+ AND candidate.operational_status = 'PLANNED'
+ AND candidate.scheduled_departure_at > sim.sim_time
+  THEN 4
+
+ELSE 5
           END,
 
           CASE
