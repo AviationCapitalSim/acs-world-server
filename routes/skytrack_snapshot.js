@@ -253,31 +253,31 @@ router.get("/snapshot", requireAuth, async (req, res) => {
         END AS airport,
 
         CASE
-          WHEN occurrence.flight_context = 'ACTIVE'
-          THEN LEAST(
-            1,
-            GREATEST(
-              0,
-              EXTRACT(
-                EPOCH FROM (
-                  sim.sim_time
-                  - occurrence.scheduled_departure_at
-                )
-              )
-              /
-              NULLIF(
-                EXTRACT(
-                  EPOCH FROM (
-                    occurrence.scheduled_arrival_at
-                    - occurrence.scheduled_departure_at
-                  )
-                ),
-                0
-              )
-            )
+  WHEN occurrence.flight_context = 'ACTIVE'
+  THEN LEAST(
+    1,
+    GREATEST(
+      0,
+      EXTRACT(
+        EPOCH FROM (
+          sim.sim_time
+          - occurrence.effective_departure_at
+        )
+      )
+      /
+      NULLIF(
+        EXTRACT(
+          EPOCH FROM (
+            occurrence.effective_arrival_at
+            - occurrence.effective_departure_at
           )
-          ELSE NULL
-        END AS progress,
+        ),
+        0
+      )
+    )
+  )
+  ELSE NULL
+END AS progress,
 
         (
           occurrence.flight_context = 'LAST'
@@ -290,8 +290,8 @@ router.get("/snapshot", requireAuth, async (req, res) => {
                   fleet.aircraft_id
               AND arrived_occurrence.dispatch_status =
                   'RELEASED'
-              AND arrived_occurrence.scheduled_arrival_at <=
-                  sim.sim_time
+              AND arrived_occurrence.arrived_at <=
+                   sim.sim_time
           )
         ) AS arrived
 
@@ -305,13 +305,13 @@ router.get("/snapshot", requireAuth, async (req, res) => {
 
           CASE
             WHEN candidate.dispatch_status = 'RELEASED'
-             AND candidate.operational_status IN (
-               'DISPATCHED',
-               'EN_ROUTE'
-             )
-             AND candidate.scheduled_departure_at <= sim.sim_time
-             AND candidate.scheduled_arrival_at > sim.sim_time
-              THEN 'ACTIVE'
+ AND candidate.operational_status IN (
+   'DISPATCHED',
+   'EN_ROUTE'
+ )
+ AND candidate.effective_departure_at <= sim.sim_time
+ AND candidate.effective_arrival_at > sim.sim_time
+  THEN 'ACTIVE'
 
             WHEN candidate.dispatch_status = 'NOT_DISPATCHED'
              AND candidate.operational_status IN (
@@ -335,7 +335,32 @@ router.get("/snapshot", requireAuth, async (req, res) => {
             ELSE 'LAST'
           END AS flight_context
 
-        FROM public.flight_occurrences candidate
+        FROM (
+  SELECT
+    raw_candidate.*,
+
+    COALESCE(
+      raw_candidate.departed_at,
+      raw_candidate.dispatched_at,
+      raw_candidate.scheduled_departure_at
+    ) AS effective_departure_at,
+
+    COALESCE(
+      raw_candidate.arrived_at,
+
+      COALESCE(
+        raw_candidate.departed_at,
+        raw_candidate.dispatched_at,
+        raw_candidate.scheduled_departure_at
+      )
+      + (
+          raw_candidate.block_time_min
+          * INTERVAL '1 minute'
+        )
+    ) AS effective_arrival_at
+
+  FROM public.flight_occurrences raw_candidate
+) candidate
 
                 WHERE candidate.airline_id = fleet.airline_id
           AND candidate.aircraft_id = fleet.aircraft_id
@@ -371,13 +396,13 @@ router.get("/snapshot", requireAuth, async (req, res) => {
 
           AND (
             (
-              candidate.dispatch_status = 'RELEASED'
-              AND candidate.operational_status IN (
-                'DISPATCHED',
-                'EN_ROUTE'
-              )
-              AND candidate.scheduled_departure_at <= sim.sim_time
-              AND candidate.scheduled_arrival_at > sim.sim_time
+             candidate.dispatch_status = 'RELEASED'
+AND candidate.operational_status IN (
+  'DISPATCHED',
+  'EN_ROUTE'
+)
+AND candidate.effective_departure_at <= sim.sim_time
+AND candidate.effective_arrival_at > sim.sim_time
             )
 
             OR
@@ -412,16 +437,16 @@ OR
 
             (
               candidate.dispatch_status = 'RELEASED'
-              AND candidate.scheduled_arrival_at <= sim.sim_time
+              AND candidate.effective_arrival_at <= sim.sim_time
             )
           )
 
         ORDER BY
           CASE
             WHEN candidate.dispatch_status = 'RELEASED'
-             AND candidate.scheduled_departure_at <= sim.sim_time
-             AND candidate.scheduled_arrival_at > sim.sim_time
-              THEN 1
+ AND candidate.effective_departure_at <= sim.sim_time
+ AND candidate.effective_arrival_at > sim.sim_time
+  THEN 1
 
             WHEN candidate.dispatch_status = 'NOT_DISPATCHED'
              AND candidate.scheduled_departure_at <= sim.sim_time
