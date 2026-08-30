@@ -1,5 +1,5 @@
 /* ============================================================
-   ACS SKYTRACK GLOBAL
+   ACS SKYTRACK  GLOBAL
    ------------------------------------------------------------
    Global visible traffic for SkyTrack
    Authority: PostgreSQL
