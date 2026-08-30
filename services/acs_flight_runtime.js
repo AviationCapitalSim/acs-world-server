@@ -62,11 +62,38 @@ async function ACS_ensureHRDecisionsForDueFlights() {
         AND occurrence.hr_impact_resolved_at
             IS NULL
 
-        AND occurrence.scheduled_departure_at <=
-            clock.sim_time
+        AND EXISTS (
+          SELECT 1
+          FROM public.schedule_items schedule
+          WHERE schedule.id =
+                occurrence.schedule_item_id
+            AND schedule.airline_id =
+                occurrence.airline_id
+            AND schedule.item_type = 'flight'
+            AND LOWER(
+                  COALESCE(schedule.status, '')
+                ) NOT IN (
+                  'cancelled',
+                  'canceled'
+                )
+        )
+
+        AND occurrence.scheduled_departure_at >=
+            DATE_TRUNC(
+              'day',
+              clock.sim_time
+            )
+
+        AND occurrence.scheduled_departure_at <
+            DATE_TRUNC(
+              'day',
+              clock.sim_time
+            ) + INTERVAL '1 day'
 
       ORDER BY
         occurrence.airline_id
+
+      LIMIT 40
       `
     );
 
@@ -74,48 +101,73 @@ async function ACS_ensureHRDecisionsForDueFlights() {
     let resolvedOccurrences = 0;
     const failedAirlines = [];
 
-    for (const row of airlinesResult.rows) {
-      const airlineId =
-        Number(row.airline_id);
+    const airlineIds = airlinesResult.rows
+      .map(row => Number(row.airline_id))
+      .filter(
+        airlineId =>
+          Number.isInteger(airlineId) &&
+          airlineId > 0
+      );
 
-      if (
-        !Number.isInteger(airlineId) ||
-        airlineId <= 0
-      ) {
-        continue;
-      }
+    let nextAirlineIndex = 0;
 
-      try {
-        const result =
-          await applyHROpsImpactForAirline(
-            airlineId
+    const workerCount = Math.min(
+      4,
+      airlineIds.length
+    );
+
+    async function resolveNextAirline() {
+      while (true) {
+        const currentIndex = nextAirlineIndex;
+        nextAirlineIndex += 1;
+
+        if (currentIndex >= airlineIds.length) {
+          return;
+        }
+
+        const airlineId = airlineIds[currentIndex];
+
+        try {
+          const result =
+            await applyHROpsImpactForAirline(
+              airlineId
+            );
+
+          resolvedAirlines += 1;
+
+          resolvedOccurrences += Number(
+            result?.applied_count || 0
           );
-
-        resolvedAirlines += 1;
-
-        resolvedOccurrences += Number(
-          result?.applied_count || 0
-        );
-      } catch (error) {
-        failedAirlines.push({
-          airlineId,
-          error:
-            error?.message ||
-            "HR_DECISION_RESOLUTION_FAILED"
-        });
-
-        console.error(
-          "ACS_HR_PRE_DISPATCH_AIRLINE_ERROR",
-          {
+        } catch (error) {
+          failedAirlines.push({
             airlineId,
-            error
-          }
-        );
+            error:
+              error?.message ||
+              "HR_DECISION_RESOLUTION_FAILED"
+          });
+
+          console.error(
+            "ACS_HR_PRE_DISPATCH_AIRLINE_ERROR",
+            {
+              airlineId,
+              error
+            }
+          );
+        }
       }
     }
 
+    await Promise.all(
+      Array.from(
+        { length: workerCount },
+        () => resolveNextAirline()
+      )
+    );
+
     return {
       ok: failedAirlines.length === 0,
+      globalFailure: false,
+      selectedAirlines: airlineIds.length,
       resolvedAirlines,
       resolvedOccurrences,
       failedAirlines
@@ -128,6 +180,8 @@ async function ACS_ensureHRDecisionsForDueFlights() {
 
     return {
       ok: false,
+      globalFailure: true,
+      selectedAirlines: 0,
       resolvedAirlines: 0,
       resolvedOccurrences: 0,
       failedAirlines: [],
@@ -470,14 +524,29 @@ export async function ACS_dispatchFlightOccurrences({
   const client = await pool.connect();
 
   const normalizedBatchSize = Math.min(
-    2000,
-    Math.max(
-      1,
-      Number.parseInt(batchSize, 10) || 500
-    )
-  );
+  2000,
+  Math.max(
+    1,
+    Number.parseInt(batchSize, 10) || 500
+  )
+);
 
-  let transactionStarted = false;
+const hrGlobalFailOpen =
+  hrResolution?.globalFailure === true;
+
+const hrFailedAirlineIds = Array.from(
+  new Set(
+    (hrResolution?.failedAirlines || [])
+      .map(row => Number(row.airlineId))
+      .filter(
+        airlineId =>
+          Number.isInteger(airlineId) &&
+          airlineId > 0
+      )
+  )
+);
+
+let transactionStarted = false;
 
   try {
     await client.query("BEGIN");
@@ -613,11 +682,21 @@ export async function ACS_dispatchFlightOccurrences({
         ) AS blocking_event ON TRUE
 
       WHERE occurrence.operational_status = 'PLANNED'
-          AND occurrence.dispatch_status = 'PENDING'
+    AND occurrence.dispatch_status = 'PENDING'
 
-          AND occurrence.scheduled_departure_at <=
-              clock.sim_time
+    AND (
+      occurrence.hr_impact_resolved_at
+        IS NOT NULL
 
+      OR $2::boolean
+
+      OR occurrence.airline_id =
+         ANY($3::bigint[])
+    )
+
+    AND occurrence.scheduled_departure_at <=
+        clock.sim_time
+        
           AND NOT (
             occurrence.hr_impact_resolved_at
               IS NOT NULL
@@ -891,8 +970,12 @@ export async function ACS_dispatchFlightOccurrences({
 
       RETURNING occurrence.dispatch_status
       `,
-      [normalizedBatchSize]
-    );
+[
+  normalizedBatchSize,
+  hrGlobalFailOpen,
+  hrFailedAirlineIds
+]
+);
 
     await client.query("COMMIT");
     transactionStarted = false;
