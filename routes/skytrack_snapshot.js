@@ -154,23 +154,49 @@ router.get("/snapshot", requireAuth, async (req, res) => {
         occurrence.origin AS origin_icao,
         occurrence.destination AS destination_icao,
         occurrence.distance_nm,
-        occurrence.scheduled_departure_at,
+                occurrence.scheduled_departure_at,
         occurrence.scheduled_arrival_at,
+
+        occurrence.effective_departure_at,
+        occurrence.effective_arrival_at,
+
         occurrence.operational_status,
         occurrence.dispatch_status,
         occurrence.dispatch_reason,
+
+        occurrence.hr_impact_level,
+        occurrence.hr_impact_cause,
+        occurrence.hr_operational_outcome,
+        occurrence.hr_delay_minutes,
+        occurrence.hr_release_at,
+        occurrence.hr_cancel_reason,
+        occurrence.hr_pax_reduction_pct,
+        occurrence.hr_route_image_penalty,
+
         occurrence.flight_context,
 
         (
-          EXTRACT(DOW FROM occurrence.scheduled_departure_at)::int * 1440
-          + EXTRACT(HOUR FROM occurrence.scheduled_departure_at)::int * 60
-          + EXTRACT(MINUTE FROM occurrence.scheduled_departure_at)::int
+          EXTRACT(
+            DOW FROM occurrence.effective_departure_at
+          )::int * 1440
+          + EXTRACT(
+              HOUR FROM occurrence.effective_departure_at
+            )::int * 60
+          + EXTRACT(
+              MINUTE FROM occurrence.effective_departure_at
+            )::int
         )::int AS dep_abs_min,
 
         (
-          EXTRACT(DOW FROM occurrence.scheduled_arrival_at)::int * 1440
-          + EXTRACT(HOUR FROM occurrence.scheduled_arrival_at)::int * 60
-          + EXTRACT(MINUTE FROM occurrence.scheduled_arrival_at)::int
+          EXTRACT(
+            DOW FROM occurrence.effective_arrival_at
+          )::int * 1440
+          + EXTRACT(
+              HOUR FROM occurrence.effective_arrival_at
+            )::int * 60
+          + EXTRACT(
+              MINUTE FROM occurrence.effective_arrival_at
+            )::int
         )::int AS arr_abs_min,
 
         CASE
@@ -211,8 +237,11 @@ router.get("/snapshot", requireAuth, async (req, res) => {
           WHEN occurrence.flight_context = 'ACTIVE'
             THEN NULL
 
-          WHEN occurrence.flight_context = 'HELD'
-            THEN occurrence.origin
+         WHEN occurrence.flight_context IN (
+  'HELD',
+  'DUE_PENDING'
+)
+  THEN occurrence.origin
 
           WHEN UPPER(
             COALESCE(fleet.maintenance_control_status, '')
@@ -240,34 +269,34 @@ router.get("/snapshot", requireAuth, async (req, res) => {
         END AS airport,
 
         CASE
-          WHEN occurrence.flight_context = 'ACTIVE'
-          THEN LEAST(
-            1,
-            GREATEST(
-              0,
-              EXTRACT(
-                EPOCH FROM (
-                  sim.sim_time
-                  - occurrence.scheduled_departure_at
-                )
-              )
-              /
-              NULLIF(
-                EXTRACT(
-                  EPOCH FROM (
-                    occurrence.scheduled_arrival_at
-                    - occurrence.scheduled_departure_at
-                  )
-                ),
-                0
-              )
-            )
+  WHEN occurrence.flight_context = 'ACTIVE'
+  THEN LEAST(
+    1,
+    GREATEST(
+      0,
+      EXTRACT(
+        EPOCH FROM (
+          sim.sim_time
+          - occurrence.effective_departure_at
+        )
+      )
+      /
+      NULLIF(
+        EXTRACT(
+          EPOCH FROM (
+            occurrence.effective_arrival_at
+            - occurrence.effective_departure_at
           )
-          ELSE NULL
-        END AS progress,
+        ),
+        0
+      )
+    )
+  )
+  ELSE NULL
+END AS progress,
 
         (
-          occurrence.flight_context <> 'ACTIVE'
+          occurrence.flight_context = 'LAST'
           AND EXISTS (
             SELECT 1
             FROM public.flight_occurrences arrived_occurrence
@@ -277,8 +306,8 @@ router.get("/snapshot", requireAuth, async (req, res) => {
                   fleet.aircraft_id
               AND arrived_occurrence.dispatch_status =
                   'RELEASED'
-              AND arrived_occurrence.scheduled_arrival_at <=
-                  sim.sim_time
+              AND arrived_occurrence.arrived_at <=
+                   sim.sim_time
           )
         ) AS arrived
 
@@ -292,13 +321,13 @@ router.get("/snapshot", requireAuth, async (req, res) => {
 
           CASE
             WHEN candidate.dispatch_status = 'RELEASED'
-             AND candidate.operational_status IN (
-               'DISPATCHED',
-               'EN_ROUTE'
-             )
-             AND candidate.scheduled_departure_at <= sim.sim_time
-             AND candidate.scheduled_arrival_at > sim.sim_time
-              THEN 'ACTIVE'
+ AND candidate.operational_status IN (
+   'DISPATCHED',
+   'EN_ROUTE'
+ )
+ AND candidate.effective_departure_at <= sim.sim_time
+ AND candidate.effective_arrival_at > sim.sim_time
+  THEN 'ACTIVE'
 
             WHEN candidate.dispatch_status = 'NOT_DISPATCHED'
              AND candidate.operational_status IN (
@@ -310,6 +339,11 @@ router.get("/snapshot", requireAuth, async (req, res) => {
               THEN 'HELD'
 
             WHEN candidate.dispatch_status = 'PENDING'
+ AND candidate.operational_status = 'PLANNED'
+ AND candidate.scheduled_departure_at <= sim.sim_time
+  THEN 'DUE_PENDING'
+            
+            WHEN candidate.dispatch_status = 'PENDING'
              AND candidate.operational_status = 'PLANNED'
              AND candidate.scheduled_departure_at > sim.sim_time
               THEN 'FUTURE'
@@ -317,7 +351,32 @@ router.get("/snapshot", requireAuth, async (req, res) => {
             ELSE 'LAST'
           END AS flight_context
 
-        FROM public.flight_occurrences candidate
+        FROM (
+  SELECT
+    raw_candidate.*,
+
+    COALESCE(
+      raw_candidate.departed_at,
+      raw_candidate.dispatched_at,
+      raw_candidate.scheduled_departure_at
+    ) AS effective_departure_at,
+
+    COALESCE(
+      raw_candidate.arrived_at,
+
+      COALESCE(
+        raw_candidate.departed_at,
+        raw_candidate.dispatched_at,
+        raw_candidate.scheduled_departure_at
+      )
+      + (
+          raw_candidate.block_time_min
+          * INTERVAL '1 minute'
+        )
+    ) AS effective_arrival_at
+
+  FROM public.flight_occurrences raw_candidate
+) candidate
 
                 WHERE candidate.airline_id = fleet.airline_id
           AND candidate.aircraft_id = fleet.aircraft_id
@@ -353,13 +412,13 @@ router.get("/snapshot", requireAuth, async (req, res) => {
 
           AND (
             (
-              candidate.dispatch_status = 'RELEASED'
-              AND candidate.operational_status IN (
-                'DISPATCHED',
-                'EN_ROUTE'
-              )
-              AND candidate.scheduled_departure_at <= sim.sim_time
-              AND candidate.scheduled_arrival_at > sim.sim_time
+             candidate.dispatch_status = 'RELEASED'
+AND candidate.operational_status IN (
+  'DISPATCHED',
+  'EN_ROUTE'
+)
+AND candidate.effective_departure_at <= sim.sim_time
+AND candidate.effective_arrival_at > sim.sim_time
             )
 
             OR
@@ -376,6 +435,14 @@ router.get("/snapshot", requireAuth, async (req, res) => {
 
             OR
 
+             (
+  candidate.dispatch_status = 'PENDING'
+  AND candidate.operational_status = 'PLANNED'
+  AND candidate.scheduled_departure_at <= sim.sim_time
+)
+
+OR
+
             (
               candidate.dispatch_status = 'PENDING'
               AND candidate.operational_status = 'PLANNED'
@@ -386,27 +453,33 @@ router.get("/snapshot", requireAuth, async (req, res) => {
 
             (
               candidate.dispatch_status = 'RELEASED'
-              AND candidate.scheduled_arrival_at <= sim.sim_time
+              AND candidate.effective_arrival_at <= sim.sim_time
             )
           )
 
         ORDER BY
           CASE
             WHEN candidate.dispatch_status = 'RELEASED'
-             AND candidate.scheduled_departure_at <= sim.sim_time
-             AND candidate.scheduled_arrival_at > sim.sim_time
-              THEN 1
+ AND candidate.effective_departure_at <= sim.sim_time
+ AND candidate.effective_arrival_at > sim.sim_time
+  THEN 1
 
             WHEN candidate.dispatch_status = 'NOT_DISPATCHED'
              AND candidate.scheduled_departure_at <= sim.sim_time
              AND candidate.scheduled_arrival_at > sim.sim_time
               THEN 2
 
-            WHEN candidate.dispatch_status = 'PENDING'
-             AND candidate.scheduled_departure_at > sim.sim_time
-              THEN 3
+           WHEN candidate.dispatch_status = 'PENDING'
+ AND candidate.operational_status = 'PLANNED'
+ AND candidate.scheduled_departure_at <= sim.sim_time
+  THEN 3
 
-            ELSE 4
+WHEN candidate.dispatch_status = 'PENDING'
+ AND candidate.operational_status = 'PLANNED'
+ AND candidate.scheduled_departure_at > sim.sim_time
+  THEN 4
+
+ELSE 5
           END,
 
           CASE
@@ -438,7 +511,8 @@ router.get("/snapshot", requireAuth, async (req, res) => {
       ]
     );
 
-    const flights = result.rows.map(row => {
+  const flights = result.rows.map(row => {
+     
   const rawAircraftId =
     String(row.aircraft_id);
 
@@ -530,8 +604,15 @@ router.get("/snapshot", requireAuth, async (req, res) => {
 
         scheduledDepartureAt:
           row.scheduled_departure_at || null,
+
         scheduledArrivalAt:
           row.scheduled_arrival_at || null,
+
+        effectiveDepartureAt:
+          row.effective_departure_at || null,
+
+        effectiveArrivalAt:
+          row.effective_arrival_at || null,
 
         distanceNM: Number(row.distance_nm || 0),
         flightDirection:
@@ -539,10 +620,36 @@ router.get("/snapshot", requireAuth, async (req, res) => {
 
         scheduleStatus:
           row.operational_status || null,
+     
         dispatchStatus:
           row.dispatch_status || null,
+       
         dispatchReason:
           row.dispatch_reason || null,
+
+        hrImpactLevel:
+          row.hr_impact_level || null,
+
+        hrImpactCause:
+          row.hr_impact_cause || null,
+
+        hrOperationalOutcome:
+          row.hr_operational_outcome || null,
+
+        hrDelayMinutes:
+          Number(row.hr_delay_minutes || 0),
+
+        hrReleaseAt:
+          row.hr_release_at || null,
+
+        hrCancelReason:
+          row.hr_cancel_reason || null,
+
+        hrPaxReductionPct:
+          Number(row.hr_pax_reduction_pct || 0),
+
+        hrRouteImagePenalty:
+          Number(row.hr_route_image_penalty || 0),
 
         flightContext:
           row.flight_context || "NO_FLIGHT",
