@@ -192,6 +192,52 @@ async function ACS_ensureHRDecisionsForDueFlights() {
   }
 }
 
+let ACS_HR_decisionWorkerPromise = null;
+
+function ACS_startHRDecisionWorker() {
+  if (ACS_HR_decisionWorkerPromise) {
+    return false;
+  }
+
+  ACS_HR_decisionWorkerPromise = (async () => {
+    while (true) {
+      const result =
+        await ACS_ensureHRDecisionsForDueFlights();
+
+      if (result?.globalFailure === true) {
+        break;
+      }
+
+      const selectedAirlines = Number(
+        result?.selectedAirlines || 0
+      );
+
+      const resolvedOccurrences = Number(
+        result?.resolvedOccurrences || 0
+      );
+
+      if (selectedAirlines <= 0) {
+        break;
+      }
+
+      if (resolvedOccurrences <= 0) {
+        break;
+      }
+    }
+  })()
+    .catch(error => {
+      console.error(
+        "ACS_HR_DECISION_WORKER_ERROR",
+        error
+      );
+    })
+    .finally(() => {
+      ACS_HR_decisionWorkerPromise = null;
+    });
+
+  return true;
+}
+
 function ACS_normalizeHorizonDays(value) {
   const days = Number(value);
 
@@ -514,39 +560,36 @@ async function ACS_materializeFlightOccurrences(
 
   return result.rowCount;
 }
-
 export async function ACS_dispatchFlightOccurrences({
   batchSize = 500
 } = {}) {
-  const hrResolution =
-    await ACS_ensureHRDecisionsForDueFlights();
+  const hrWorkerStarted =
+    ACS_startHRDecisionWorker();
+
+  const hrResolution = {
+    ok: true,
+    mode: "ASYNC_NON_BLOCKING",
+    workerStarted: hrWorkerStarted,
+    workerRunning:
+      ACS_HR_decisionWorkerPromise !== null,
+    globalFailure: false,
+    failedAirlines: []
+  };
 
   const client = await pool.connect();
 
   const normalizedBatchSize = Math.min(
-  2000,
-  Math.max(
-    1,
-    Number.parseInt(batchSize, 10) || 500
-  )
-);
+    2000,
+    Math.max(
+      1,
+      Number.parseInt(batchSize, 10) || 500
+    )
+  );
 
-const hrGlobalFailOpen =
-  hrResolution?.globalFailure === true;
+  const hrGlobalFailOpen = false;
+  const hrFailedAirlineIds = [];
 
-const hrFailedAirlineIds = Array.from(
-  new Set(
-    (hrResolution?.failedAirlines || [])
-      .map(row => Number(row.airlineId))
-      .filter(
-        airlineId =>
-          Number.isInteger(airlineId) &&
-          airlineId > 0
-      )
-  )
-);
-
-let transactionStarted = false;
+  let transactionStarted = false;
 
   try {
     await client.query("BEGIN");
