@@ -154,8 +154,12 @@ router.get("/snapshot", requireAuth, async (req, res) => {
         occurrence.origin AS origin_icao,
         occurrence.destination AS destination_icao,
         occurrence.distance_nm,
-        occurrence.scheduled_departure_at,
+                occurrence.scheduled_departure_at,
         occurrence.scheduled_arrival_at,
+
+        occurrence.effective_departure_at,
+        occurrence.effective_arrival_at,
+
         occurrence.operational_status,
         occurrence.dispatch_status,
         occurrence.dispatch_reason,
@@ -172,10 +176,28 @@ router.get("/snapshot", requireAuth, async (req, res) => {
         occurrence.flight_context,
 
         (
-          EXTRACT(DOW FROM occurrence.scheduled_departure_at)::int * 1440
-          + EXTRACT(HOUR FROM occurrence.scheduled_departure_at)::int * 60
-          + EXTRACT(MINUTE FROM occurrence.scheduled_departure_at)::int
+          EXTRACT(
+            DOW FROM occurrence.effective_departure_at
+          )::int * 1440
+          + EXTRACT(
+              HOUR FROM occurrence.effective_departure_at
+            )::int * 60
+          + EXTRACT(
+              MINUTE FROM occurrence.effective_departure_at
+            )::int
         )::int AS dep_abs_min,
+
+        (
+          EXTRACT(
+            DOW FROM occurrence.effective_arrival_at
+          )::int * 1440
+          + EXTRACT(
+              HOUR FROM occurrence.effective_arrival_at
+            )::int * 60
+          + EXTRACT(
+              MINUTE FROM occurrence.effective_arrival_at
+            )::int
+        )::int AS arr_abs_min,
 
         (
           EXTRACT(DOW FROM occurrence.scheduled_arrival_at)::int * 1440
@@ -588,8 +610,15 @@ ELSE 5
 
         scheduledDepartureAt:
           row.scheduled_departure_at || null,
+
         scheduledArrivalAt:
           row.scheduled_arrival_at || null,
+
+        effectiveDepartureAt:
+          row.effective_departure_at || null,
+
+        effectiveArrivalAt:
+          row.effective_arrival_at || null,
 
         distanceNM: Number(row.distance_nm || 0),
         flightDirection:
