@@ -363,127 +363,20 @@ export async function ACS_dispatchFlightOccurrences({
     await client.query("BEGIN");
     transactionStarted = true;
 
-    const hrCancellationResult = await client.query(
-      `
-      UPDATE public.flight_occurrences
-      SET
-        operational_status = 'CANCELLED',
-        dispatch_status = 'NOT_DISPATCHED',
-        dispatch_reason = COALESCE(
-          NULLIF(hr_cancel_reason, ''),
-          'HR_CANCELLED'
-        ),
-        updated_at = CURRENT_TIMESTAMP
-      WHERE operational_status IN ('PLANNED', 'HELD')
-        AND dispatch_status IN ('PENDING', 'NOT_DISPATCHED')
-        AND UPPER(
-          COALESCE(hr_operational_outcome, '')
-        ) = 'CANCELLED'
-      RETURNING id
-      `
-    );
-
     const result = await client.query(
       `
       WITH clock AS MATERIALIZED (
         SELECT acs_get_current_sim_time() AS sim_time
       ),
 
-      dispatch_candidates AS MATERIALIZED (
+      due_occurrences AS MATERIALIZED (
         SELECT
           occurrence.id,
           occurrence.aircraft_id,
           occurrence.airline_id,
           occurrence.scheduled_departure_at,
           occurrence.scheduled_arrival_at,
-          occurrence.block_time_min,
-          occurrence.hr_delay_minutes,
-          occurrence.hr_release_at,
           clock.sim_time,
-
-          previous_occurrence.id
-            AS previous_occurrence_id,
-          previous_occurrence.operational_status
-            AS previous_operational_status,
-          previous_occurrence.arrived_at
-            AS previous_arrived_at,
-          previous_occurrence.turnaround_min
-            AS previous_turnaround_min,
-
-          CASE
-            WHEN previous_occurrence.id IS NOT NULL
-              AND (
-                previous_occurrence.operational_status <>
-                  'ARRIVED'
-                OR previous_occurrence.arrived_at IS NULL
-              )
-              THEN NULL
-            ELSE GREATEST(
-              occurrence.scheduled_departure_at,
-              COALESCE(
-                occurrence.hr_release_at,
-                occurrence.scheduled_departure_at
-                + (
-                    COALESCE(
-                      occurrence.hr_delay_minutes,
-                      0
-                    ) * INTERVAL '1 minute'
-                  )
-              ),
-              CASE
-                WHEN previous_occurrence.id IS NULL
-                  THEN occurrence.scheduled_departure_at
-                ELSE previous_occurrence.arrived_at
-                  + (
-                      COALESCE(
-                        previous_occurrence.turnaround_min,
-                        0
-                      ) * INTERVAL '1 minute'
-                    )
-              END
-            )
-          END AS effective_departure_at
-
-        FROM public.flight_occurrences occurrence
-
-        CROSS JOIN clock
-
-        LEFT JOIN LATERAL (
-          SELECT
-            previous.id,
-            previous.operational_status,
-            previous.arrived_at,
-            previous.turnaround_min
-          FROM public.flight_occurrences previous
-          WHERE previous.airline_id = occurrence.airline_id
-            AND previous.aircraft_id = occurrence.aircraft_id
-            AND previous.operational_status <> 'CANCELLED'
-            AND ROW(
-              previous.scheduled_departure_at,
-              previous.id
-            ) < ROW(
-              occurrence.scheduled_departure_at,
-              occurrence.id
-            )
-          ORDER BY
-            previous.scheduled_departure_at DESC,
-            previous.id DESC
-          LIMIT 1
-        ) AS previous_occurrence ON TRUE
-
-        WHERE occurrence.operational_status = 'PLANNED'
-          AND occurrence.dispatch_status = 'PENDING'
-          AND UPPER(
-            COALESCE(
-              occurrence.hr_operational_outcome,
-              'ON_TIME'
-            )
-          ) <> 'CANCELLED'
-      ),
-
-      due_occurrences AS MATERIALIZED (
-        SELECT
-          candidate.*,
 
           maintenance_status.a_check_status,
           maintenance_status.b_check_status,
@@ -498,17 +391,16 @@ export async function ACS_dispatchFlightOccurrences({
           blocking_event.maintenance_start_at,
           blocking_event.maintenance_end_at
 
-        FROM dispatch_candidates candidate
+        FROM public.flight_occurrences occurrence
 
-        JOIN public.flight_occurrences occurrence
-          ON occurrence.id = candidate.id
+        CROSS JOIN clock
 
         LEFT JOIN public.aircraft_maintenance_status
           AS maintenance_status
           ON maintenance_status.aircraft_id =
-             candidate.aircraft_id
+             occurrence.aircraft_id
          AND maintenance_status.airline_id =
-             candidate.airline_id
+             occurrence.airline_id
 
         LEFT JOIN LATERAL (
           SELECT
@@ -543,15 +435,15 @@ export async function ACS_dispatchFlightOccurrences({
           FROM public.aircraft_maintenance_events event
 
           WHERE event.aircraft_id =
-                candidate.aircraft_id
+                occurrence.aircraft_id
             AND event.airline_id =
-                candidate.airline_id
+                occurrence.airline_id
             AND event.event_status IN (
               'SCHEDULED',
               'IN_PROGRESS'
             )
 
-            AND candidate.effective_departure_at <
+            AND occurrence.scheduled_departure_at <
               CASE
                 WHEN event.event_status = 'IN_PROGRESS'
                   THEN COALESCE(
@@ -564,11 +456,7 @@ export async function ACS_dispatchFlightOccurrences({
                 )
               END
 
-            AND candidate.effective_departure_at
-              + (
-                  candidate.block_time_min
-                  * INTERVAL '1 minute'
-                ) >
+            AND occurrence.scheduled_arrival_at >
               CASE
                 WHEN event.event_status = 'IN_PROGRESS'
                   THEN COALESCE(
@@ -595,14 +483,14 @@ export async function ACS_dispatchFlightOccurrences({
           LIMIT 1
         ) AS blocking_event ON TRUE
 
-        WHERE candidate.effective_departure_at
-              IS NOT NULL
-          AND candidate.effective_departure_at <=
-              candidate.sim_time
+        WHERE occurrence.operational_status = 'PLANNED'
+          AND occurrence.dispatch_status = 'PENDING'
+          AND occurrence.scheduled_departure_at <=
+              clock.sim_time
 
         ORDER BY
-          candidate.effective_departure_at,
-          candidate.id
+          occurrence.scheduled_departure_at,
+          occurrence.id
 
         LIMIT $1
 
@@ -791,7 +679,7 @@ export async function ACS_dispatchFlightOccurrences({
         dispatched_at = CASE
           WHEN classified.is_blocked
             THEN NULL
-          ELSE classified.effective_departure_at
+          ELSE classified.sim_time
         END,
 
         updated_at = CURRENT_TIMESTAMP
@@ -817,11 +705,7 @@ export async function ACS_dispatchFlightOccurrences({
     ).length;
 
     return {
-      processedCount:
-        hrCancellationResult.rowCount +
-        result.rowCount,
-      cancelledCount:
-        hrCancellationResult.rowCount,
+      processedCount: result.rowCount,
       heldCount,
       releasedCount
     };
@@ -865,36 +749,9 @@ export async function ACS_advanceFlightOccurrences({
       due_occurrences AS MATERIALIZED (
         SELECT
           occurrence.id,
-          occurrence.airline_id,
-          occurrence.aircraft_id,
-          occurrence.destination,
-          occurrence.block_time_min,
           occurrence.scheduled_departure_at,
           occurrence.scheduled_arrival_at,
-          occurrence.hr_delay_minutes,
-          occurrence.hr_release_at,
-          occurrence.dispatched_at,
-          occurrence.departed_at,
-          clock.sim_time,
-
-          COALESCE(
-            occurrence.departed_at,
-            occurrence.dispatched_at,
-            GREATEST(
-              occurrence.scheduled_departure_at,
-              COALESCE(
-                occurrence.hr_release_at,
-                occurrence.scheduled_departure_at
-                + (
-                    COALESCE(
-                      occurrence.hr_delay_minutes,
-                      0
-                    ) * INTERVAL '1 minute'
-                  )
-              )
-            )
-          ) AS effective_departure_at
-
+          clock.sim_time
         FROM public.flight_occurrences occurrence
         CROSS JOIN clock
         WHERE occurrence.dispatch_status = 'RELEASED'
@@ -902,41 +759,9 @@ export async function ACS_advanceFlightOccurrences({
             'DISPATCHED',
             'EN_ROUTE'
           )
-          AND COALESCE(
-                occurrence.departed_at,
-                occurrence.dispatched_at,
-                GREATEST(
-                  occurrence.scheduled_departure_at,
-                  COALESCE(
-                    occurrence.hr_release_at,
-                    occurrence.scheduled_departure_at
-                    + (
-                        COALESCE(
-                          occurrence.hr_delay_minutes,
-                          0
-                        ) * INTERVAL '1 minute'
-                      )
-                  )
-                )
-              ) <= clock.sim_time
+          AND occurrence.scheduled_departure_at <= clock.sim_time
         ORDER BY
-          COALESCE(
-            occurrence.departed_at,
-            occurrence.dispatched_at,
-            GREATEST(
-              occurrence.scheduled_departure_at,
-              COALESCE(
-                occurrence.hr_release_at,
-                occurrence.scheduled_departure_at
-                + (
-                    COALESCE(
-                      occurrence.hr_delay_minutes,
-                      0
-                    ) * INTERVAL '1 minute'
-                  )
-              )
-            )
-          ),
+          occurrence.scheduled_departure_at,
           occurrence.id
         LIMIT $1
         FOR UPDATE OF occurrence SKIP LOCKED
@@ -944,31 +769,19 @@ export async function ACS_advanceFlightOccurrences({
       UPDATE public.flight_occurrences occurrence
       SET
         operational_status = CASE
-          WHEN due.effective_departure_at
-               + (
-                   due.block_time_min
-                   * INTERVAL '1 minute'
-                 ) <= due.sim_time
+          WHEN due.scheduled_arrival_at <= due.sim_time
             THEN 'ARRIVED'
           ELSE 'EN_ROUTE'
         END,
         departed_at = COALESCE(
           occurrence.departed_at,
-          due.effective_departure_at
+          due.scheduled_departure_at
         ),
         arrived_at = CASE
-          WHEN due.effective_departure_at
-               + (
-                   due.block_time_min
-                   * INTERVAL '1 minute'
-                 ) <= due.sim_time
+          WHEN due.scheduled_arrival_at <= due.sim_time
             THEN COALESCE(
               occurrence.arrived_at,
-              due.effective_departure_at
-              + (
-                  due.block_time_min
-                  * INTERVAL '1 minute'
-                )
+              due.scheduled_arrival_at
             )
           ELSE occurrence.arrived_at
         END,
@@ -981,7 +794,7 @@ export async function ACS_advanceFlightOccurrences({
       occurrence.aircraft_id,
       occurrence.destination,
       occurrence.block_time_min,
-      occurrence.arrived_at
+      occurrence.scheduled_arrival_at
       `,
       [normalizedBatchSize]
     );
@@ -1000,7 +813,7 @@ if (arrivedRows.length > 0) {
         aircraft_id integer,
         destination text,
         block_time_min integer,
-        arrived_at timestamp
+        scheduled_arrival_at timestamp
       )
     ),
     aircraft_delta AS MATERIALIZED (
@@ -1015,7 +828,7 @@ if (arrivedRows.length > 0) {
         (
           ARRAY_AGG(
             destination
-            ORDER BY arrived_at DESC
+            ORDER BY scheduled_arrival_at DESC
           )
         )[1] AS current_airport
       FROM arrivals
