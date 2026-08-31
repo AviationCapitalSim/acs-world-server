@@ -16,19 +16,53 @@ import {
 const ACS_PREVIEW_LIFETIME_MINUTES = 10;
 
 const ACS_ACTIONS = Object.freeze({
+   
   FINANCE_CLOSED_DETAIL_COMPACTION: {
-    table: "finance_log",
-    confirmationLabel: "DETALLE FINANCIERO"
+    table:
+      "finance_log",
+
+    confirmationLabel:
+      "DETALLE FINANCIERO"
   },
 
   FLIGHT_HISTORY_COMPACTION: {
-    table: "flight_occurrences",
-    confirmationLabel: "HISTORIAL DE VUELOS"
+    table:
+      "flight_occurrences",
+
+    confirmationLabel:
+      "HISTORIAL DE VUELOS"
   },
 
   OCC_DELETED_ALERTS_COMPACTION: {
-    table: "occ_alerts",
-    confirmationLabel: "MENSAJES OCC"
+    table:
+      "occ_alerts",
+
+    confirmationLabel:
+      "MENSAJES OCC"
+  },
+
+  SECURITY_LOG_BETA_COMPACTION: {
+    table:
+      "security_log",
+
+    confirmationLabel:
+      "SEGURIDAD BETA"
+  },
+
+  SKYTRACK_OPS_IMPACTS_BETA_COMPACTION: {
+    table:
+      "skytrack_ops_impacts",
+
+    confirmationLabel:
+      "SKYTRACK BETA"
+  },
+
+  PASSENGER_MARKET_DAILY_BETA_COMPACTION: {
+    table:
+      "acs_passenger_market_daily",
+
+    confirmationLabel:
+      "MERCADO PASAJEROS BETA"
   }
 });
 
