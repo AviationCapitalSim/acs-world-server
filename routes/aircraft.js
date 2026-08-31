@@ -6349,8 +6349,30 @@ const orderResult = await client.query(
       sim_year: simYear,
       sim_month: simMonth,
       sim_day: simDay,
-      factory_slot_id: factorySlotId,
-      factory_slots_reserved: reservedFactorySlots,
+      factory_slot_id:
+  factorySlotId,
+
+factory_slots_reserved:
+  reservedFactorySlots,
+
+/* ============================================================
+   🟦 ACS OCC IV — INDIVIDUAL UNIT DELIVERY SCHEDULE
+   ------------------------------------------------------------
+   - One entry represents one aircraft.
+   - Stored in the existing order notes JSON.
+   - No database schema changes.
+   ============================================================ */
+
+unit_delivery_schedule:
+  unitDeliverySchedule,
+
+unit_delivery_schedule_version:
+  "ACS_OCC_IV_V1",
+
+next_delivery_unit_number:
+  1,
+
+/* Lease New OCC metadata */
 
 /* Lease New OCC metadata */
        
