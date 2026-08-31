@@ -5925,6 +5925,74 @@ let previousUnitDeliveryDate = null;
       );
     }
 
+     /* ============================================================
+   🟦 ACS OCC IV — INDIVIDUAL DELIVERY DATE SEPARATION
+   ------------------------------------------------------------
+   - Calculates one delivery date per aircraft.
+   - Prevents two units from sharing the same date.
+   - Preserves the production cadence of the factory slot.
+   ============================================================ */
+
+function ACS_getIndividualDeliveryDate({
+  projectedSlotDate,
+  currentSimDate,
+  baseDeliveryDays,
+  previousDeliveryDate,
+  daysInMonth,
+  slotCapacity
+}) {
+  const deliveryBaseDate =
+    projectedSlotDate.getTime() <
+    currentSimDate.getTime()
+      ? currentSimDate
+      : projectedSlotDate;
+
+  let individualDeliveryDate = new Date(
+    deliveryBaseDate.getTime() +
+    Number(baseDeliveryDays || 0) *
+      24 *
+      60 *
+      60 *
+      1000
+  );
+
+  const productionCadenceDays = Math.max(
+    1,
+    Math.round(
+      Number(daysInMonth || 1) /
+      Math.max(
+        1,
+        Number(slotCapacity || 1)
+      )
+    )
+  );
+
+  if (
+    previousDeliveryDate instanceof Date &&
+    !Number.isNaN(
+      previousDeliveryDate.getTime()
+    ) &&
+    individualDeliveryDate.getTime() <=
+      previousDeliveryDate.getTime()
+  ) {
+    individualDeliveryDate = new Date(
+      previousDeliveryDate.getTime() +
+      productionCadenceDays *
+        24 *
+        60 *
+        60 *
+        1000
+    );
+  }
+
+  return {
+    estimatedDeliveryDate:
+      individualDeliveryDate,
+
+    productionCadenceDays
+  };
+}
+     
     for (const slot of availableSlotsResult.rows) {
       if (remainingQuantityToReserve <= 0) break;
 
@@ -6285,6 +6353,7 @@ const orderResult = await client.query(
       factory_slots_reserved: reservedFactorySlots,
 
 /* Lease New OCC metadata */
+       
 lease_years: ownershipType === "LEASE" ? leaseYears : null,
 lease_term_months: ownershipType === "LEASE" ? leaseTermMonths : null,
 monthly_lease_payment: ownershipType === "LEASE" ? monthlyLeasePayment : null,
