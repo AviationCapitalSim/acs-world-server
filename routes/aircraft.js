@@ -5959,6 +5959,80 @@ let previousUnitDeliveryDate = null;
         Number(slot.base_delivery_days || 0)
       );
 
+      /* ============================================================
+   🟦 ACS OCC IV — BUILD ONE DELIVERY ENTRY PER AIRCRAFT
+   ============================================================ */
+
+for (
+  let unitOffset = 1;
+  unitOffset <= reserveQty;
+  unitOffset += 1
+) {
+  const individualSlotPosition =
+    reservedBefore + unitOffset;
+
+  const individualProjectedSlotDate =
+    ACS_getProjectedFactorySlotDate(
+      Number(slot.slot_year),
+      Number(slot.slot_month),
+      slotCapacity,
+      individualSlotPosition
+    );
+
+  const individualDelivery =
+    ACS_getIndividualDeliveryDate({
+      projectedSlotDate:
+        individualProjectedSlotDate,
+
+      currentSimDate,
+
+      baseDeliveryDays:
+        Number(slot.base_delivery_days || 0),
+
+      previousDeliveryDate:
+        previousUnitDeliveryDate,
+
+      daysInMonth:
+        ACS_getDaysInMonthUTC(
+          Number(slot.slot_year),
+          Number(slot.slot_month)
+        ),
+
+      slotCapacity
+    });
+
+  const individualDeliveryDate =
+    individualDelivery.estimatedDeliveryDate;
+
+  unitDeliverySchedule.push({
+    unit_number: nextDeliveryUnitNumber,
+    factory_slot_id: Number(slot.id),
+
+    slot_year:
+      Number(slot.slot_year),
+
+    slot_month:
+      Number(slot.slot_month),
+
+    slot_position:
+      individualSlotPosition,
+
+    production_cadence_days:
+      individualDelivery.productionCadenceDays,
+
+    projected_slot_date:
+      individualProjectedSlotDate.toISOString(),
+
+    estimated_delivery_date:
+      individualDeliveryDate.toISOString()
+  });
+
+  previousUnitDeliveryDate =
+    individualDeliveryDate;
+
+  nextDeliveryUnitNumber += 1;
+}
+
       await client.query(
         `
         UPDATE aircraft_factory_slots
@@ -6022,11 +6096,56 @@ let previousUnitDeliveryDate = null;
       });
     }
 
+    if (unitDeliverySchedule.length !== quantity) {
+  await client.query("ROLLBACK");
+
+  return res.status(500).json({
+    ok: false,
+    error:
+      "UNIT_DELIVERY_SCHEDULE_QUANTITY_MISMATCH",
+
+    requested_quantity:
+      quantity,
+
+    scheduled_quantity:
+      unitDeliverySchedule.length
+  });
+}
+
+const uniqueDeliveryDays = new Set(
+  unitDeliverySchedule.map(unit =>
+    String(
+      unit.estimated_delivery_date
+    ).slice(0, 10)
+  )
+);
+
+if (uniqueDeliveryDays.size !== quantity) {
+  await client.query("ROLLBACK");
+
+  return res.status(500).json({
+    ok: false,
+    error:
+      "DUPLICATE_UNIT_DELIVERY_DATE",
+
+    requested_quantity:
+      quantity,
+
+    unique_delivery_days:
+      uniqueDeliveryDays.size
+  });
+}
+     
     const factorySlotId = reservedFactorySlots[0]?.slot_id || null;
 
-    const estimatedDeliveryDate = new Date(
-      reservedFactorySlots[reservedFactorySlots.length - 1].estimated_delivery_date
-    );
+    /*
+  Parent order always points to the next aircraft
+  waiting for delivery.
+*/
+const estimatedDeliveryDate = new Date(
+  unitDeliverySchedule[0]
+    .estimated_delivery_date
+);
 
     /* ============================================================
    5) INSERT ORDER
