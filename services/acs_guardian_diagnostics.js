@@ -16,6 +16,7 @@ import {
 const ACS_MANUAL_CLEANUP_WARNING_PERCENT = 60;
 
 const ACTIONS = Object.freeze({
+   
   FINANCE:
     "FINANCE_CLOSED_DETAIL_COMPACTION",
 
@@ -23,7 +24,16 @@ const ACTIONS = Object.freeze({
     "FLIGHT_HISTORY_COMPACTION",
 
   OCC_ALERTS:
-    "OCC_DELETED_ALERTS_COMPACTION"
+    "OCC_DELETED_ALERTS_COMPACTION",
+
+  SECURITY_LOG:
+    "SECURITY_LOG_BETA_COMPACTION",
+
+  SKYTRACK_IMPACTS:
+    "SKYTRACK_OPS_IMPACTS_BETA_COMPACTION",
+
+  PASSENGER_MARKETS:
+    "PASSENGER_MARKET_DAILY_BETA_COMPACTION"
 });
 
 function ACS_toNumber(value) {
@@ -592,6 +602,240 @@ async function ACS_detectDeletedOccAlerts(
 }
 
 /* ============================================================
+   BETA SECURITY LOG RETENTION
+   ============================================================ */
+
+async function ACS_detectRepeatedSecurityLog(
+  client
+) {
+  const result = await client.query(`
+    WITH ranked AS MATERIALIZED (
+      SELECT
+        log.log_id,
+        log.date,
+
+        ROW_NUMBER() OVER (
+          PARTITION BY
+            log.user_id,
+            log.ip_address,
+            log.action
+          ORDER BY
+            log.date DESC NULLS LAST,
+            log.log_id DESC
+        ) AS identity_position
+
+      FROM public.security_log log
+    ),
+
+    eligible AS MATERIALIZED (
+      SELECT
+        ranked.log_id AS id,
+        ranked.date
+
+      FROM ranked
+
+      WHERE ranked.date <
+        CURRENT_TIMESTAMP - INTERVAL '7 days'
+
+        AND ranked.identity_position > 1
+    )
+
+    SELECT
+      COUNT(*)::bigint AS eligible_rows,
+
+      MIN(date) AS first_eligible_at,
+
+      MAX(date) AS last_eligible_at,
+
+      MD5(
+        COALESCE(
+          STRING_AGG(
+            id::text,
+            ','
+            ORDER BY id
+          ),
+          ''
+        )
+      ) AS preview_fingerprint,
+
+      PG_RELATION_SIZE(
+        'public.security_log'::regclass
+      )::bigint AS table_bytes,
+
+      PG_TOTAL_RELATION_SIZE(
+        'public.security_log'::regclass
+      )::bigint AS total_bytes,
+
+      PG_INDEXES_SIZE(
+        'public.security_log'::regclass
+      )::bigint AS index_bytes
+
+    FROM eligible
+  `);
+
+  return result.rows[0];
+}
+
+/* ============================================================
+   BETA SKYTRACK IMPACT RETENTION
+   ============================================================ */
+
+async function ACS_detectHistoricalSkytrackImpacts(
+  client
+) {
+  const result = await client.query(`
+    WITH clock AS MATERIALIZED (
+      SELECT
+        acs_get_current_sim_time()::date
+          AS current_sim_date
+    ),
+
+    eligible AS MATERIALIZED (
+      SELECT
+        impact.id,
+
+        MAKE_DATE(
+          impact.sim_year,
+          impact.sim_month,
+          impact.sim_day
+        ) AS impact_sim_date
+
+      FROM public.skytrack_ops_impacts impact
+
+      CROSS JOIN clock
+
+      WHERE MAKE_DATE(
+        impact.sim_year,
+        impact.sim_month,
+        impact.sim_day
+      ) <
+        clock.current_sim_date -
+        INTERVAL '30 days'
+    )
+
+    SELECT
+      COUNT(*)::bigint AS eligible_rows,
+
+      MIN(impact_sim_date)
+        AS first_eligible_at,
+
+      MAX(impact_sim_date)
+        AS last_eligible_at,
+
+      MD5(
+        COALESCE(
+          STRING_AGG(
+            id::text,
+            ','
+            ORDER BY id
+          ),
+          ''
+        )
+      ) AS preview_fingerprint,
+
+      PG_RELATION_SIZE(
+        'public.skytrack_ops_impacts'::regclass
+      )::bigint AS table_bytes,
+
+      PG_TOTAL_RELATION_SIZE(
+        'public.skytrack_ops_impacts'::regclass
+      )::bigint AS total_bytes,
+
+      PG_INDEXES_SIZE(
+        'public.skytrack_ops_impacts'::regclass
+      )::bigint AS index_bytes
+
+    FROM eligible
+  `);
+
+  return result.rows[0];
+}
+
+/* ============================================================
+   BETA PASSENGER MARKET CACHE RETENTION
+   ============================================================ */
+
+async function ACS_detectHistoricalPassengerMarkets(
+  client
+) {
+  const result = await client.query(`
+    WITH clock AS MATERIALIZED (
+      SELECT
+        acs_get_current_sim_time()::date
+          AS current_sim_date
+    ),
+
+    eligible AS MATERIALIZED (
+      SELECT
+        market.id,
+        market.market_date
+
+      FROM
+        public.acs_passenger_market_daily
+          market
+
+      CROSS JOIN clock
+
+      WHERE market.market_date <
+        clock.current_sim_date -
+        INTERVAL '30 days'
+
+        AND NOT EXISTS (
+          SELECT
+            1
+
+          FROM
+            public.acs_passenger_flight_results
+              result
+
+          WHERE
+            result.market_daily_id =
+              market.id
+        )
+    )
+
+    SELECT
+      COUNT(*)::bigint AS eligible_rows,
+
+      MIN(market_date)
+        AS first_eligible_at,
+
+      MAX(market_date)
+        AS last_eligible_at,
+
+      MD5(
+        COALESCE(
+          STRING_AGG(
+            id::text,
+            ','
+            ORDER BY id
+          ),
+          ''
+        )
+      ) AS preview_fingerprint,
+
+      PG_RELATION_SIZE(
+        'public.acs_passenger_market_daily'
+          ::regclass
+      )::bigint AS table_bytes,
+
+      PG_TOTAL_RELATION_SIZE(
+        'public.acs_passenger_market_daily'
+          ::regclass
+      )::bigint AS total_bytes,
+
+      PG_INDEXES_SIZE(
+        'public.acs_passenger_market_daily'
+          ::regclass
+      )::bigint AS index_bytes
+
+    FROM eligible
+  `);
+
+  return result.rows[0];
+}
+
+/* ============================================================
    COMPLETE READ-ONLY DIAGNOSTIC
    ============================================================ */
 
@@ -620,7 +864,10 @@ export async function ACS_getGuardianDiagnostics() {
     const [
       flights,
       finance,
-      occAlerts
+      occAlerts,
+      securityLog,
+      skytrackImpacts,
+      passengerMarkets
     ] = await Promise.all([
       ACS_detectClosedFlightHistory(
         client
@@ -631,6 +878,18 @@ export async function ACS_getGuardianDiagnostics() {
       ),
 
       ACS_detectDeletedOccAlerts(
+        client
+      ),
+
+      ACS_detectRepeatedSecurityLog(
+        client
+      ),
+
+      ACS_detectHistoricalSkytrackImpacts(
+        client
+      ),
+
+      ACS_detectHistoricalPassengerMarkets(
         client
       )
     ]);
@@ -712,15 +971,82 @@ export async function ACS_getGuardianDiagnostics() {
             ),
 
           volumePercent
+        }),
+
+        ACS_buildDiagnostic({
+          actionType:
+            ACTIONS.SECURITY_LOG,
+
+          title:
+            "Historial de seguridad repetitivo — BETA",
+
+          table:
+            "security_log",
+
+          row:
+            securityLog,
+
+          policy:
+            policies.get(
+              ACTIONS.SECURITY_LOG
+            ),
+
+          volumePercent
+        }),
+
+        ACS_buildDiagnostic({
+          actionType:
+            ACTIONS.SKYTRACK_IMPACTS,
+
+          title:
+            "Impactos históricos SkyTrack — BETA",
+
+          table:
+            "skytrack_ops_impacts",
+
+          row:
+            skytrackImpacts,
+
+          policy:
+            policies.get(
+              ACTIONS.SKYTRACK_IMPACTS
+            ),
+
+          volumePercent
+        }),
+
+        ACS_buildDiagnostic({
+          actionType:
+            ACTIONS.PASSENGER_MARKETS,
+
+          title:
+            "Mercado diario de pasajeros — BETA",
+
+          table:
+            "acs_passenger_market_daily",
+
+          row:
+            passengerMarkets,
+
+          policy:
+            policies.get(
+              ACTIONS.PASSENGER_MARKETS
+            ),
+
+          volumePercent
         })
       ]
     };
+
   } catch (error) {
+
     try {
       await client.query(
         "ROLLBACK"
       );
+
     } catch (rollbackError) {
+
       console.error(
         "[ACS Guardian] diagnostics rollback failed:",
         rollbackError.message
@@ -728,7 +1054,9 @@ export async function ACS_getGuardianDiagnostics() {
     }
 
     throw error;
+
   } finally {
+
     client.release();
   }
 }
