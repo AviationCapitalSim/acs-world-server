@@ -816,18 +816,6 @@ const dueUnits = [
       await client.query(
         `
         UPDATE public.company_finance
-        SET capital = COALESCE(capital, 0) + $2,
-            revenue = COALESCE(revenue, 0) + $2,
-            profit = COALESCE(profit, 0) + $2,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE airline_id = $1
-        `,
-        [airlineId, refund]
-      );
-
-            await client.query(
-        `
-        UPDATE public.company_finance
         SET
           capital =
             COALESCE(capital, 0) + $2,
