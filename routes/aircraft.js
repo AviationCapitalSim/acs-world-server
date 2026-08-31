@@ -5874,7 +5874,19 @@ const leaseInitialCommitmentAmount =
     );
 
     let remainingQuantityToReserve = quantity;
-    const reservedFactorySlots = [];
+const reservedFactorySlots = [];
+
+/*
+  ACS OCC IV:
+  Immutable delivery calendar stored inside order notes.
+
+  One entry represents one aircraft.
+  No database schema changes.
+*/
+const unitDeliverySchedule = [];
+
+let nextDeliveryUnitNumber = 1;
+let previousUnitDeliveryDate = null;
 
     function ACS_getDaysInMonthUTC(year, month) {
       return new Date(Date.UTC(Number(year), Number(month), 0)).getUTCDate();
