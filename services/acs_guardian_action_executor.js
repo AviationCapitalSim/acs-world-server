@@ -1169,6 +1169,237 @@ async function ACS_compactDeletedOccAlerts(client, action) {
   };
 }
 
+async function ACS_compactRepeatedSecurityLog(
+  client,
+  action
+) {
+  await ACS_assertNoUnexpectedReferences(
+    client,
+    "public.security_log"
+  );
+
+  await ACS_assertNoUserTriggers(
+    client,
+    ["public.security_log"]
+  );
+
+  await client.query(`
+    LOCK TABLE
+      public.security_log
+    IN ACCESS EXCLUSIVE MODE
+  `);
+
+  await client.query(`
+    CREATE TEMP TABLE
+      acs_guardian_candidate_ids
+    ON COMMIT DROP
+    AS
+
+    WITH ranked AS (
+      SELECT
+        log.log_id,
+        log.date,
+
+        ROW_NUMBER() OVER (
+          PARTITION BY
+            log.user_id,
+            log.ip_address,
+            log.action
+          ORDER BY
+            log.date DESC NULLS LAST,
+            log.log_id DESC
+        ) AS identity_position
+
+      FROM
+        public.security_log log
+    )
+
+    SELECT
+      ranked.log_id AS id
+
+    FROM ranked
+
+    WHERE
+      ranked.date <
+        CURRENT_TIMESTAMP -
+        INTERVAL '7 days'
+      AND ranked.identity_position > 1
+  `);
+
+  await client.query(`
+    ALTER TABLE
+      acs_guardian_candidate_ids
+    ADD PRIMARY KEY (id)
+  `);
+
+  const signature =
+    await ACS_readCandidateSignature(
+      client
+    );
+
+  ACS_assertPreviewMatches(
+    action,
+    signature
+  );
+
+  const beforeSize =
+    await ACS_assertPolicyStillAllowsAction(
+      client,
+      action.action_type,
+      signature,
+      "public.security_log"
+    );
+
+  await client.query(`
+    CREATE TEMP TABLE
+      acs_guardian_security_keep
+    ON COMMIT DROP
+    AS
+
+    SELECT
+      log.*
+
+    FROM
+      public.security_log log
+
+    WHERE NOT EXISTS (
+      SELECT
+        1
+
+      FROM
+        acs_guardian_candidate_ids
+          candidate
+
+      WHERE
+        candidate.id =
+          log.log_id
+    )
+  `);
+
+  const counts =
+    await client.query(`
+      SELECT
+        (
+          SELECT COUNT(*)
+          FROM public.security_log
+        )::bigint
+          AS original_rows,
+
+        (
+          SELECT COUNT(*)
+          FROM acs_guardian_security_keep
+        )::bigint
+          AS kept_rows
+    `);
+
+  const originalRows =
+    Number(
+      counts.rows[0]
+        .original_rows
+    );
+
+  const keptRows =
+    Number(
+      counts.rows[0]
+        .kept_rows
+    );
+
+  if (
+    originalRows -
+      keptRows !==
+      signature.eligibleRows
+  ) {
+    throw ACS_actionError(
+      "GUARDIAN_SECURITY_SNAPSHOT_COUNT_MISMATCH",
+      409
+    );
+  }
+
+  await client.query(`
+    TRUNCATE TABLE
+      public.security_log
+  `);
+
+  await ACS_restoreTableFromSnapshot({
+    client,
+
+    tableName:
+      "public.security_log",
+
+    snapshotName:
+      "acs_guardian_security_keep",
+
+    orderColumn:
+      "log_id"
+  });
+
+  await ACS_syncIdentitySequence(
+    client,
+    "public.security_log",
+    "log_id"
+  );
+
+  const verification =
+    await client.query(`
+      SELECT
+        COUNT(*)::bigint
+          AS restored_rows
+
+      FROM
+        public.security_log
+    `);
+
+  if (
+    Number(
+      verification.rows[0]
+        .restored_rows
+    ) !== keptRows
+  ) {
+    throw ACS_actionError(
+      "GUARDIAN_SECURITY_POSTCHECK_FAILED",
+      500
+    );
+  }
+
+  await client.query(`
+    ANALYZE
+      public.security_log
+  `);
+
+  const afterSize =
+    await ACS_measureTable(
+      client,
+      "public.security_log"
+    );
+
+  return {
+    targetTable:
+      "security_log",
+
+    removedRows:
+      signature.eligibleRows,
+
+    preservedRows:
+      keptRows,
+
+    retention:
+      "7_REAL_DAYS_AND_LATEST_PER_USER_IP_ACTION",
+
+    betaTemporaryPolicy:
+      true,
+
+    beforeSize,
+    afterSize,
+
+    releasedBytesEstimate:
+      Math.max(
+        0,
+        beforeSize.totalBytes -
+          afterSize.totalBytes
+      )
+  };
+}
+
 async function ACS_compactHistoricalSkytrackImpacts(
   client,
   action
