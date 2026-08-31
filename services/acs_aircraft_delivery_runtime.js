@@ -30,6 +30,111 @@ function ACS_deliveryNotes(rawNotes) {
   }
 }
 
+/* ============================================================
+   🟦 ACS OCC IV — UNIT DELIVERY SCHEDULE READER
+   ------------------------------------------------------------
+   - Reads the immutable schedule stored in order notes.
+   - Keeps compatibility with legacy single-date orders.
+   ============================================================ */
+
+function ACS_deliveryUnitSchedule(order, notes, quantity) {
+  const storedSchedule =
+    Array.isArray(notes.unit_delivery_schedule)
+      ? notes.unit_delivery_schedule
+      : [];
+
+  const normalizedSchedule = storedSchedule
+    .map((unit, index) => {
+      const unitNumber = Math.max(
+        1,
+        ACS_deliveryInteger(
+          unit?.unit_number,
+          index + 1
+        )
+      );
+
+      const estimatedDeliveryDate =
+        unit?.estimated_delivery_date
+          ? new Date(
+              unit.estimated_delivery_date
+            )
+          : null;
+
+      if (
+        !estimatedDeliveryDate ||
+        Number.isNaN(
+          estimatedDeliveryDate.getTime()
+        )
+      ) {
+        return null;
+      }
+
+      return {
+        unit_number:
+          unitNumber,
+
+        factory_slot_id:
+          ACS_deliveryInteger(
+            unit?.factory_slot_id ||
+            order.factory_slot_id,
+            0
+          ),
+
+        estimated_delivery_date:
+          estimatedDeliveryDate
+      };
+    })
+    .filter(Boolean)
+    .sort(
+      (a, b) =>
+        a.unit_number -
+        b.unit_number
+    );
+
+  if (
+    normalizedSchedule.length ===
+    quantity
+  ) {
+    return normalizedSchedule;
+  }
+
+  /*
+    Legacy compatibility:
+    old orders only had one parent delivery date.
+    They retain their previous all-at-once behavior.
+  */
+  const legacyDate =
+    order.estimated_delivery_date
+      ? new Date(
+          order.estimated_delivery_date
+        )
+      : null;
+
+  if (
+    !legacyDate ||
+    Number.isNaN(legacyDate.getTime())
+  ) {
+    return [];
+  }
+
+  return Array.from(
+    { length: quantity },
+    (_, index) => ({
+      unit_number:
+        index + 1,
+
+      factory_slot_id:
+        ACS_deliveryInteger(
+          order.factory_slot_id,
+          0
+        ),
+
+      estimated_delivery_date:
+        new Date(legacyDate)
+    })
+  );
+}
+
 function ACS_deliveryNumericStart(length) {
   if (length <= 1) return 1;
   return Math.pow(10, length - 1) + 1;
@@ -77,6 +182,7 @@ async function ACS_deliveryRegistrationRule(client, baseIcao) {
 }
 
 async function ACS_deliveryRegistration(client, rule) {
+   
   const prefix = String(rule.registration_prefix || "").trim().toUpperCase();
   const format = String(rule.registration_format || "NUMERIC").trim().toUpperCase();
   const length = Math.max(1, ACS_deliveryInteger(rule.registration_length, 4));
@@ -309,53 +415,109 @@ async function ACS_deliveryEnsureLeaseContract({
   );
 }
 
-async function ACS_deliveryApplySlots(client, order, quantity) {
-  const notes = ACS_deliveryNotes(order.notes);
-  let reservedSlots = Array.isArray(notes.factory_slots_reserved)
-    ? notes.factory_slots_reserved
-    : [];
+/* ============================================================
+   🟦 ACS OCC IV — APPLY DELIVERED UNITS TO FACTORY SLOTS
+   ------------------------------------------------------------
+   - Updates only the slots belonging to units delivered now.
+   - Does not release or complete future units.
+   ============================================================ */
 
-  if (!reservedSlots.length && order.factory_slot_id) {
-    reservedSlots = [{
-      slot_id: order.factory_slot_id,
-      reserved_quantity: quantity
-    }];
-  }
+async function ACS_deliveryApplyUnitSlots(
+  client,
+  deliveredUnits
+) {
+  const deliveredBySlot = new Map();
 
-  for (const slot of reservedSlots) {
-    const slotId = ACS_deliveryInteger(slot.slot_id);
-    const reservedQuantity = Math.max(
-      1,
-      ACS_deliveryInteger(slot.reserved_quantity, 1)
+  for (const unit of deliveredUnits) {
+    const slotId = ACS_deliveryInteger(
+      unit.factory_slot_id,
+      0
     );
 
     if (!slotId) continue;
 
+    deliveredBySlot.set(
+      slotId,
+      (
+        deliveredBySlot.get(slotId) ||
+        0
+      ) + 1
+    );
+  }
+
+  for (
+    const [
+      slotId,
+      deliveredQuantity
+    ] of deliveredBySlot
+  ) {
     await client.query(
       `
       UPDATE public.aircraft_factory_slots
       SET
-        reserved_quantity = GREATEST(COALESCE(reserved_quantity, 0) - $2, 0),
-        delivered_quantity = COALESCE(delivered_quantity, 0) + $2,
+        reserved_quantity =
+          GREATEST(
+            COALESCE(
+              reserved_quantity,
+              0
+            ) - $2,
+            0
+          ),
+
+        delivered_quantity =
+          COALESCE(
+            delivered_quantity,
+            0
+          ) + $2,
+
         slot_status = CASE
-          WHEN COALESCE(available_quantity, 0) <= 0 THEN 'FULL'
+          WHEN COALESCE(
+            available_quantity,
+            0
+          ) <= 0
+            THEN 'FULL'
           ELSE 'OPEN'
         END,
+
         utilization_pct = ROUND(
           (
             (
-              GREATEST(COALESCE(reserved_quantity, 0) - $2, 0)
-              + COALESCE(delivered_quantity, 0)
-              + $2
-            )::numeric
-            / GREATEST(COALESCE(max_quantity, 0), 1)::numeric
+              GREATEST(
+                COALESCE(
+                  reserved_quantity,
+                  0
+                ) - $2,
+                0
+              )
+              +
+              COALESCE(
+                delivered_quantity,
+                0
+              )
+              +
+              $2
+            )::NUMERIC
+            /
+            GREATEST(
+              COALESCE(
+                max_quantity,
+                0
+              ),
+              1
+            )::NUMERIC
           ) * 100,
           2
         ),
-        updated_at = CURRENT_TIMESTAMP
+
+        updated_at =
+          CURRENT_TIMESTAMP
+
       WHERE id = $1
       `,
-      [slotId, reservedQuantity]
+      [
+        slotId,
+        deliveredQuantity
+      ]
     );
   }
 }
