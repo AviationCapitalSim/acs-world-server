@@ -989,7 +989,7 @@ async function applyHRMoraleMonthlyResolver(airlineId) {
         salaryShortfall === 0 &&
         morale < 100
       ) {
-        moraleDelta = 1;
+        moraleDelta = 3;
       }
 
       const newMorale = Math.max(
