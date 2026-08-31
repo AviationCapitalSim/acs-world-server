@@ -629,15 +629,158 @@ async function ACS_deliveryProcessOrder(orderId) {
       return { processedCount: 0, action: "ORDER_NOT_ELIGIBLE" };
     }
 
-    const dueResult = await client.query(
-      `SELECT $1::timestamp <= $2::timestamp AS due`,
-      [order.estimated_delivery_date, simTime]
-    );
+    /* ============================================================
+   🟦 ACS OCC IV — RESOLVE NEXT INDIVIDUAL AIRCRAFT
+   ------------------------------------------------------------
+   Rules:
+   - Read already delivered unit numbers from aircraft_fleet.
+   - Deliver only the first pending unit that is due.
+   - Never deliver two units from the same order on one sim day.
+   ============================================================ */
 
-    if (dueResult.rows[0].due !== true) {
-      await client.query("ROLLBACK");
-      return { processedCount: 0, action: "ORDER_NOT_DUE" };
+const existingResult =
+  await client.query(
+    `
+    SELECT
+      delivery_unit_number,
+      delivery_date
+
+    FROM public.aircraft_fleet
+
+    WHERE new_aircraft_order_id = $1
+
+    ORDER BY
+      delivery_unit_number
+
+    FOR UPDATE
+    `,
+    [orderId]
+  );
+
+const existingUnits = new Set(
+  existingResult.rows
+    .map(row =>
+      Number(
+        row.delivery_unit_number
+      )
+    )
+    .filter(Number.isInteger)
+);
+
+const deliveredToday =
+  existingResult.rows.some(row => {
+    if (!row.delivery_date) {
+      return false;
     }
+
+    const deliveredDate =
+      new Date(row.delivery_date);
+
+    const currentDate =
+      new Date(simTime);
+
+    return (
+      deliveredDate.getUTCFullYear() ===
+        currentDate.getUTCFullYear() &&
+
+      deliveredDate.getUTCMonth() ===
+        currentDate.getUTCMonth() &&
+
+      deliveredDate.getUTCDate() ===
+        currentDate.getUTCDate()
+    );
+  });
+
+if (deliveredToday) {
+  await client.query("COMMIT");
+
+  return {
+    processedCount: 0,
+    action:
+      "ORDER_UNIT_ALREADY_DELIVERED_TODAY"
+  };
+}
+
+const deliverySchedule =
+  ACS_deliveryUnitSchedule(
+    order,
+    notes,
+    quantity
+  );
+
+if (
+  deliverySchedule.length !==
+  quantity
+) {
+  throw new Error(
+    "DELIVERY_SCHEDULE_QUANTITY_MISMATCH"
+  );
+}
+
+const pendingUnits =
+  deliverySchedule.filter(
+    unit =>
+      !existingUnits.has(
+        unit.unit_number
+      )
+  );
+
+if (!pendingUnits.length) {
+  await client.query("ROLLBACK");
+
+  return {
+    processedCount: 0,
+    action:
+      "ORDER_HAS_NO_PENDING_UNITS"
+  };
+}
+
+const nextUnit =
+  pendingUnits[0];
+
+if (
+  nextUnit
+    .estimated_delivery_date
+    .getTime() >
+  new Date(simTime).getTime()
+) {
+  /*
+    Repair stale parent date if necessary.
+  */
+  await client.query(
+    `
+    UPDATE public.new_aircraft_orders
+    SET
+      estimated_delivery_date =
+        $2::timestamp,
+
+      updated_at =
+        CURRENT_TIMESTAMP
+
+    WHERE id = $1
+    `,
+    [
+      orderId,
+      nextUnit
+        .estimated_delivery_date
+    ]
+  );
+
+  await client.query("COMMIT");
+
+  return {
+    processedCount: 0,
+    action:
+      "NEXT_ORDER_UNIT_NOT_DUE"
+  };
+}
+
+/*
+  Exactly one unit per order and simulation day.
+*/
+const dueUnits = [
+  nextUnit
+];
 
     const financeResult = await client.query(
       `
@@ -858,7 +1001,7 @@ async function ACS_deliveryProcessOrder(orderId) {
           CURRENT_TIMESTAMP
         )
         `,
-        [
+               [
           airlineId,
           finalPayment,
           simTimestamp,
@@ -866,28 +1009,44 @@ async function ACS_deliveryProcessOrder(orderId) {
           `${aircraftLabel} order ${orderId}`
         ]
       );
+
+      /*
+        Final payment belongs to the complete commercial order.
+        Mark it as paid now so future individual deliveries
+        cannot charge it again.
+      */
+      await client.query(
+        `
+        UPDATE public.new_aircraft_orders
+        SET
+          payment_status = 'PAID',
+          final_payment_status = 'PAID',
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1
+        `,
+        [orderId]
+      );
     }
+     
+        const registrationRule =
+      await ACS_deliveryRegistrationRule(
+        client,
+        baseIcao
+      );
 
-    const existingResult = await client.query(
-      `
-      SELECT delivery_unit_number
-      FROM public.aircraft_fleet
-      WHERE new_aircraft_order_id = $1
-      ORDER BY delivery_unit_number
-      FOR UPDATE
-      `,
-      [orderId]
-    );
-
-    const existingUnits = new Set(
-      existingResult.rows.map((row) => Number(row.delivery_unit_number))
-    );
-
-    const registrationRule = await ACS_deliveryRegistrationRule(client, baseIcao);
     let createdCount = 0;
 
-    for (let unitNumber = 1; unitNumber <= quantity; unitNumber += 1) {
-      if (existingUnits.has(unitNumber)) continue;
+    for (const dueUnit of dueUnits) {
+      const unitNumber =
+        dueUnit.unit_number;
+
+      if (
+        existingUnits.has(
+          unitNumber
+        )
+      ) {
+        continue;
+      }
 
       const registration = await ACS_deliveryRegistration(client, registrationRule);
 
@@ -1061,55 +1220,223 @@ async function ACS_deliveryProcessOrder(orderId) {
 
       createdCount += 1;
     }
+/* ============================================================
+   🟦 ACS OCC IV — PARTIAL OR FINAL ORDER COMPLETION
+   ============================================================ */
 
-    const totalUnitsResult = await client.query(
-      `
-      SELECT COUNT(*)::integer AS total
-      FROM public.aircraft_fleet
-      WHERE new_aircraft_order_id = $1
-      `,
-      [orderId]
-    );
+const totalUnitsResult =
+  await client.query(
+    `
+    SELECT
+      COUNT(*)::INTEGER AS total
 
-    const totalUnits = Number(totalUnitsResult.rows[0].total || 0);
+    FROM public.aircraft_fleet
 
-    if (totalUnits !== quantity) {
-      throw new Error("DELIVERY_UNIT_COUNT_MISMATCH");
-    }
+    WHERE
+      new_aircraft_order_id = $1
+    `,
+    [orderId]
+  );
 
-    await ACS_deliveryApplySlots(client, order, quantity);
+const totalUnits = Number(
+  totalUnitsResult.rows[0]?.total ||
+  0
+);
 
-    await client.query(
-      `
-      UPDATE public.new_aircraft_orders
-      SET payment_status = 'PAID',
-          final_payment_status = 'PAID',
-          order_status = 'COMPLETED',
-          delivery_status = 'DELIVERED',
-          actual_delivery_date = $2::timestamp,
-          delivery_resolved_at = CURRENT_TIMESTAMP,
-          notes = (
-            COALESCE(NULLIF(notes, ''), '{}')::jsonb
-            || jsonb_build_object(
-              'delivery_resolver', 'ACS_AIRCRAFT_DELIVERY_RUNTIME_V1',
-              'delivery_unit_count', $3::integer,
-              'runtime_sim_time', ($2::timestamp)::text
-            )
-          )::text,
-          updated_at = CURRENT_TIMESTAMP
-      WHERE id = $1
-      `,
-      [orderId, simTime, totalUnits]
-    );
+if (totalUnits > quantity) {
+  throw new Error(
+    "DELIVERY_UNIT_COUNT_EXCEEDED"
+  );
+}
 
-    await client.query("COMMIT");
+await ACS_deliveryApplyUnitSlots(
+  client,
+  dueUnits
+);
 
-    return {
-      processedCount: 1,
-      action: "ORDER_DELIVERED",
-      createdCount,
-      totalUnits
-    };
+const deliveredUnitNumbers =
+  new Set([
+    ...existingUnits,
+    ...dueUnits.map(
+      unit =>
+        unit.unit_number
+    )
+  ]);
+
+const remainingUnits =
+  deliverySchedule.filter(
+    unit =>
+      !deliveredUnitNumbers.has(
+        unit.unit_number
+      )
+  );
+
+if (remainingUnits.length > 0) {
+  const nextPendingUnit =
+    remainingUnits[0];
+
+  await client.query(
+    `
+    UPDATE public.new_aircraft_orders
+    SET
+      payment_status = 'PAID',
+
+      final_payment_status = 'PAID',
+
+      order_status = 'ORDERED',
+
+      delivery_status =
+        'PENDING_DELIVERY',
+
+      estimated_delivery_date =
+        $2::timestamp,
+
+      actual_delivery_date =
+        NULL,
+
+      delivery_resolved_at =
+        NULL,
+
+      notes = (
+        COALESCE(
+          NULLIF(notes, ''),
+          '{}'
+        )::jsonb
+        ||
+        jsonb_build_object(
+          'delivery_resolver',
+          'ACS_AIRCRAFT_DELIVERY_RUNTIME_OCC_IV',
+
+          'delivery_unit_count',
+          $3::INTEGER,
+
+          'next_delivery_unit_number',
+          $4::INTEGER,
+
+          'next_unit_delivery_date',
+          ($2::timestamp)::text,
+
+          'runtime_sim_time',
+          ($5::timestamp)::text
+        )
+      )::text,
+
+      updated_at =
+        CURRENT_TIMESTAMP
+
+    WHERE id = $1
+    `,
+    [
+      orderId,
+      nextPendingUnit
+        .estimated_delivery_date,
+      totalUnits,
+      nextPendingUnit
+        .unit_number,
+      simTime
+    ]
+  );
+
+  await client.query("COMMIT");
+
+  return {
+    processedCount: 1,
+
+    action:
+      "ORDER_UNIT_DELIVERED",
+
+    deliveredUnitNumber:
+      nextUnit.unit_number,
+
+    createdCount,
+
+    totalUnits,
+
+    remainingUnits:
+      remainingUnits.length,
+
+    nextDeliveryDate:
+      nextPendingUnit
+        .estimated_delivery_date
+        .toISOString()
+  };
+}
+
+if (totalUnits !== quantity) {
+  throw new Error(
+    "DELIVERY_FINAL_UNIT_COUNT_MISMATCH"
+  );
+}
+
+await client.query(
+  `
+  UPDATE public.new_aircraft_orders
+  SET
+    payment_status = 'PAID',
+
+    final_payment_status = 'PAID',
+
+    order_status = 'COMPLETED',
+
+    delivery_status = 'DELIVERED',
+
+    actual_delivery_date =
+      $2::timestamp,
+
+    delivery_resolved_at =
+      CURRENT_TIMESTAMP,
+
+    notes = (
+      COALESCE(
+        NULLIF(notes, ''),
+        '{}'
+      )::jsonb
+      ||
+      jsonb_build_object(
+        'delivery_resolver',
+        'ACS_AIRCRAFT_DELIVERY_RUNTIME_OCC_IV',
+
+        'delivery_unit_count',
+        $3::INTEGER,
+
+        'next_delivery_unit_number',
+        NULL,
+
+        'runtime_sim_time',
+        ($2::timestamp)::text
+      )
+    )::text,
+
+    updated_at =
+      CURRENT_TIMESTAMP
+
+  WHERE id = $1
+  `,
+  [
+    orderId,
+    simTime,
+    totalUnits
+  ]
+);
+
+await client.query("COMMIT");
+
+return {
+  processedCount: 1,
+
+  action:
+    "ORDER_FINAL_UNIT_DELIVERED",
+
+  deliveredUnitNumber:
+    nextUnit.unit_number,
+
+  createdCount,
+
+  totalUnits,
+
+  remainingUnits: 0
+};
+     
   } catch (error) {
     try {
       await client.query("ROLLBACK");
