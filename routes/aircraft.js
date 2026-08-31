@@ -6373,8 +6373,6 @@ next_delivery_unit_number:
   1,
 
 /* Lease New OCC metadata */
-
-/* Lease New OCC metadata */
        
 lease_years: ownershipType === "LEASE" ? leaseYears : null,
 lease_term_months: ownershipType === "LEASE" ? leaseTermMonths : null,
