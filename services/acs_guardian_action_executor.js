@@ -1775,16 +1775,7 @@ const EXECUTORS = Object.freeze({
     ACS_compactClosedFlights,
 
   [ACTIONS.OCC_DELETED_ALERTS_COMPACTION]:
-    ACS_compactDeletedOccAlerts,
-
-  [ACTIONS.SECURITY_LOG_BETA_COMPACTION]:
-    ACS_compactRepeatedSecurityLog,
-
-  [ACTIONS.SKYTRACK_OPS_IMPACTS_BETA_COMPACTION]:
-    ACS_compactHistoricalSkytrackImpacts,
-
-  [ACTIONS.PASSENGER_MARKET_DAILY_BETA_COMPACTION]:
-    ACS_compactHistoricalPassengerMarkets
+    ACS_compactDeletedOccAlerts
 });
 
 async function ACS_recordExecutionFailure({
