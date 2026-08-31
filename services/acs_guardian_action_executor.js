@@ -1169,13 +1169,622 @@ async function ACS_compactDeletedOccAlerts(client, action) {
   };
 }
 
+async function ACS_compactHistoricalSkytrackImpacts(
+  client,
+  action
+) {
+  await ACS_assertNoUnexpectedReferences(
+    client,
+    "public.skytrack_ops_impacts"
+  );
+
+  await ACS_assertNoUserTriggers(
+    client,
+    [
+      "public.skytrack_ops_impacts"
+    ]
+  );
+
+  await client.query(`
+    LOCK TABLE
+      public.skytrack_ops_impacts
+    IN ACCESS EXCLUSIVE MODE
+  `);
+
+  await client.query(`
+    CREATE TEMP TABLE
+      acs_guardian_candidate_ids
+    ON COMMIT DROP
+    AS
+
+    WITH clock AS (
+      SELECT
+        acs_get_current_sim_time()::date
+          AS current_sim_date
+    )
+
+    SELECT
+      impact.id
+
+    FROM
+      public.skytrack_ops_impacts
+        impact
+
+    CROSS JOIN clock
+
+    WHERE
+      MAKE_DATE(
+        impact.sim_year,
+        impact.sim_month,
+        impact.sim_day
+      ) <
+        clock.current_sim_date -
+        INTERVAL '30 days'
+  `);
+
+  await client.query(`
+    ALTER TABLE
+      acs_guardian_candidate_ids
+    ADD PRIMARY KEY (id)
+  `);
+
+  const signature =
+    await ACS_readCandidateSignature(
+      client
+    );
+
+  ACS_assertPreviewMatches(
+    action,
+    signature
+  );
+
+  const beforeSize =
+    await ACS_assertPolicyStillAllowsAction(
+      client,
+      action.action_type,
+      signature,
+      "public.skytrack_ops_impacts"
+    );
+
+  await client.query(`
+    CREATE TEMP TABLE
+      acs_guardian_skytrack_keep
+    ON COMMIT DROP
+    AS
+
+    SELECT
+      impact.*
+
+    FROM
+      public.skytrack_ops_impacts
+        impact
+
+    WHERE NOT EXISTS (
+      SELECT
+        1
+
+      FROM
+        acs_guardian_candidate_ids
+          candidate
+
+      WHERE
+        candidate.id =
+          impact.id
+    )
+  `);
+
+  const counts =
+    await client.query(`
+      SELECT
+        (
+          SELECT COUNT(*)
+          FROM public.skytrack_ops_impacts
+        )::bigint
+          AS original_rows,
+
+        (
+          SELECT COUNT(*)
+          FROM acs_guardian_skytrack_keep
+        )::bigint
+          AS kept_rows
+    `);
+
+  const originalRows =
+    Number(
+      counts.rows[0]
+        .original_rows
+    );
+
+  const keptRows =
+    Number(
+      counts.rows[0]
+        .kept_rows
+    );
+
+  if (
+    originalRows -
+      keptRows !==
+      signature.eligibleRows
+  ) {
+    throw ACS_actionError(
+      "GUARDIAN_SKYTRACK_SNAPSHOT_COUNT_MISMATCH",
+      409
+    );
+  }
+
+  await client.query(`
+    TRUNCATE TABLE
+      public.skytrack_ops_impacts
+  `);
+
+  await ACS_restoreTableFromSnapshot({
+    client,
+
+    tableName:
+      "public.skytrack_ops_impacts",
+
+    snapshotName:
+      "acs_guardian_skytrack_keep"
+  });
+
+  await ACS_syncIdentitySequence(
+    client,
+    "public.skytrack_ops_impacts"
+  );
+
+  const verification =
+    await client.query(`
+      SELECT
+        COUNT(*)::bigint
+          AS restored_rows
+
+      FROM
+        public.skytrack_ops_impacts
+    `);
+
+  if (
+    Number(
+      verification.rows[0]
+        .restored_rows
+    ) !== keptRows
+  ) {
+    throw ACS_actionError(
+      "GUARDIAN_SKYTRACK_POSTCHECK_FAILED",
+      500
+    );
+  }
+
+  await client.query(`
+    ANALYZE
+      public.skytrack_ops_impacts
+  `);
+
+  const afterSize =
+    await ACS_measureTable(
+      client,
+      "public.skytrack_ops_impacts"
+    );
+
+  return {
+    targetTable:
+      "skytrack_ops_impacts",
+
+    removedRows:
+      signature.eligibleRows,
+
+    preservedRows:
+      keptRows,
+
+    retention:
+      "30_SIMULATED_DAYS",
+
+    betaTemporaryPolicy:
+      true,
+
+    beforeSize,
+    afterSize,
+
+    releasedBytesEstimate:
+      Math.max(
+        0,
+        beforeSize.totalBytes -
+          afterSize.totalBytes
+      )
+  };
+}
+
+/* ============================================================
+   PASSENGER MARKET DAILY — BETA COMPACTION
+   ============================================================ */
+
+async function ACS_compactHistoricalPassengerMarkets(
+  client,
+  action
+) {
+  await ACS_assertNoUnexpectedReferences(
+    client,
+    "public.acs_passenger_market_daily",
+    [
+      "public.acs_passenger_flight_results"
+    ]
+  );
+
+  await ACS_assertNoUnexpectedReferences(
+    client,
+    "public.acs_passenger_flight_results"
+  );
+
+  await ACS_assertNoUserTriggers(
+    client,
+    [
+      "public.acs_passenger_market_daily",
+      "public.acs_passenger_flight_results"
+    ]
+  );
+
+  await client.query(`
+    LOCK TABLE
+      public.acs_passenger_market_daily,
+      public.acs_passenger_flight_results
+    IN ACCESS EXCLUSIVE MODE
+  `);
+
+  await client.query(`
+    CREATE TEMP TABLE
+      acs_guardian_candidate_ids
+    ON COMMIT DROP
+    AS
+
+    WITH clock AS (
+      SELECT
+        acs_get_current_sim_time()::date
+          AS current_sim_date
+    )
+
+    SELECT
+      market.id
+
+    FROM
+      public.acs_passenger_market_daily
+        market
+
+    CROSS JOIN clock
+
+    WHERE
+      market.market_date <
+        clock.current_sim_date -
+        INTERVAL '30 days'
+
+      AND NOT EXISTS (
+        SELECT
+          1
+
+        FROM
+          public.acs_passenger_flight_results
+            result
+
+        WHERE
+          result.market_daily_id =
+            market.id
+      )
+  `);
+
+  await client.query(`
+    ALTER TABLE
+      acs_guardian_candidate_ids
+    ADD PRIMARY KEY (id)
+  `);
+
+  const signature =
+    await ACS_readCandidateSignature(
+      client
+    );
+
+  ACS_assertPreviewMatches(
+    action,
+    signature
+  );
+
+  const beforeSize =
+    await ACS_assertPolicyStillAllowsAction(
+      client,
+      action.action_type,
+      signature,
+      "public.acs_passenger_market_daily"
+    );
+
+  const passengerBeforeSize =
+    await ACS_measureTable(
+      client,
+      "public.acs_passenger_flight_results"
+    );
+
+  await client.query(`
+    CREATE TEMP TABLE
+      acs_guardian_markets_keep
+    ON COMMIT DROP
+    AS
+
+    SELECT
+      market.*
+
+    FROM
+      public.acs_passenger_market_daily
+        market
+
+    WHERE NOT EXISTS (
+      SELECT
+        1
+
+      FROM
+        acs_guardian_candidate_ids
+          candidate
+
+      WHERE
+        candidate.id =
+          market.id
+    )
+  `);
+
+  await client.query(`
+    CREATE TEMP TABLE
+      acs_guardian_market_results_keep
+    ON COMMIT DROP
+    AS
+
+    SELECT
+      result.*
+
+    FROM
+      public.acs_passenger_flight_results
+        result
+  `);
+
+  const counts =
+    await client.query(`
+      SELECT
+        (
+          SELECT COUNT(*)
+          FROM public.acs_passenger_market_daily
+        )::bigint
+          AS original_markets,
+
+        (
+          SELECT COUNT(*)
+          FROM acs_guardian_markets_keep
+        )::bigint
+          AS kept_markets,
+
+        (
+          SELECT COUNT(*)
+          FROM public.acs_passenger_flight_results
+        )::bigint
+          AS original_results,
+
+        (
+          SELECT COUNT(*)
+          FROM acs_guardian_market_results_keep
+        )::bigint
+          AS kept_results
+    `);
+
+  const originalMarkets =
+    Number(
+      counts.rows[0]
+        .original_markets
+    );
+
+  const keptMarkets =
+    Number(
+      counts.rows[0]
+        .kept_markets
+    );
+
+  const originalResults =
+    Number(
+      counts.rows[0]
+        .original_results
+    );
+
+  const keptResults =
+    Number(
+      counts.rows[0]
+        .kept_results
+    );
+
+  if (
+    originalMarkets -
+      keptMarkets !==
+      signature.eligibleRows ||
+
+    originalResults !==
+      keptResults
+  ) {
+    throw ACS_actionError(
+      "GUARDIAN_PASSENGER_MARKET_SNAPSHOT_COUNT_MISMATCH",
+      409
+    );
+  }
+
+  await client.query(`
+    TRUNCATE TABLE
+      public.acs_passenger_flight_results,
+      public.acs_passenger_market_daily
+  `);
+
+  await ACS_restoreTableFromSnapshot({
+    client,
+
+    tableName:
+      "public.acs_passenger_market_daily",
+
+    snapshotName:
+      "acs_guardian_markets_keep"
+  });
+
+  await ACS_restoreTableFromSnapshot({
+    client,
+
+    tableName:
+      "public.acs_passenger_flight_results",
+
+    snapshotName:
+      "acs_guardian_market_results_keep"
+  });
+
+  await ACS_syncIdentitySequence(
+    client,
+    "public.acs_passenger_market_daily"
+  );
+
+  await ACS_syncIdentitySequence(
+    client,
+    "public.acs_passenger_flight_results"
+  );
+
+  const verification =
+    await client.query(`
+      SELECT
+        (
+          SELECT COUNT(*)
+          FROM public.acs_passenger_market_daily
+        )::bigint
+          AS restored_markets,
+
+        (
+          SELECT COUNT(*)
+          FROM public.acs_passenger_flight_results
+        )::bigint
+          AS restored_results,
+
+        (
+          SELECT COUNT(*)
+
+          FROM
+            public.acs_passenger_flight_results
+              result
+
+          LEFT JOIN
+            public.acs_passenger_market_daily
+              market
+
+          ON
+            market.id =
+              result.market_daily_id
+
+          WHERE
+            market.id IS NULL
+        )::bigint
+          AS orphan_results
+    `);
+
+  if (
+    Number(
+      verification.rows[0]
+        .restored_markets
+    ) !== keptMarkets ||
+
+    Number(
+      verification.rows[0]
+        .restored_results
+    ) !== keptResults ||
+
+    Number(
+      verification.rows[0]
+        .orphan_results
+    ) !== 0
+  ) {
+    throw ACS_actionError(
+      "GUARDIAN_PASSENGER_MARKET_POSTCHECK_FAILED",
+      500
+    );
+  }
+
+  await client.query(`
+    ANALYZE
+      public.acs_passenger_market_daily
+  `);
+
+  await client.query(`
+    ANALYZE
+      public.acs_passenger_flight_results
+  `);
+
+  const afterSize =
+    await ACS_measureTable(
+      client,
+      "public.acs_passenger_market_daily"
+    );
+
+  const passengerAfterSize =
+    await ACS_measureTable(
+      client,
+      "public.acs_passenger_flight_results"
+    );
+
+  return {
+    targetTable:
+      "acs_passenger_market_daily",
+
+    companionTable:
+      "acs_passenger_flight_results",
+
+    removedRows:
+      signature.eligibleRows,
+
+    preservedRows:
+      keptMarkets,
+
+    passengerResultsPreserved:
+      keptResults,
+
+    orphanPassengerResults:
+      0,
+
+    retention:
+      "30_SIMULATED_DAYS_AND_ALL_REFERENCED_MARKETS",
+
+    betaTemporaryPolicy:
+      true,
+
+    beforeSize,
+    afterSize,
+
+    passengerBeforeSize,
+    passengerAfterSize,
+
+    releasedBytesEstimate:
+      Math.max(
+        0,
+        beforeSize.totalBytes -
+          afterSize.totalBytes
+      ) +
+      Math.max(
+        0,
+        passengerBeforeSize.totalBytes -
+          passengerAfterSize.totalBytes
+      )
+  };
+}
+
 const EXECUTORS = Object.freeze({
   [ACTIONS.FINANCE_CLOSED_DETAIL_COMPACTION]:
     ACS_compactClosedFinance,
+
   [ACTIONS.FLIGHT_HISTORY_COMPACTION]:
     ACS_compactClosedFlights,
+
   [ACTIONS.OCC_DELETED_ALERTS_COMPACTION]:
-    ACS_compactDeletedOccAlerts
+    ACS_compactDeletedOccAlerts,
+
+  [ACTIONS.SECURITY_LOG_BETA_COMPACTION]:
+    ACS_compactRepeatedSecurityLog,
+
+  [ACTIONS.SKYTRACK_OPS_IMPACTS_BETA_COMPACTION]:
+    ACS_compactHistoricalSkytrackImpacts,
+
+  [ACTIONS.PASSENGER_MARKET_DAILY_BETA_COMPACTION]:
+    ACS_compactHistoricalPassengerMarkets
 });
 
 async function ACS_recordExecutionFailure({
