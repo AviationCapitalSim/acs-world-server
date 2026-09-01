@@ -1688,23 +1688,7 @@ async function ACS_deliveryProcessUsedAircraft(aircraftId) {
         action:
           "USED_AIRCRAFT_NOT_DUE"
       };
-    }
-     
-      const dueResult = await client.query(
-        `
-        SELECT $1::timestamp <= $2::timestamp AS due
-        `,
-        [aircraft.delivery_date, simTime]
-      );
-
-      if (dueResult.rows[0]?.due !== true) {
-        await client.query("ROLLBACK");
-
-        return {
-          processedCount: 0,
-          action: "USED_AIRCRAFT_NOT_DUE"
-        };
-      }
+     }
     }
 
     const depreciationReady =
