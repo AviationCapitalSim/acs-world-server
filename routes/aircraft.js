@@ -2220,6 +2220,809 @@ router.get(
 );
 
 /* ============================================================
+   ACS OCC — PERMANENT AIRCRAFT SCRAP
+   ============================================================ */
+
+router.post(
+  "/aircraft/fleet/:id/scrap",
+  requireAuth,
+  async (req, res) => {
+    const airlineId =
+      Number(req.airline_id);
+
+    const aircraftId =
+      Number(req.params.id);
+
+    const confirmation =
+      String(
+        req.body?.confirmation || ""
+      )
+        .trim()
+        .toUpperCase();
+
+    if (
+      !Number.isInteger(airlineId) ||
+      airlineId <= 0
+    ) {
+      return res.status(401).json({
+        ok: false,
+        error: "NO_AIRLINE_SESSION"
+      });
+    }
+
+    if (
+      !Number.isInteger(aircraftId) ||
+      aircraftId <= 0
+    ) {
+      return res.status(400).json({
+        ok: false,
+        error: "INVALID_AIRCRAFT_ID"
+      });
+    }
+
+    if (
+      confirmation !==
+      "PERMANENT_SCRAP"
+    ) {
+      return res.status(400).json({
+        ok: false,
+        error:
+          "SCRAP_CONFIRMATION_REQUIRED"
+      });
+    }
+
+    const client =
+      await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      const aircraftResult =
+        await client.query(
+          `
+          SELECT
+            af.id,
+            af.aircraft_uid,
+            af.airline_id,
+            af.ownership_type,
+            af.status,
+            af.operational_status,
+            af.manufacturer,
+            af.model_key,
+            af.aircraft_name,
+            af.registration,
+            af.year_built,
+            af.condition_pct,
+            af.current_value,
+            af.currency,
+
+            ac.aircraft_name
+              AS catalog_aircraft_name,
+
+            ac.engines,
+
+            acs_get_current_sim_time()
+              AS current_sim_time,
+
+            GREATEST(
+              0,
+              EXTRACT(
+                YEAR FROM AGE(
+                  acs_get_current_sim_time(),
+                  MAKE_DATE(
+                    COALESCE(
+                      af.year_built,
+                      EXTRACT(
+                        YEAR FROM
+                        acs_get_current_sim_time()
+                      )::INTEGER
+                    ),
+                    1,
+                    1
+                  )
+                )
+              )::INTEGER
+            ) AS aircraft_age,
+
+            EXISTS (
+              SELECT 1
+              FROM public.aircraft_leasing_contracts alc
+              WHERE alc.airline_id =
+                    af.airline_id
+                AND alc.aircraft_id =
+                    af.id
+                AND UPPER(
+                      COALESCE(
+                        alc.status,
+                        ''
+                      )
+                    ) = 'ACTIVE'
+            ) AS active_lease_contract,
+
+            EXISTS (
+              SELECT 1
+              FROM public.bank_loan_collateral blc
+              WHERE blc.airline_id =
+                    af.airline_id
+                AND blc.aircraft_id =
+                    af.id
+                AND blc.released_sim_time
+                    IS NULL
+            ) AS active_bank_collateral
+
+          FROM public.aircraft_fleet af
+
+          LEFT JOIN
+            public.aircraft_catalog ac
+            ON ac.model_key =
+               af.model_key
+
+          WHERE af.id = $1
+            AND af.airline_id = $2
+
+          LIMIT 1
+
+          FOR UPDATE OF af
+          `,
+          [
+            aircraftId,
+            airlineId
+          ]
+        );
+
+      if (!aircraftResult.rows.length) {
+        await client.query(
+          "ROLLBACK"
+        );
+
+        return res.status(404).json({
+          ok: false,
+          error: "AIRCRAFT_NOT_FOUND"
+        });
+      }
+
+      const aircraft =
+        aircraftResult.rows[0];
+
+      let eligibility =
+        ACS_scrapResolveEligibility(
+          aircraft
+        );
+
+      const schedule =
+        await ACS_getAircraftSaleScheduleExposure(
+          client,
+          airlineId,
+          aircraftId
+        );
+
+      const liveOccurrenceResult =
+        await client.query(
+          `
+          SELECT
+            id,
+            operational_status
+
+          FROM public.flight_occurrences
+
+          WHERE airline_id = $1
+            AND aircraft_id = $2
+
+            AND UPPER(
+                  COALESCE(
+                    operational_status,
+                    ''
+                  )
+                ) IN (
+                  'IN_PROGRESS',
+                  'EN_ROUTE'
+                )
+
+          ORDER BY id
+
+          LIMIT 1
+
+          FOR UPDATE
+          `,
+          [
+            airlineId,
+            aircraftId
+          ]
+        );
+
+      if (
+        eligibility.eligible &&
+        (
+          schedule.has_active_operation ||
+          liveOccurrenceResult.rows.length > 0
+        )
+      ) {
+        eligibility = {
+          eligible: false,
+          code:
+            "AIRCRAFT_OPERATION_IN_PROGRESS",
+          message:
+            "Aircraft cannot be scrapped while a flight operation is in progress."
+        };
+      }
+
+      if (!eligibility.eligible) {
+        await client.query(
+          "ROLLBACK"
+        );
+
+        return res.status(409).json({
+          ok: false,
+          error: eligibility.code,
+          details:
+            eligibility.message,
+          eligibility
+        });
+      }
+
+      const financeResult =
+        await client.query(
+          `
+          SELECT
+            capital
+
+          FROM public.company_finance
+
+          WHERE airline_id = $1
+
+          LIMIT 1
+
+          FOR UPDATE
+          `,
+          [airlineId]
+        );
+
+      if (!financeResult.rows.length) {
+        await client.query(
+          "ROLLBACK"
+        );
+
+        return res.status(409).json({
+          ok: false,
+          error:
+            "COMPANY_FINANCE_NOT_FOUND"
+        });
+      }
+
+      const quote =
+        ACS_calculateAircraftScrapQuote(
+          aircraft,
+          financeResult.rows[0].capital
+        );
+
+      if (
+        !quote.ok ||
+        quote.recovery_amount <= 0
+      ) {
+        await client.query(
+          "ROLLBACK"
+        );
+
+        return res.status(422).json({
+          ok: false,
+
+          error:
+            quote.error ||
+            "INVALID_SCRAP_RECOVERY",
+
+          details:
+            quote.details ||
+            "ACS could not establish a valid scrap recovery."
+        });
+      }
+
+      const passengerResult =
+        await client.query(
+          `
+          DELETE FROM
+            public.acs_passenger_flight_results
+            passenger
+
+          USING
+            public.flight_occurrences
+            occurrence
+
+          WHERE passenger.occurrence_id =
+                occurrence.id
+
+            AND occurrence.airline_id = $1
+            AND occurrence.aircraft_id = $2
+          `,
+          [
+            airlineId,
+            aircraftId
+          ]
+        );
+
+      const skytrackResult =
+        await client.query(
+          `
+          DELETE FROM
+            public.skytrack_ops_impacts
+            impact
+
+          WHERE impact.airline_id = $1
+
+            AND (
+              UPPER(
+                TRIM(
+                  COALESCE(
+                    impact.aircraft_registration,
+                    ''
+                  )
+                )
+              ) =
+              UPPER(
+                TRIM($3::TEXT)
+              )
+
+              OR impact.schedule_item_id IN (
+                SELECT item.id
+                FROM public.schedule_items item
+                WHERE item.airline_id = $1
+                  AND item.aircraft_id = $2
+              )
+            )
+          `,
+          [
+            airlineId,
+            aircraftId,
+            aircraft.registration
+          ]
+        );
+
+      const alertsResult =
+        await client.query(
+          `
+          DELETE FROM
+            public.occ_alerts alert
+
+          WHERE alert.airline_id = $1
+
+            AND (
+              (
+                alert.source =
+                  'aircraft_maintenance_status'
+
+                AND alert.source_ref =
+                    $2::TEXT
+              )
+
+              OR alert.message ILIKE (
+                '%' || $3::TEXT || '%'
+              )
+            )
+          `,
+          [
+            airlineId,
+            aircraftId,
+            aircraft.registration
+          ]
+        );
+
+      const occurrencesResult =
+        await client.query(
+          `
+          DELETE FROM
+            public.flight_occurrences
+
+          WHERE airline_id = $1
+            AND aircraft_id = $2
+          `,
+          [
+            airlineId,
+            aircraftId
+          ]
+        );
+
+      const insuranceResult =
+        await client.query(
+          `
+          DELETE FROM
+            public.aircraft_insurance_policies
+
+          WHERE airline_id = $1
+            AND aircraft_id = $2
+          `,
+          [
+            airlineId,
+            aircraftId
+          ]
+        );
+
+      const listingsResult =
+        await client.query(
+          `
+          DELETE FROM
+            public.aircraft_market_listings
+
+          WHERE seller_airline_id = $1
+            AND aircraft_id = $2
+          `,
+          [
+            airlineId,
+            aircraftId
+          ]
+        );
+
+      const maintenanceEventsResult =
+        await client.query(
+          `
+          DELETE FROM
+            public.aircraft_maintenance_events
+
+          WHERE airline_id = $1
+            AND aircraft_id = $2
+          `,
+          [
+            airlineId,
+            aircraftId
+          ]
+        );
+
+      const maintenanceStatusResult =
+        await client.query(
+          `
+          DELETE FROM
+            public.aircraft_maintenance_status
+
+          WHERE airline_id = $1
+            AND aircraft_id = $2
+          `,
+          [
+            airlineId,
+            aircraftId
+          ]
+        );
+
+      const leasingResult =
+        await client.query(
+          `
+          DELETE FROM
+            public.aircraft_leasing_contracts
+
+          WHERE airline_id = $1
+            AND aircraft_id = $2
+          `,
+          [
+            airlineId,
+            aircraftId
+          ]
+        );
+
+      const collateralResult =
+        await client.query(
+          `
+          DELETE FROM
+            public.bank_loan_collateral
+
+          WHERE airline_id = $1
+            AND aircraft_id = $2
+          `,
+          [
+            airlineId,
+            aircraftId
+          ]
+        );
+
+      const routePlansResult =
+        await client.query(
+          `
+          UPDATE public.route_plans
+
+          SET
+            aircraft_id = NULL,
+            registration = NULL,
+            aircraft = NULL,
+            updated_at = NOW()
+
+          WHERE airline_id = $1
+            AND aircraft_id = $2
+          `,
+          [
+            airlineId,
+            aircraftId
+          ]
+        );
+
+      const scheduleItemsResult =
+        await client.query(
+          `
+          UPDATE public.schedule_items
+
+          SET
+            aircraft_id = NULL,
+            aircraft_registration = NULL,
+            aircraft = NULL,
+            notes = NULL,
+
+            status = CASE
+              WHEN LOWER(
+                     COALESCE(
+                       item_type,
+                       ''
+                     )
+                   ) <> 'flight'
+                THEN 'CANCELLED'
+
+              WHEN LOWER(
+                     COALESCE(
+                       status,
+                       ''
+                     )
+                   ) = 'assigned'
+                THEN 'planned'
+
+              ELSE status
+            END,
+
+            updated_at = NOW()
+
+          WHERE airline_id = $1
+            AND aircraft_id = $2
+          `,
+          [
+            airlineId,
+            aircraftId
+          ]
+        );
+
+      const slotsResult =
+        await client.query(
+          `
+          UPDATE public.airport_slot_bookings
+
+          SET
+            aircraft_id = NULL,
+            registration = NULL,
+            updated_at = NOW()
+
+          WHERE airline_id = $1
+
+            AND (
+              aircraft_id = $2
+
+              OR UPPER(
+                   TRIM(
+                     COALESCE(
+                       registration,
+                       ''
+                     )
+                   )
+                 ) =
+                 UPPER(
+                   TRIM($3::TEXT)
+                 )
+            )
+          `,
+          [
+            airlineId,
+            aircraftId,
+            aircraft.registration
+          ]
+        );
+
+      const deletedAircraftResult =
+        await client.query(
+          `
+          DELETE FROM
+            public.aircraft_fleet
+
+          WHERE id = $1
+            AND airline_id = $2
+
+          RETURNING id
+          `,
+          [
+            aircraftId,
+            airlineId
+          ]
+        );
+
+      if (
+        deletedAircraftResult.rowCount !== 1
+      ) {
+        throw new Error(
+          "AIRCRAFT_DELETE_FAILED"
+        );
+      }
+
+      const updatedFinanceResult =
+        await client.query(
+          `
+          UPDATE public.company_finance
+
+          SET
+            capital =
+              COALESCE(capital, 0) + $2,
+
+            profit =
+              COALESCE(profit, 0) + $2,
+
+            updated_at = NOW()
+
+          WHERE airline_id = $1
+
+          RETURNING capital
+          `,
+          [
+            airlineId,
+            quote.recovery_amount
+          ]
+        );
+
+      if (
+        updatedFinanceResult.rowCount !== 1
+      ) {
+        throw new Error(
+          "SCRAP_FINANCE_CREDIT_FAILED"
+        );
+      }
+
+      const financeTimestamp =
+        Math.floor(
+          new Date(
+            aircraft.current_sim_time
+          ).getTime()
+        );
+
+      if (
+        !Number.isFinite(
+          financeTimestamp
+        )
+      ) {
+        throw new Error(
+          "SCRAP_FINANCE_TIMESTAMP_UNAVAILABLE"
+        );
+      }
+
+      await client.query(
+        `
+        INSERT INTO public.finance_log (
+          airline_id,
+          type,
+          source,
+          amount,
+          timestamp,
+          created_at
+        )
+
+        VALUES (
+          $1,
+          'INCOME',
+          'AIRCRAFT SCRAP RECOVERY',
+          $2,
+          $3,
+          NOW()
+        )
+        `,
+        [
+          airlineId,
+          quote.recovery_amount,
+          financeTimestamp
+        ]
+      );
+
+      await client.query("COMMIT");
+
+      return res.json({
+        ok: true,
+
+        endpoint:
+          "ACS_AIRCRAFT_PERMANENT_SCRAP",
+
+        version:
+          "ACS_AIRCRAFT_PERMANENT_SCRAP_V1_0",
+
+        airline_id:
+          airlineId,
+
+        deleted_aircraft_id:
+          aircraftId,
+
+        recovery: {
+          currency:
+            quote.currency,
+
+          amount:
+            quote.recovery_amount,
+
+          capital_after:
+            Number(
+              updatedFinanceResult
+                .rows[0]
+                .capital || 0
+            )
+        },
+
+        removed: {
+          passenger_results:
+            passengerResult.rowCount,
+
+          skytrack_impacts:
+            skytrackResult.rowCount,
+
+          occ_alerts:
+            alertsResult.rowCount,
+
+          flight_occurrences:
+            occurrencesResult.rowCount,
+
+          insurance_policies:
+            insuranceResult.rowCount,
+
+          market_listings:
+            listingsResult.rowCount,
+
+          maintenance_events:
+            maintenanceEventsResult.rowCount,
+
+          maintenance_status:
+            maintenanceStatusResult.rowCount,
+
+          leasing_contracts:
+            leasingResult.rowCount,
+
+          collateral_records:
+            collateralResult.rowCount
+        },
+
+        detached: {
+          route_plans:
+            routePlansResult.rowCount,
+
+          schedule_items:
+            scheduleItemsResult.rowCount,
+
+          airport_slot_bookings:
+            slotsResult.rowCount
+        }
+      });
+
+    } catch (error) {
+      await client.query(
+        "ROLLBACK"
+      );
+
+      console.error(
+        "ACS AIRCRAFT PERMANENT SCRAP ERROR:",
+        error
+      );
+
+      if (error?.code === "23503") {
+        return res.status(409).json({
+          ok: false,
+
+          error:
+            "SCRAP_DEPENDENCY_BLOCKED",
+
+          details:
+            "A protected aircraft dependency prevented permanent deletion. No changes were committed."
+        });
+      }
+
+      return res.status(500).json({
+        ok: false,
+
+        error:
+          "AIRCRAFT_SCRAP_FAILED",
+
+        details:
+          error.message
+      });
+
+    } finally {
+      client.release();
+    }
+  }
+);
+
+/* ============================================================
    ACS OCC — AIRCRAFT SALE SCHEDULE EXPOSURE
    ------------------------------------------------------------
    Schedule authority:
