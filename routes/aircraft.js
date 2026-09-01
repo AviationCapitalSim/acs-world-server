@@ -1605,6 +1605,12 @@ function ACS_scrapResolveEligibility(
       Number(aircraft.aircraft_age) || 0
     );
 
+  const hasActiveLeaseContract =
+    aircraft.active_lease_contract === true;
+
+  const hasActiveBankCollateral =
+    aircraft.active_bank_collateral === true;
+   
   if (ownership !== "OWNED") {
     return {
       eligible: false,
@@ -1627,6 +1633,26 @@ function ACS_scrapResolveEligibility(
     };
   }
 
+    if (hasActiveLeaseContract) {
+    return {
+      eligible: false,
+      code:
+        "AIRCRAFT_ACTIVE_LEASE_CONTRACT",
+      message:
+        "Aircraft cannot be scrapped while an active lease contract exists."
+    };
+  }
+
+  if (hasActiveBankCollateral) {
+    return {
+      eligible: false,
+      code:
+        "AIRCRAFT_ACTIVE_BANK_COLLATERAL",
+      message:
+        "Aircraft cannot be scrapped while assigned as active bank collateral."
+    };
+  }
+   
   if (
     [
       "SOLD",
@@ -1635,6 +1661,7 @@ function ACS_scrapResolveEligibility(
       "FOR_LEASE"
     ].includes(fleetStatus)
   ) {
+     
     return {
       eligible: false,
       code:
@@ -1972,10 +1999,36 @@ router.get(
               )::INTEGER
             ) AS aircraft_age,
 
-            COALESCE(
+                        COALESCE(
               cf.capital,
               0
-            ) AS current_capital
+            ) AS current_capital,
+
+            EXISTS (
+              SELECT 1
+              FROM public.aircraft_leasing_contracts alc
+              WHERE alc.airline_id =
+                    af.airline_id
+                AND alc.aircraft_id =
+                    af.id
+                AND UPPER(
+                      COALESCE(
+                        alc.status,
+                        ''
+                      )
+                    ) = 'ACTIVE'
+            ) AS active_lease_contract,
+
+            EXISTS (
+              SELECT 1
+              FROM public.bank_loan_collateral blc
+              WHERE blc.airline_id =
+                    af.airline_id
+                AND blc.aircraft_id =
+                    af.id
+                AND blc.released_sim_time
+                    IS NULL
+            ) AS active_bank_collateral
 
           FROM public.aircraft_fleet af
 
