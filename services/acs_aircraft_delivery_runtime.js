@@ -1688,7 +1688,6 @@ async function ACS_deliveryProcessUsedAircraft(aircraftId) {
         action:
           "USED_AIRCRAFT_NOT_DUE"
       };
-     }
     }
 
     const depreciationReady =
