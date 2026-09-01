@@ -380,13 +380,60 @@ router.get("/snapshot", requireAuth, async (req, res) => {
               candidate.dispatch_status = 'PENDING'
               AND candidate.operational_status = 'PLANNED'
               AND candidate.scheduled_departure_at > sim.sim_time
-            )
 
-            OR
+              /*
+                A future occurrence is operational only while its
+                Schedule item still belongs to the same aircraft.
+                This prevents edited or reassigned flights from
+                remaining attached to the previous aircraft.
+              */
+              AND EXISTS (
+                SELECT 1
+                FROM public.schedule_items current_schedule
+                WHERE current_schedule.id =
+                      candidate.schedule_item_id
+                  AND current_schedule.airline_id =
+                      candidate.airline_id
+                  AND current_schedule.aircraft_id =
+                      candidate.aircraft_id
+                  AND LOWER(
+                    COALESCE(
+                      current_schedule.item_type,
+                      ''
+                    )
+                  ) = 'flight'
+                  AND LOWER(
+                    COALESCE(
+                      current_schedule.status,
+                      'planned'
+                    )
+                  ) NOT IN (
+                    'cancelled',
+                    'completed'
+                  )
+              )
 
-            (
-              candidate.dispatch_status = 'RELEASED'
-              AND candidate.scheduled_arrival_at <= sim.sim_time
+              /*
+                The Route Plan must also retain the same aircraft.
+                This is the second global guard against stale
+                occurrences left by route edits or reassignment.
+              */
+              AND EXISTS (
+                SELECT 1
+                FROM public.route_plans current_route
+                WHERE current_route.id =
+                      candidate.route_plan_id
+                  AND current_route.airline_id =
+                      candidate.airline_id
+                  AND current_route.aircraft_id =
+                      candidate.aircraft_id
+                  AND UPPER(
+                    COALESCE(
+                      current_route.route_state,
+                      'ACTIVE'
+                    )
+                  ) <> 'CANCELLED'
+              )
             )
           )
 
