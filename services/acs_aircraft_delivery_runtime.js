@@ -1648,16 +1648,48 @@ async function ACS_deliveryProcessUsedAircraft(aircraftId) {
 
     const aircraft = aircraftResult.rows[0];
 
-    const aircraftIsActive =
-      String(aircraft.status || "") === "ACTIVE";
+        /*
+      Every used aircraft delivery or recovery must respect
+      its official ACS delivery date.
 
-    if (!aircraftIsActive) {
-      if (!aircraft.delivery_date) {
-        throw new Error(
-          "USED_AIRCRAFT_DELIVERY_DATE_REQUIRED"
-        );
-      }
+      ACTIVE compatibility remains available only for a
+      previously interrupted delivery transition.
+    */
 
+    if (!aircraft.delivery_date) {
+      throw new Error(
+        "USED_AIRCRAFT_DELIVERY_DATE_REQUIRED"
+      );
+    }
+
+    const dueResult =
+      await client.query(
+        `
+        SELECT
+          $1::timestamp <=
+          $2::timestamp AS due
+        `,
+        [
+          aircraft.delivery_date,
+          simTime
+        ]
+      );
+
+    if (
+      dueResult.rows[0]
+        ?.due !== true
+    ) {
+      await client.query(
+        "ROLLBACK"
+      );
+
+      return {
+        processedCount: 0,
+        action:
+          "USED_AIRCRAFT_NOT_DUE"
+      };
+    }
+     
       const dueResult = await client.query(
         `
         SELECT $1::timestamp <= $2::timestamp AS due
@@ -1741,36 +1773,35 @@ async function ACS_deliveryProcessUsedAircraft(aircraftId) {
       };
     }
 
-    /*
-      Only announce a real delivery transition.
+        /*
+      The aircraft has completed a due delivery transition
+      or recovered that same transition after an interruption.
 
-      Some used aircraft may already be ACTIVE and enter this
-      resolver only to initialize depreciation. Those aircraft
-      must not create a delivery alert.
+      Alert creation is idempotent through:
+      AIRCRAFT_DELIVERED:<aircraft_id>
     */
-    if (!aircraftIsActive) {
-      const deliveredAircraft =
-        updateResult.rows[0];
 
-      await ACS_createAircraftDeliveredAlert(
-        client,
-        {
-          airlineId:
-            deliveredAircraft.airline_id,
+    const deliveredAircraft =
+      updateResult.rows[0];
 
-          aircraftId:
-            deliveredAircraft.id,
+    await ACS_createAircraftDeliveredAlert(
+      client,
+      {
+        airlineId:
+          deliveredAircraft.airline_id,
 
-          registration:
-            deliveredAircraft.registration,
+        aircraftId:
+          deliveredAircraft.id,
 
-          aircraftName:
-            deliveredAircraft.aircraft_name,
+        registration:
+          deliveredAircraft.registration,
 
-          simTime
-        }
-      );
-    }
+        aircraftName:
+          deliveredAircraft.aircraft_name,
+
+        simTime
+      }
+    );
 
     await client.query("COMMIT");
 
@@ -1791,6 +1822,7 @@ async function ACS_deliveryProcessUsedAircraft(aircraftId) {
 }
 
 export async function ACS_runAircraftDeliveryRuntime({ batchSize = 100 } = {}) {
+   
   const normalizedBatchSize = Math.min(
     1000,
     Math.max(1, ACS_deliveryInteger(batchSize, 100))
@@ -1819,20 +1851,24 @@ export async function ACS_runAircraftDeliveryRuntime({ batchSize = 100 } = {}) {
     WHERE source = 'USED_MARKET'
       AND ownership_type = 'OWNED'
       AND depreciation_status = 'PENDING_SERVICE'
-      AND (
-        status = 'ACTIVE'
-        OR (
-          status = 'PENDING_DELIVERY'
-          AND delivery_date IS NOT NULL
-          AND delivery_date <= acs_get_current_sim_time()
-        )
+      AND status IN (
+        'PENDING_DELIVERY',
+        'ACTIVE'
       )
-    ORDER BY
+
+      AND delivery_date
+        IS NOT NULL
+
+      AND delivery_date <=
+        acs_get_current_sim_time()
+        ORDER BY
+      delivery_date,
       CASE
-        WHEN status = 'ACTIVE' THEN 0
+        WHEN status =
+          'PENDING_DELIVERY'
+          THEN 0
         ELSE 1
       END,
-      delivery_date,
       id
     LIMIT $1
     `,
