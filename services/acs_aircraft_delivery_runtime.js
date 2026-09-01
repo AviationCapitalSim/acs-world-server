@@ -1300,7 +1300,13 @@ const dueUnits = [
 
       const aircraft = fleetResult.rows[0];
 
-      await ACS_deliveryEnsureMaintenance(client, aircraft.id, airlineId, simTime);
+            await ACS_deliveryEnsureMaintenance(
+        client,
+        aircraft.id,
+        airlineId,
+        simTime
+      );
+
       await ACS_deliveryEnsureLeaseContract({
         client,
         order,
@@ -1310,8 +1316,27 @@ const dueUnits = [
         quantity
       });
 
+      /*
+        The aircraft now exists in aircraft_fleet as ACTIVE
+        with its final registration. Create its delivery alert
+        inside the same transaction.
+      */
+      await ACS_createAircraftDeliveredAlert(
+        client,
+        {
+          airlineId,
+          aircraftId:
+            aircraft.id,
+          registration,
+          aircraftName:
+            aircraftLabel,
+          simTime
+        }
+      );
+
       createdCount += 1;
     }
+     
 /* ============================================================
    🟦 ACS OCC IV — PARTIAL OR FINAL ORDER COMPLETION
    ============================================================ */
@@ -1656,7 +1681,7 @@ async function ACS_deliveryProcessUsedAircraft(aircraftId) {
       Number(aircraft.depreciation_basis || 0) > 0 &&
       Number(aircraft.depreciation_residual_value || 0) >= 0 &&
       Number(aircraft.depreciation_basis || 0) >
-        Number(aircraft.depreciation_residual_value || 0) &&
+      Number(aircraft.depreciation_residual_value || 0) &&
       Number(aircraft.depreciation_useful_life_months || 0) > 0;
 
     if (!depreciationReady) {
@@ -1696,6 +1721,7 @@ async function ACS_deliveryProcessUsedAircraft(aircraftId) {
       RETURNING
         id,
         airline_id,
+        aircraft_name,
         registration,
         status,
         operational_status,
@@ -1706,13 +1732,44 @@ async function ACS_deliveryProcessUsedAircraft(aircraftId) {
       [aircraftId, simTime]
     );
 
-    if (!updateResult.rows.length) {
+   if (!updateResult.rows.length) {
       await client.query("ROLLBACK");
 
       return {
         processedCount: 0,
         action: "USED_AIRCRAFT_ALREADY_PROCESSED"
       };
+    }
+
+    /*
+      Only announce a real delivery transition.
+
+      Some used aircraft may already be ACTIVE and enter this
+      resolver only to initialize depreciation. Those aircraft
+      must not create a delivery alert.
+    */
+    if (!aircraftIsActive) {
+      const deliveredAircraft =
+        updateResult.rows[0];
+
+      await ACS_createAircraftDeliveredAlert(
+        client,
+        {
+          airlineId:
+            deliveredAircraft.airline_id,
+
+          aircraftId:
+            deliveredAircraft.id,
+
+          registration:
+            deliveredAircraft.registration,
+
+          aircraftName:
+            deliveredAircraft.aircraft_name,
+
+          simTime
+        }
+      );
     }
 
     await client.query("COMMIT");
