@@ -1467,6 +1467,706 @@ return res.json({
 );
 
 /* ============================================================
+   ACS OCC — SCRAP AIRCRAFT EVALUATION
+   ============================================================ */
+
+const ACS_AIRCRAFT_SCRAP_POLICY =
+  Object.freeze({
+    minimumAgeYears: 12,
+
+    structuralRecoveryRate: 0.025,
+
+    componentBaseRate: 0.015,
+    componentConditionRate: 0.035,
+
+    engineRecoveryRate: 0.005,
+    maximumEngineCount: 4,
+
+    obsolescenceStartYears: 20,
+    annualObsolescenceRate: 0.015,
+    minimumObsolescenceFactor: 0.65,
+
+    dismantlingCostRate: 0.15,
+
+    maximumCurrentValueRate: 0.12,
+
+    moneyRoundingUnit: 100
+  });
+
+function ACS_scrapNormalizeStatus(value) {
+  return String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, "_");
+}
+
+function ACS_scrapClamp(
+  value,
+  minimum,
+  maximum
+) {
+  const numericValue =
+    Number(value);
+
+  if (!Number.isFinite(numericValue)) {
+    return minimum;
+  }
+
+  return Math.min(
+    maximum,
+    Math.max(
+      minimum,
+      numericValue
+    )
+  );
+}
+
+function ACS_scrapRoundMoney(value) {
+  const numericValue =
+    Number(value);
+
+  if (
+    !Number.isFinite(numericValue) ||
+    numericValue <= 0
+  ) {
+    return 0;
+  }
+
+  const roundingUnit =
+    ACS_AIRCRAFT_SCRAP_POLICY
+      .moneyRoundingUnit;
+
+  return Math.round(
+    numericValue / roundingUnit
+  ) * roundingUnit;
+}
+
+function ACS_scrapResolveEngineCount(
+  value
+) {
+  const directNumber =
+    Number(value);
+
+  if (
+    Number.isInteger(directNumber) &&
+    directNumber > 0
+  ) {
+    return Math.min(
+      directNumber,
+      ACS_AIRCRAFT_SCRAP_POLICY
+        .maximumEngineCount
+    );
+  }
+
+  const match =
+    String(value || "")
+      .match(/\d+/);
+
+  if (match) {
+    const parsed =
+      Number(match[0]);
+
+    if (
+      Number.isInteger(parsed) &&
+      parsed > 0
+    ) {
+      return Math.min(
+        parsed,
+        ACS_AIRCRAFT_SCRAP_POLICY
+          .maximumEngineCount
+      );
+    }
+  }
+
+  return 1;
+}
+
+function ACS_scrapResolveEligibility(
+  aircraft
+) {
+  const ownership =
+    ACS_scrapNormalizeStatus(
+      aircraft.ownership_type
+    );
+
+  const fleetStatus =
+    ACS_scrapNormalizeStatus(
+      aircraft.status
+    );
+
+  const operationalStatus =
+    ACS_scrapNormalizeStatus(
+      aircraft.operational_status
+    );
+
+  const aircraftAge =
+    Math.max(
+      0,
+      Number(aircraft.aircraft_age) || 0
+    );
+
+  if (ownership !== "OWNED") {
+    return {
+      eligible: false,
+      code: "AIRCRAFT_NOT_OWNED",
+      message:
+        "Only airline-owned aircraft may be permanently scrapped."
+    };
+  }
+
+  if (
+    aircraftAge <
+    ACS_AIRCRAFT_SCRAP_POLICY
+      .minimumAgeYears
+  ) {
+    return {
+      eligible: false,
+      code: "AIRCRAFT_TOO_YOUNG",
+      message:
+        `Aircraft must be at least ${ACS_AIRCRAFT_SCRAP_POLICY.minimumAgeYears} years old. Current age: ${aircraftAge} years.`
+    };
+  }
+
+  if (
+    [
+      "SOLD",
+      "SCRAPPED",
+      "LEASED_OUT",
+      "FOR_LEASE"
+    ].includes(fleetStatus)
+  ) {
+    return {
+      eligible: false,
+      code:
+        "AIRCRAFT_STATUS_NOT_ELIGIBLE",
+      message:
+        "Aircraft status does not permit permanent scrapping."
+    };
+  }
+
+  if (
+    [
+      "IN_FLIGHT",
+      "FLYING",
+      "EN_ROUTE"
+    ].includes(operationalStatus)
+  ) {
+    return {
+      eligible: false,
+      code: "AIRCRAFT_IN_FLIGHT",
+      message:
+        "Aircraft cannot be scrapped while a flight is in progress."
+    };
+  }
+
+  return {
+    eligible: true,
+    code: "SCRAP_ELIGIBLE",
+    message:
+      "Aircraft is eligible for permanent scrapping."
+  };
+}
+
+function ACS_calculateAircraftScrapQuote(
+  aircraft,
+  currentCapital
+) {
+  const currentValue =
+    Number(aircraft.current_value);
+
+  if (
+    !Number.isFinite(currentValue) ||
+    currentValue <= 0
+  ) {
+    return {
+      ok: false,
+      error:
+        "SCRAP_VALUATION_UNAVAILABLE",
+      details:
+        "Aircraft has no valid current value."
+    };
+  }
+
+  const conditionPct =
+    ACS_scrapClamp(
+      aircraft.condition_pct,
+      0,
+      100
+    );
+
+  const conditionRatio =
+    conditionPct / 100;
+
+  const aircraftAge =
+    Math.max(
+      0,
+      Number(aircraft.aircraft_age) || 0
+    );
+
+  const engineCount =
+    ACS_scrapResolveEngineCount(
+      aircraft.engines
+    );
+
+  const structuralRecovery =
+    currentValue *
+    ACS_AIRCRAFT_SCRAP_POLICY
+      .structuralRecoveryRate;
+
+  const componentRecoveryRate =
+    ACS_AIRCRAFT_SCRAP_POLICY
+      .componentBaseRate +
+    (
+      conditionRatio *
+      ACS_AIRCRAFT_SCRAP_POLICY
+        .componentConditionRate
+    );
+
+  const componentRecovery =
+    currentValue *
+    componentRecoveryRate;
+
+  const engineRecoveryRate =
+    Math.min(
+      engineCount,
+      ACS_AIRCRAFT_SCRAP_POLICY
+        .maximumEngineCount
+    ) *
+    ACS_AIRCRAFT_SCRAP_POLICY
+      .engineRecoveryRate;
+
+  const engineRecovery =
+    currentValue *
+    engineRecoveryRate;
+
+  const yearsOverObsolescence =
+    Math.max(
+      0,
+      aircraftAge -
+      ACS_AIRCRAFT_SCRAP_POLICY
+        .obsolescenceStartYears
+    );
+
+  const obsolescenceFactor =
+    Math.max(
+      ACS_AIRCRAFT_SCRAP_POLICY
+        .minimumObsolescenceFactor,
+
+      1 -
+      (
+        yearsOverObsolescence *
+        ACS_AIRCRAFT_SCRAP_POLICY
+          .annualObsolescenceRate
+      )
+    );
+
+  const grossRecovery =
+    (
+      structuralRecovery +
+      componentRecovery +
+      engineRecovery
+    ) *
+    obsolescenceFactor;
+
+  const dismantlingCost =
+    grossRecovery *
+    ACS_AIRCRAFT_SCRAP_POLICY
+      .dismantlingCostRate;
+
+  const recoveryBeforeLimit =
+    Math.max(
+      0,
+      grossRecovery -
+      dismantlingCost
+    );
+
+  const maximumRecovery =
+    currentValue *
+    ACS_AIRCRAFT_SCRAP_POLICY
+      .maximumCurrentValueRate;
+
+  const recoveryAmount =
+    ACS_scrapRoundMoney(
+      Math.min(
+        recoveryBeforeLimit,
+        maximumRecovery
+      )
+    );
+
+  const capitalBefore =
+    Math.max(
+      0,
+      Number(currentCapital) || 0
+    );
+
+  const capitalAfter =
+    capitalBefore +
+    recoveryAmount;
+
+  return {
+    ok: true,
+
+    currency:
+      aircraft.currency || "USD",
+
+    current_value:
+      Math.round(currentValue),
+
+    recovery_amount:
+      recoveryAmount,
+
+    capital_before:
+      Math.round(capitalBefore),
+
+    capital_after:
+      Math.round(capitalAfter),
+
+    calculation: {
+      structural_recovery:
+        ACS_scrapRoundMoney(
+          structuralRecovery
+        ),
+
+      component_recovery:
+        ACS_scrapRoundMoney(
+          componentRecovery
+        ),
+
+      engine_recovery:
+        ACS_scrapRoundMoney(
+          engineRecovery
+        ),
+
+      gross_recovery:
+        ACS_scrapRoundMoney(
+          grossRecovery
+        ),
+
+      dismantling_cost:
+        ACS_scrapRoundMoney(
+          dismantlingCost
+        ),
+
+      maximum_recovery:
+        ACS_scrapRoundMoney(
+          maximumRecovery
+        )
+    },
+
+    factors: {
+      aircraft_age:
+        aircraftAge,
+
+      condition_pct:
+        conditionPct,
+
+      engine_count:
+        engineCount,
+
+      component_recovery_rate:
+        Number(
+          componentRecoveryRate
+            .toFixed(4)
+        ),
+
+      engine_recovery_rate:
+        Number(
+          engineRecoveryRate
+            .toFixed(4)
+        ),
+
+      obsolescence_factor:
+        Number(
+          obsolescenceFactor
+            .toFixed(4)
+        ),
+
+      dismantling_cost_rate:
+        ACS_AIRCRAFT_SCRAP_POLICY
+          .dismantlingCostRate,
+
+      maximum_current_value_rate:
+        ACS_AIRCRAFT_SCRAP_POLICY
+          .maximumCurrentValueRate
+    }
+  };
+}
+
+router.get(
+  "/aircraft/fleet/:id/scrap/quote",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const airlineId =
+        Number(req.airline_id);
+
+      const aircraftId =
+        Number(req.params.id);
+
+      if (
+        !Number.isInteger(aircraftId) ||
+        aircraftId <= 0
+      ) {
+        return res.status(400).json({
+          ok: false,
+          error: "INVALID_AIRCRAFT_ID"
+        });
+      }
+
+      if (
+        !Number.isInteger(airlineId) ||
+        airlineId <= 0
+      ) {
+        return res.status(401).json({
+          ok: false,
+          error: "NO_AIRLINE_SESSION"
+        });
+      }
+
+      const result =
+        await pool.query(
+          `
+          SELECT
+            af.id,
+            af.aircraft_uid,
+            af.airline_id,
+            af.ownership_type,
+            af.status,
+            af.operational_status,
+
+            af.manufacturer,
+            af.model_key,
+            af.aircraft_name,
+            af.registration,
+
+            af.year_built,
+            af.condition_pct,
+            af.current_value,
+            af.currency,
+
+            ac.aircraft_name
+              AS catalog_aircraft_name,
+
+            ac.engines,
+
+            acs_get_current_sim_time()
+              AS current_sim_time,
+
+            GREATEST(
+              0,
+              EXTRACT(
+                YEAR FROM AGE(
+                  acs_get_current_sim_time(),
+                  MAKE_DATE(
+                    COALESCE(
+                      af.year_built,
+                      EXTRACT(
+                        YEAR FROM
+                        acs_get_current_sim_time()
+                      )::INTEGER
+                    ),
+                    1,
+                    1
+                  )
+                )
+              )::INTEGER
+            ) AS aircraft_age,
+
+            COALESCE(
+              cf.capital,
+              0
+            ) AS current_capital
+
+          FROM public.aircraft_fleet af
+
+          LEFT JOIN
+            public.aircraft_catalog ac
+            ON ac.model_key =
+               af.model_key
+
+          LEFT JOIN
+            public.company_finance cf
+            ON cf.airline_id =
+               af.airline_id
+
+          WHERE af.id = $1
+            AND af.airline_id = $2
+
+          LIMIT 1
+          `,
+          [
+            aircraftId,
+            airlineId
+          ]
+        );
+
+      if (!result.rows.length) {
+        return res.status(404).json({
+          ok: false,
+          error: "AIRCRAFT_NOT_FOUND"
+        });
+      }
+
+      const aircraft =
+        result.rows[0];
+
+      const schedule =
+        await ACS_getAircraftSaleScheduleExposure(
+          pool,
+          airlineId,
+          aircraftId
+        );
+
+      let eligibility =
+        ACS_scrapResolveEligibility(
+          aircraft
+        );
+
+      if (
+        eligibility.eligible &&
+        schedule.has_active_operation
+      ) {
+        eligibility = {
+          eligible: false,
+          code:
+            "AIRCRAFT_OPERATION_IN_PROGRESS",
+          message:
+            "Aircraft cannot be scrapped while a flight operation is in progress."
+        };
+      }
+
+      if (!eligibility.eligible) {
+        return res.json({
+          ok: true,
+
+          endpoint:
+            "ACS_AIRCRAFT_SCRAP_QUOTE",
+
+          version:
+            "ACS_AIRCRAFT_SCRAP_QUOTE_V1_0",
+
+          airline_id:
+            airlineId,
+
+          aircraft: {
+            id:
+              aircraft.id,
+
+            aircraft_uid:
+              aircraft.aircraft_uid,
+
+            aircraft_name:
+              aircraft.catalog_aircraft_name ||
+              aircraft.aircraft_name,
+
+            registration:
+              aircraft.registration,
+
+            year_built:
+              aircraft.year_built,
+
+            aircraft_age:
+              Number(
+                aircraft.aircraft_age || 0
+              ),
+
+            ownership_type:
+              aircraft.ownership_type,
+
+            operational_status:
+              aircraft.operational_status
+          },
+
+          eligibility,
+          schedule,
+          quote: null
+        });
+      }
+
+      const quote =
+        ACS_calculateAircraftScrapQuote(
+          aircraft,
+          aircraft.current_capital
+        );
+
+      if (!quote.ok) {
+        return res.status(422).json(
+          quote
+        );
+      }
+
+      return res.json({
+        ok: true,
+
+        endpoint:
+          "ACS_AIRCRAFT_SCRAP_QUOTE",
+
+        version:
+          "ACS_AIRCRAFT_SCRAP_QUOTE_V1_0",
+
+        airline_id:
+          airlineId,
+
+        aircraft: {
+          id:
+            aircraft.id,
+
+          aircraft_uid:
+            aircraft.aircraft_uid,
+
+          aircraft_name:
+            aircraft.catalog_aircraft_name ||
+            aircraft.aircraft_name,
+
+          registration:
+            aircraft.registration,
+
+          model_key:
+            aircraft.model_key,
+
+          year_built:
+            aircraft.year_built,
+
+          aircraft_age:
+            Number(
+              aircraft.aircraft_age || 0
+            ),
+
+          condition_pct:
+            Number(
+              aircraft.condition_pct || 0
+            ),
+
+          ownership_type:
+            aircraft.ownership_type,
+
+          operational_status:
+            aircraft.operational_status
+        },
+
+        eligibility,
+        schedule,
+        quote
+      });
+
+    } catch (error) {
+      console.error(
+        "ACS AIRCRAFT SCRAP QUOTE ERROR:",
+        error
+      );
+
+      return res.status(500).json({
+        ok: false,
+        error:
+          "AIRCRAFT_SCRAP_QUOTE_FAILED",
+        details:
+          error.message
+      });
+    }
+  }
+);
+
+/* ============================================================
    ACS OCC — AIRCRAFT SALE SCHEDULE EXPOSURE
    ------------------------------------------------------------
    Schedule authority:
