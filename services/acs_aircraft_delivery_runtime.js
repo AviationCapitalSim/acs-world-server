@@ -31,6 +31,110 @@ function ACS_deliveryNotes(rawNotes) {
 }
 
 /* ============================================================
+   ACS OCC — AIRCRAFT DELIVERED ALERT v1.0
+   ------------------------------------------------------------
+   - One Alert Center event per delivered aircraft.
+   - Runs inside the delivery transaction.
+   - No frontend authority.
+   - No schema or migration changes.
+   ============================================================ */
+
+async function ACS_createAircraftDeliveredAlert(
+  client,
+  {
+    airlineId,
+    aircraftId,
+    registration,
+    aircraftName,
+    simTime
+  }
+) {
+  const normalizedAirlineId =
+    Number(airlineId);
+
+  const normalizedAircraftId =
+    Number(aircraftId);
+
+  if (
+    !client ||
+    !Number.isInteger(normalizedAirlineId) ||
+    normalizedAirlineId <= 0 ||
+    !Number.isInteger(normalizedAircraftId) ||
+    normalizedAircraftId <= 0
+  ) {
+    return null;
+  }
+
+  const cleanRegistration =
+    String(registration || "AIRCRAFT")
+      .trim()
+      .toUpperCase();
+
+  const cleanAircraftName =
+    String(aircraftName || "Aircraft")
+      .trim();
+
+  const alertKey =
+    `AIRCRAFT_DELIVERED:${normalizedAircraftId}`;
+
+  const title =
+    "AIRCRAFT DELIVERED";
+
+  const message =
+    `Aircraft ${cleanRegistration} has been delivered. ` +
+    `Aircraft: ${cleanAircraftName} ` +
+    `Registration: ${cleanRegistration}`;
+
+  const result = await client.query(
+    `
+    INSERT INTO public.occ_alerts (
+      airline_id,
+      alert_key,
+      category,
+      level,
+      title,
+      message,
+      source,
+      source_ref,
+      event_sim_time,
+      created_at,
+      updated_at
+    )
+    VALUES (
+      $1,
+      $2,
+      'my aircraft',
+      'info',
+      $3,
+      $4,
+      'aircraft_fleet',
+      $5,
+      $6,
+      NOW(),
+      NOW()
+    )
+    ON CONFLICT (
+      airline_id,
+      alert_key
+    )
+    WHERE deleted_at IS NULL
+    DO NOTHING
+    RETURNING *
+    `,
+    [
+      normalizedAirlineId,
+      alertKey,
+      title,
+      message,
+      String(normalizedAircraftId),
+      simTime
+    ]
+  );
+
+  return result.rows[0] || null;
+}
+
+/* ============================================================
    🟦 ACS OCC IV — UNIT DELIVERY SCHEDULE READER
    ------------------------------------------------------------
    - Reads the immutable schedule stored in order notes.
