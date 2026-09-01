@@ -89,13 +89,447 @@ function mapRecord(row) {
   };
 }
 
+function ACS_clamp(value, minimum, maximum) {
+  return Math.min(
+    maximum,
+    Math.max(minimum, value)
+  );
+}
+
+function ACS_roundFuel(
+  value,
+  decimals = 6
+) {
+  const factor = 10 ** decimals;
+
+  return (
+    Math.round(
+      (Number(value) + Number.EPSILON) *
+      factor
+    ) / factor
+  );
+}
+
+function ACS_seedPhase(value) {
+  const source =
+    String(value || "ACS_FUEL");
+
+  let hash = 2166136261;
+
+  for (
+    let index = 0;
+    index < source.length;
+    index += 1
+  ) {
+    hash ^= source.charCodeAt(index);
+    hash = Math.imul(
+      hash,
+      16777619
+    );
+  }
+
+  return (
+    ((hash >>> 0) / 4294967295) *
+    Math.PI *
+    2
+  );
+}
+
+function ACS_percentChange(
+  currentValue,
+  previousValue
+) {
+  if (
+    !Number.isFinite(currentValue) ||
+    !Number.isFinite(previousValue) ||
+    previousValue === 0
+  ) {
+    return null;
+  }
+
+  return ACS_roundFuel(
+    (
+      (currentValue - previousValue) /
+      previousValue
+    ) * 100,
+    4
+  );
+}
+
+function ACS_buildMonthlySeries(
+  annualRows,
+  logicalSeriesCode,
+  currentSimTime
+) {
+  const currentYear =
+    currentSimTime.getUTCFullYear();
+
+  const currentMonth =
+    currentSimTime.getUTCMonth() + 1;
+
+  const currentDay =
+    currentSimTime.getUTCDate();
+
+  const currentWeekOfMonth =
+    Math.min(
+      4,
+      Math.max(
+        1,
+        Math.ceil(currentDay / 7)
+      )
+    );
+
+  const monthlySeries = [];
+
+  let priorMonthPrice = null;
+  let priorWeekPrice = null;
+
+  annualRows.forEach(
+    (row, annualIndex) => {
+      const year =
+        Number(row.price_year);
+
+      const annualPrice =
+        Number(
+          row.price_usd_per_us_gallon
+        );
+
+      const priorAnnualPrice =
+        annualIndex > 0
+          ? Number(
+              annualRows[
+                annualIndex - 1
+              ].price_usd_per_us_gallon
+            )
+          : annualPrice;
+
+      if (
+        !Number.isFinite(year) ||
+        !Number.isFinite(annualPrice) ||
+        annualPrice <= 0
+      ) {
+        return;
+      }
+
+      const annualChangeRatio =
+        priorAnnualPrice > 0
+          ? Math.abs(
+              (
+                annualPrice -
+                priorAnnualPrice
+              ) /
+              priorAnnualPrice
+            )
+          : 0;
+
+      const requestedAmplitude =
+        ACS_clamp(
+          0.012 +
+            annualChangeRatio *
+            0.22,
+          0.012,
+          0.08
+        );
+
+      const phase =
+        ACS_seedPhase(
+          `${logicalSeriesCode}:${year}`
+        );
+
+      const rawMonthlyShape =
+        Array.from(
+          { length: 12 },
+          (_, monthIndex) =>
+            Math.sin(
+              (
+                monthIndex *
+                Math.PI *
+                2
+              ) /
+                12 +
+                phase
+            ) +
+            0.35 *
+              Math.sin(
+                (
+                  monthIndex *
+                  Math.PI *
+                  4
+                ) /
+                  12 +
+                  phase / 2
+              )
+        );
+
+      const shapeAverage =
+        rawMonthlyShape.reduce(
+          (total, value) =>
+            total + value,
+          0
+        ) /
+        rawMonthlyShape.length;
+
+      const monthlyShape =
+        rawMonthlyShape.map(
+          value =>
+            value -
+            shapeAverage
+        );
+
+      const maximumPositive =
+        Math.max(
+          ...monthlyShape,
+          0.000001
+        );
+
+      const maximumNegative =
+        Math.abs(
+          Math.min(
+            ...monthlyShape,
+            -0.000001
+          )
+        );
+
+      const lowPrice =
+        Number(
+          row.price_low_usd_per_us_gallon
+        );
+
+      const highPrice =
+        Number(
+          row.price_high_usd_per_us_gallon
+        );
+
+      let amplitude =
+        requestedAmplitude;
+
+      if (
+        Number.isFinite(lowPrice) &&
+        lowPrice > 0 &&
+        lowPrice < annualPrice
+      ) {
+        amplitude =
+          Math.min(
+            amplitude,
+            (
+              (
+                annualPrice -
+                lowPrice
+              ) /
+              annualPrice
+            ) /
+              maximumNegative
+          );
+      }
+
+      if (
+        Number.isFinite(highPrice) &&
+        highPrice > annualPrice
+      ) {
+        amplitude =
+          Math.min(
+            amplitude,
+            (
+              (
+                highPrice -
+                annualPrice
+              ) /
+              annualPrice
+            ) /
+              maximumPositive
+          );
+      }
+
+      const monthLimit =
+        year < currentYear
+          ? 12
+          : currentMonth;
+
+      for (
+        let month = 1;
+        month <= monthLimit;
+        month += 1
+      ) {
+        const monthPrice =
+          ACS_roundFuel(
+            annualPrice *
+              (
+                1 +
+                amplitude *
+                  monthlyShape[
+                    month - 1
+                  ]
+              )
+          );
+
+        const weeklyAmplitude =
+          Math.min(
+            0.012,
+            Math.max(
+              0.003,
+              amplitude * 0.28
+            )
+          );
+
+        const weekPhase =
+          ACS_seedPhase(
+            `${logicalSeriesCode}:${year}:${month}`
+          );
+
+        const rawWeeklyShape =
+          Array.from(
+            { length: 4 },
+            (_, weekIndex) =>
+              Math.sin(
+                (
+                  weekIndex *
+                  Math.PI *
+                  2
+                ) /
+                  4 +
+                  weekPhase
+              )
+          );
+
+        const weeklyAverage =
+          rawWeeklyShape.reduce(
+            (total, value) =>
+              total + value,
+            0
+          ) /
+          rawWeeklyShape.length;
+
+        const weeklyShape =
+          rawWeeklyShape.map(
+            value =>
+              value -
+              weeklyAverage
+          );
+
+        const weeklyPrices =
+          weeklyShape.map(
+            value =>
+              ACS_roundFuel(
+                monthPrice *
+                  (
+                    1 +
+                    weeklyAmplitude *
+                      value
+                  )
+              )
+          );
+
+        const visibleWeek =
+          year === currentYear &&
+          month === currentMonth
+            ? currentWeekOfMonth
+            : 4;
+
+        let weeklyChangePercent =
+          null;
+
+        for (
+          let week = 1;
+          week <= visibleWeek;
+          week += 1
+        ) {
+          const weekPrice =
+            weeklyPrices[
+              week - 1
+            ];
+
+          weeklyChangePercent =
+            ACS_percentChange(
+              weekPrice,
+              priorWeekPrice
+            );
+
+          priorWeekPrice =
+            weekPrice;
+        }
+
+        monthlySeries.push({
+          period:
+            `${year}-${String(month).padStart(2, "0")}`,
+
+          price:
+            monthPrice,
+
+          monthly_change_percent:
+            ACS_percentChange(
+              monthPrice,
+              priorMonthPrice
+            ),
+
+          weekly_change_percent:
+            weeklyChangePercent,
+
+          quality_grade:
+            row.quality_grade,
+
+          source_method:
+            row.data_kind,
+
+          is_projection:
+            row.data_kind ===
+            "PROJECTION",
+
+          source_name:
+            row.source_name,
+
+          market_scope:
+            row.market_scope,
+
+          market_name:
+            row.market_name,
+
+          price_basis:
+            row.price_basis,
+
+          confidence:
+            row.confidence,
+
+          revision_code:
+            row.revision_code,
+
+          is_simulation_seed:
+            row.is_simulation_seed,
+
+          annual_anchor_price:
+            annualPrice,
+
+          is_modeled_period:
+            true,
+
+          methodology:
+            "ACS_DETERMINISTIC_MONTHLY_V1"
+        });
+
+        priorMonthPrice =
+          monthPrice;
+      }
+    }
+  );
+
+  return monthlySeries;
+}
+
 router.get("/fuel/market", requireAuth, async (req, res) => {
   try {
-    const result = await pool.query(`
-      WITH world_authority AS (
-  SELECT EXTRACT(YEAR FROM acs_get_current_sim_time())::smallint
-    AS current_sim_year
+     
+ const result = await pool.query(`
+ 
+     WITH world_authority AS (
+  SELECT
+    acs_get_current_sim_time()
+      AS current_sim_time,
+
+    EXTRACT(
+      YEAR FROM acs_get_current_sim_time()
+    )::smallint
+      AS current_sim_year
 ),
+
 active_market AS (
         SELECT
           CASE
@@ -106,6 +540,8 @@ active_market AS (
           END AS logical_series_code,
           price_year,
           price_usd_per_us_gallon,
+          price_low_usd_per_us_gallon,
+          price_high_usd_per_us_gallon,
           market_scope,
           market_name,
           data_kind,
@@ -117,8 +553,9 @@ active_market AS (
           revision_code,
           is_simulation_seed,
           source_retrieved_on,
-updated_at,
-world_authority.current_sim_year
+          updated_at,
+          world_authority.current_sim_time,
+          world_authority.current_sim_year
 FROM public.fuel_market_series
 CROSS JOIN world_authority
 WHERE is_active = true
@@ -138,6 +575,8 @@ WHERE is_active = true
         logical_series_code,
         price_year,
         price_usd_per_us_gallon,
+        price_low_usd_per_us_gallon,
+        price_high_usd_per_us_gallon,
         CASE
           WHEN prior_price IS NULL OR prior_price = 0 THEN NULL
           ELSE ROUND(
@@ -157,6 +596,7 @@ WHERE is_active = true
         is_simulation_seed,
         source_retrieved_on,
         updated_at,
+        current_sim_time,
         current_sim_year
       FROM movement
       ORDER BY logical_series_code, price_year
@@ -171,9 +611,42 @@ WHERE is_active = true
     }
 
     const fuels = fuelCatalogue.map((fuel) => {
-      const series = seriesByCode.get(fuel.seriesCode) || [];
-      const first = series[0] || null;
-      const latest = series[series.length - 1] || null;
+       
+      const annualRows =
+        result.rows.filter(
+          row =>
+            row.logical_series_code ===
+            fuel.seriesCode
+        );
+
+      const annualSeries =
+        seriesByCode.get(
+          fuel.seriesCode
+        ) || [];
+
+      const currentSimTime =
+        new Date(
+          result.rows[0]
+            ?.current_sim_time ||
+          Date.now()
+        );
+
+      const series =
+        ACS_buildMonthlySeries(
+          annualRows,
+          fuel.seriesCode,
+          currentSimTime
+        );
+
+      const first =
+        annualSeries[0] ||
+        null;
+
+      const latest =
+        annualSeries[
+          annualSeries.length - 1
+        ] ||
+        null;
 
       return {
         id: fuel.id,
@@ -214,9 +687,30 @@ WHERE is_active = true
 
     res.set("Cache-Control", "no-store");
     return res.json({
-      ok: true,
-      as_of: retrievedDates.sort().at(-1) || null,
-      world_year: Number(result.rows[0]?.current_sim_year) || null,
+            ok: true,
+
+      as_of:
+        retrievedDates
+          .sort()
+          .at(-1) ||
+        null,
+
+      world_date:
+        result.rows[0]
+          ?.current_sim_time
+          ? new Date(
+              result.rows[0]
+                .current_sim_time
+            ).toISOString()
+          : null,
+
+      world_year:
+        Number(
+          result.rows[0]
+            ?.current_sim_year
+        ) ||
+        null,
+       
       dataset_revision: updateTimes.sort().at(-1) || null,
       fuels
     });
