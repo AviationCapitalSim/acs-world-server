@@ -2218,9 +2218,12 @@ router.get(
     }
   }
 );
-
 /* ============================================================
-   ACS OCC — PERMANENT AIRCRAFT SCRAP
+   ACS OCC — PERMANENT AIRCRAFT SCRAP v1.1
+   ------------------------------------------------------------
+   Current owner authorizes the operation.
+   Aircraft lifecycle is removed by global aircraft_id.
+   Previous owners and registrations are handled safely.
    ============================================================ */
 
 router.post(
@@ -2326,11 +2329,10 @@ router.post(
 
             EXISTS (
               SELECT 1
-              FROM public.aircraft_leasing_contracts alc
-              WHERE alc.airline_id =
-                    af.airline_id
-                AND alc.aircraft_id =
-                    af.id
+              FROM
+                public.aircraft_leasing_contracts
+                alc
+              WHERE alc.aircraft_id = af.id
                 AND UPPER(
                       COALESCE(
                         alc.status,
@@ -2341,11 +2343,10 @@ router.post(
 
             EXISTS (
               SELECT 1
-              FROM public.bank_loan_collateral blc
-              WHERE blc.airline_id =
-                    af.airline_id
-                AND blc.aircraft_id =
-                    af.id
+              FROM
+                public.bank_loan_collateral
+                blc
+              WHERE blc.aircraft_id = af.id
                 AND blc.released_sim_time
                     IS NULL
             ) AS active_bank_collateral
@@ -2396,45 +2397,74 @@ router.post(
           aircraftId
         );
 
-      const liveOccurrenceResult =
+      const lifecycleOperationResult =
         await client.query(
           `
           SELECT
-            id,
-            operational_status
+            EXISTS (
+              SELECT 1
+              FROM
+                public.flight_occurrences
+                fo
+              WHERE fo.aircraft_id = $1
+                AND UPPER(
+                      COALESCE(
+                        fo.operational_status,
+                        ''
+                      )
+                    ) IN (
+                      'IN_PROGRESS',
+                      'EN_ROUTE'
+                    )
+            )
 
-          FROM public.flight_occurrences
+            OR EXISTS (
+              SELECT 1
+              FROM
+                public.schedule_items
+                si
+              WHERE si.aircraft_id = $1
+                AND LOWER(
+                      COALESCE(
+                        si.item_type,
+                        ''
+                      )
+                    ) = 'flight'
+                AND UPPER(
+                      COALESCE(
+                        si.status,
+                        ''
+                      )
+                    ) = 'IN_PROGRESS'
+            )
 
-          WHERE airline_id = $1
-            AND aircraft_id = $2
-
-            AND UPPER(
-                  COALESCE(
-                    operational_status,
-                    ''
-                  )
-                ) IN (
-                  'IN_PROGRESS',
-                  'EN_ROUTE'
-                )
-
-          ORDER BY id
-
-          LIMIT 1
-
-          FOR UPDATE
+            OR EXISTS (
+              SELECT 1
+              FROM
+                public.route_plans
+                rp
+              WHERE rp.aircraft_id = $1
+                AND UPPER(
+                      COALESCE(
+                        rp.route_state,
+                        ''
+                      )
+                    ) = 'IN_PROGRESS'
+            ) AS has_active_operation
           `,
-          [
-            airlineId,
-            aircraftId
-          ]
+          [aircraftId]
         );
+
+      const hasLifecycleActiveOperation =
+        lifecycleOperationResult
+          .rows[0]
+          ?.has_active_operation === true;
 
       if (
         eligibility.eligible &&
         (
           schedule.has_active_operation ||
-          liveOccurrenceResult.rows.length > 0
+          hasLifecycleActiveOperation
         )
       ) {
         eligibility = {
@@ -2465,13 +2495,9 @@ router.post(
           `
           SELECT
             capital
-
           FROM public.company_finance
-
           WHERE airline_id = $1
-
           LIMIT 1
-
           FOR UPDATE
           `,
           [airlineId]
@@ -2530,13 +2556,9 @@ router.post(
           WHERE passenger.occurrence_id =
                 occurrence.id
 
-            AND occurrence.airline_id = $1
-            AND occurrence.aircraft_id = $2
+            AND occurrence.aircraft_id = $1
           `,
-          [
-            airlineId,
-            aircraftId
-          ]
+          [aircraftId]
         );
 
       const skytrackResult =
@@ -2546,32 +2568,31 @@ router.post(
             public.skytrack_ops_impacts
             impact
 
-          WHERE impact.airline_id = $1
+          WHERE impact.schedule_item_id IN (
+            SELECT item.id
+            FROM public.schedule_items item
+            WHERE item.aircraft_id = $1
+          )
 
-            AND (
-              UPPER(
-                TRIM(
-                  COALESCE(
-                    impact.aircraft_registration,
-                    ''
+          OR (
+            impact.airline_id = $2
+
+            AND UPPER(
+                  TRIM(
+                    COALESCE(
+                      impact.aircraft_registration,
+                      ''
+                    )
                   )
+                ) =
+                UPPER(
+                  TRIM($3::TEXT)
                 )
-              ) =
-              UPPER(
-                TRIM($3::TEXT)
-              )
-
-              OR impact.schedule_item_id IN (
-                SELECT item.id
-                FROM public.schedule_items item
-                WHERE item.airline_id = $1
-                  AND item.aircraft_id = $2
-              )
-            )
+          )
           `,
           [
-            airlineId,
             aircraftId,
+            airlineId,
             aircraft.registration
           ]
         );
@@ -2582,131 +2603,39 @@ router.post(
           DELETE FROM
             public.occ_alerts alert
 
-          WHERE alert.airline_id = $1
+          WHERE (
+            alert.source =
+              'aircraft_maintenance_status'
 
-            AND (
-              (
-                alert.source =
-                  'aircraft_maintenance_status'
+            AND alert.source_ref =
+                $1::TEXT
+          )
 
-                AND alert.source_ref =
-                    $2::TEXT
-              )
+          OR (
+            alert.source =
+              'aircraft_market_listings'
 
-              OR alert.message ILIKE (
-                '%' || $3::TEXT || '%'
-              )
+            AND alert.source_ref IN (
+              SELECT listing.id::TEXT
+              FROM
+                public.aircraft_market_listings
+                listing
+              WHERE listing.aircraft_id = $1
             )
+          )
+
+          OR (
+            alert.airline_id = $2
+
+            AND alert.message ILIKE (
+              '%' || $3::TEXT || '%'
+            )
+          )
           `,
           [
-            airlineId,
             aircraftId,
+            airlineId,
             aircraft.registration
-          ]
-        );
-
-      const occurrencesResult =
-        await client.query(
-          `
-          DELETE FROM
-            public.flight_occurrences
-
-          WHERE airline_id = $1
-            AND aircraft_id = $2
-          `,
-          [
-            airlineId,
-            aircraftId
-          ]
-        );
-
-      const insuranceResult =
-        await client.query(
-          `
-          DELETE FROM
-            public.aircraft_insurance_policies
-
-          WHERE airline_id = $1
-            AND aircraft_id = $2
-          `,
-          [
-            airlineId,
-            aircraftId
-          ]
-        );
-
-      const listingsResult =
-        await client.query(
-          `
-          DELETE FROM
-            public.aircraft_market_listings
-
-          WHERE seller_airline_id = $1
-            AND aircraft_id = $2
-          `,
-          [
-            airlineId,
-            aircraftId
-          ]
-        );
-
-      const maintenanceEventsResult =
-        await client.query(
-          `
-          DELETE FROM
-            public.aircraft_maintenance_events
-
-          WHERE airline_id = $1
-            AND aircraft_id = $2
-          `,
-          [
-            airlineId,
-            aircraftId
-          ]
-        );
-
-      const maintenanceStatusResult =
-        await client.query(
-          `
-          DELETE FROM
-            public.aircraft_maintenance_status
-
-          WHERE airline_id = $1
-            AND aircraft_id = $2
-          `,
-          [
-            airlineId,
-            aircraftId
-          ]
-        );
-
-      const leasingResult =
-        await client.query(
-          `
-          DELETE FROM
-            public.aircraft_leasing_contracts
-
-          WHERE airline_id = $1
-            AND aircraft_id = $2
-          `,
-          [
-            airlineId,
-            aircraftId
-          ]
-        );
-
-      const collateralResult =
-        await client.query(
-          `
-          DELETE FROM
-            public.bank_loan_collateral
-
-          WHERE airline_id = $1
-            AND aircraft_id = $2
-          `,
-          [
-            airlineId,
-            aircraftId
           ]
         );
 
@@ -2721,13 +2650,9 @@ router.post(
             aircraft = NULL,
             updated_at = NOW()
 
-          WHERE airline_id = $1
-            AND aircraft_id = $2
+          WHERE aircraft_id = $1
           `,
-          [
-            airlineId,
-            aircraftId
-          ]
+          [aircraftId]
         );
 
       const scheduleItemsResult =
@@ -2763,48 +2688,123 @@ router.post(
 
             updated_at = NOW()
 
-          WHERE airline_id = $1
-            AND aircraft_id = $2
+          WHERE aircraft_id = $1
           `,
-          [
-            airlineId,
-            aircraftId
-          ]
+          [aircraftId]
         );
 
       const slotsResult =
         await client.query(
           `
-          UPDATE public.airport_slot_bookings
+          UPDATE
+            public.airport_slot_bookings
+            booking
 
           SET
             aircraft_id = NULL,
             registration = NULL,
             updated_at = NOW()
 
-          WHERE airline_id = $1
+          WHERE booking.aircraft_id = $1
 
-            AND (
-              aircraft_id = $2
+          OR (
+            booking.airline_id = $2
 
-              OR UPPER(
-                   TRIM(
-                     COALESCE(
-                       registration,
-                       ''
-                     )
-                   )
-                 ) =
-                 UPPER(
-                   TRIM($3::TEXT)
-                 )
-            )
+            AND UPPER(
+                  TRIM(
+                    COALESCE(
+                      booking.registration,
+                      ''
+                    )
+                  )
+                ) =
+                UPPER(
+                  TRIM($3::TEXT)
+                )
+          )
           `,
           [
-            airlineId,
             aircraftId,
+            airlineId,
             aircraft.registration
           ]
+        );
+
+      const occurrencesResult =
+        await client.query(
+          `
+          DELETE FROM
+            public.flight_occurrences
+
+          WHERE aircraft_id = $1
+          `,
+          [aircraftId]
+        );
+
+      const insuranceResult =
+        await client.query(
+          `
+          DELETE FROM
+            public.aircraft_insurance_policies
+
+          WHERE aircraft_id = $1
+          `,
+          [aircraftId]
+        );
+
+      const listingsResult =
+        await client.query(
+          `
+          DELETE FROM
+            public.aircraft_market_listings
+
+          WHERE aircraft_id = $1
+          `,
+          [aircraftId]
+        );
+
+      const maintenanceEventsResult =
+        await client.query(
+          `
+          DELETE FROM
+            public.aircraft_maintenance_events
+
+          WHERE aircraft_id = $1
+          `,
+          [aircraftId]
+        );
+
+      const maintenanceStatusResult =
+        await client.query(
+          `
+          DELETE FROM
+            public.aircraft_maintenance_status
+
+          WHERE aircraft_id = $1
+          `,
+          [aircraftId]
+        );
+
+      const leasingResult =
+        await client.query(
+          `
+          DELETE FROM
+            public.aircraft_leasing_contracts
+
+          WHERE aircraft_id = $1
+          `,
+          [aircraftId]
+        );
+
+      const collateralResult =
+        await client.query(
+          `
+          DELETE FROM
+            public.bank_loan_collateral
+
+          WHERE aircraft_id = $1
+          `,
+          [aircraftId]
         );
 
       const deletedAircraftResult =
@@ -2917,7 +2917,7 @@ router.post(
           "ACS_AIRCRAFT_PERMANENT_SCRAP",
 
         version:
-          "ACS_AIRCRAFT_PERMANENT_SCRAP_V1_0",
+          "ACS_AIRCRAFT_PERMANENT_SCRAP_V1_1",
 
         airline_id:
           airlineId,
