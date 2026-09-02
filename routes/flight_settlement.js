@@ -218,7 +218,7 @@ export async function ACS_runFlightSettlementRuntime({
         FROM base_amounts
       ),
 
-      amounts AS MATERIALIZED (
+       pre_tax_amounts AS MATERIALIZED (
         SELECT
           adjusted_amounts.*,
 
@@ -285,12 +285,31 @@ export async function ACS_runFlightSettlementRuntime({
             * COALESCE(navigation_usd_per_nm, 0)
           )::bigint AS navigation_amount,
 
-          ROUND(
+                    ROUND(
             COALESCE(distance_nm, 0)
             * COALESCE(overflight_usd_per_nm, 0)
           )::bigint AS overflight_amount
 
-               FROM adjusted_amounts
+        FROM adjusted_amounts
+      ),
+
+      amounts AS MATERIALIZED (
+        SELECT
+          pre_tax_amounts.*,
+
+          GREATEST(
+            0,
+            ROUND(
+              pre_tax_amounts.revenue_amount::numeric
+              * COALESCE(
+                  pre_tax_amounts.flight_pax_tax_rate_percent,
+                  0
+                )
+              / 100
+            )
+          )::bigint AS flight_pax_taxes_amount
+
+        FROM pre_tax_amounts
       ),
 
       updated_passenger_results AS MATERIALIZED (
@@ -374,10 +393,15 @@ export async function ACS_runFlightSettlementRuntime({
               'NAVIGATION',
               'Navigation cost ' || amounts.origin || '-' || amounts.destination
             ),
-            (
+                        (
               'EXPENSE', 'FLIGHT_OVERFLIGHT', amounts.overflight_amount,
               'OVERFLIGHT',
               'Overflight cost ' || amounts.origin || '-' || amounts.destination
+            ),
+            (
+              'EXPENSE', 'FLIGHT_PAX_TAXES', amounts.flight_pax_taxes_amount,
+              'PAX_TAXES',
+              'Passenger taxes ' || amounts.origin || '-' || amounts.destination
             )
         ) AS entry(type, source, amount, suffix, description)
         ON CONFLICT (reference_uid) DO NOTHING
@@ -394,7 +418,7 @@ export async function ACS_runFlightSettlementRuntime({
           ON inserted_logs.reference_uid LIKE
              'FLIGHT_OCCURRENCE:' || amounts.occurrence_key || ':%'
         GROUP BY amounts.id
-        HAVING COUNT(*) = 6
+        HAVING COUNT(*) = 7
       ),
       finance_delta AS MATERIALIZED (
         SELECT
@@ -406,11 +430,13 @@ export async function ACS_runFlightSettlementRuntime({
             + amounts.landing_amount
             + amounts.navigation_amount
             + amounts.overflight_amount
+            + amounts.flight_pax_taxes_amount
           )::bigint AS expenses,
           SUM(amounts.fuel_amount)::bigint AS fuel,
           SUM(amounts.handling_amount + amounts.landing_amount)::bigint AS handling,
           SUM(amounts.navigation_amount)::bigint AS navigation,
           SUM(amounts.overflight_amount)::bigint AS overflight,
+          SUM(amounts.flight_pax_taxes_amount)::bigint AS flight_pax_taxes,
           SUM(
             amounts.handling_amount
             + amounts.landing_amount
@@ -435,6 +461,9 @@ export async function ACS_runFlightSettlementRuntime({
           cost_handling = COALESCE(finance.cost_handling, 0) + delta.handling,
           cost_navigation = COALESCE(finance.cost_navigation, 0) + delta.navigation,
           cost_overflight = COALESCE(finance.cost_overflight, 0) + delta.overflight,
+          cost_flight_pax_taxes =
+            COALESCE(finance.cost_flight_pax_taxes, 0)
+            + delta.flight_pax_taxes,
           cost_airport = COALESCE(finance.cost_airport, 0) + delta.airport,
           updated_at = CURRENT_TIMESTAMP
         FROM finance_delta delta
@@ -457,19 +486,26 @@ export async function ACS_runFlightSettlementRuntime({
 
           settled_revenue =
             amounts.revenue_amount,
+
+          settled_flight_pax_taxes =
+            amounts.flight_pax_taxes_amount,
+
           settled_expenses = (
             amounts.fuel_amount
             + amounts.handling_amount
             + amounts.landing_amount
             + amounts.navigation_amount
             + amounts.overflight_amount
+            + amounts.flight_pax_taxes_amount
           ),
+
           settled_profit = amounts.revenue_amount - (
             amounts.fuel_amount
             + amounts.handling_amount
             + amounts.landing_amount
             + amounts.navigation_amount
             + amounts.overflight_amount
+            + amounts.flight_pax_taxes_amount
           ),
           finance_log_id = complete.finance_log_id,
           updated_at = CURRENT_TIMESTAMP
