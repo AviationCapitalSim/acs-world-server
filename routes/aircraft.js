@@ -2648,7 +2648,7 @@ router.post(
           SET
             aircraft_id = NULL,
             registration = NULL,
-            aircraft = NULL,
+            aircraft = '',
             updated_at = NOW()
 
           WHERE aircraft_id = $1
@@ -2664,7 +2664,7 @@ router.post(
           SET
             aircraft_id = NULL,
             aircraft_registration = NULL,
-            aircraft = NULL,
+            aircraft = '',
             notes = NULL,
 
             status = CASE
