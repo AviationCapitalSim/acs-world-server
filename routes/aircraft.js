@@ -2608,7 +2608,7 @@ router.post(
               'aircraft_maintenance_status'
 
             AND alert.source_ref =
-                $1::TEXT
+               ($1::BIGINT)::TEXT
           )
 
           OR (
@@ -2620,7 +2620,8 @@ router.post(
               FROM
                 public.aircraft_market_listings
                 listing
-              WHERE listing.aircraft_id = $1
+              WHERE listing.aircraft_id =
+                 $1::BIGINT
             )
           )
 
