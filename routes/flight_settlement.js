@@ -111,6 +111,10 @@ export async function ACS_runFlightSettlementRuntime({
           flight_economics.landing_fee_base_usd,
           flight_economics.navigation_usd_per_nm,
           flight_economics.overflight_usd_per_nm,
+          COALESCE(
+            pax_tax_rate.rate_percent,
+            0
+          ) AS flight_pax_tax_rate_percent,
           allocation.offered_seats,
           allocation.captured_y,
           allocation.captured_c,
@@ -136,8 +140,23 @@ export async function ACS_runFlightSettlementRuntime({
         JOIN public.acs_economic_periods period
           ON EXTRACT(YEAR FROM due.arrived_at)::integer
              BETWEEN period.era_start_year AND period.era_end_year
-        JOIN public.flight_economics flight_economics
+                JOIN public.flight_economics flight_economics
           ON flight_economics.period_id = period.id
+
+        LEFT JOIN LATERAL (
+          SELECT
+            tax_rate.rate_percent
+          FROM public.acs_flight_pax_tax_rates tax_rate
+          WHERE tax_rate.is_active = TRUE
+            AND EXTRACT(YEAR FROM due.arrived_at)::integer
+                BETWEEN tax_rate.effective_from_year
+                    AND tax_rate.effective_to_year
+          ORDER BY
+            tax_rate.effective_from_year DESC,
+            tax_rate.id DESC
+          LIMIT 1
+        ) pax_tax_rate ON true
+
         JOIN LATERAL public.acs_allocate_passengers_for_flight(
           due.id
         ) allocation ON true
