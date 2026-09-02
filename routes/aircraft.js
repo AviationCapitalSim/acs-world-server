@@ -10148,7 +10148,7 @@ router.post(
             $7,
             'aircraft',
             'info',
-            'SALE COMPLETED',
+            'YOUR AIRCRAFT HAS BEEN SOLD',
             $8,
             'aircraft_market_listings',
             $4,
@@ -10177,7 +10177,7 @@ router.post(
 
           `AIRCRAFT_SALE:${listingId}:${buyerAirlineId}`,
 
-          `${buyerAirlineName} purchased your ${aircraftName} for ${listing.currency} ${purchasePrice.toLocaleString("en-US")}.`
+          `Your ${aircraftName} has been sold to ${buyerAirlineName} for ${listing.currency} ${purchasePrice.toLocaleString("en-US")}. Net proceeds of ${listing.currency} ${sellerNetProceeds.toLocaleString("en-US")} have been credited to your company.`
         ]
       );
 
