@@ -2517,6 +2517,7 @@ async function ACS_archiveFinanceMonth(
       period_end_sim,
       closed_by,
       metadata,
+      cost_flight_pax_taxes,
       created_at
     )
     VALUES (
@@ -2569,12 +2570,13 @@ async function ACS_archiveFinanceMonth(
         + INTERVAL '1 month'
       )::TIMESTAMP,
       'ACS_FINANCE_RUNTIME_V1',
-      JSONB_BUILD_OBJECT(
+       JSONB_BUILD_OBJECT(
         'month_key',
         $4::VARCHAR,
         'monthly_breakdown_available',
         TRUE
       ),
+      $32,
       NOW()
     )
 
@@ -2631,7 +2633,10 @@ async function ACS_archiveFinanceMonth(
       ),
 
       flightCount,
-      closingTimestampMs
+      closingTimestampMs,
+      ACS_toInteger(
+        finance.cost_flight_pax_taxes
+      )
     ]
   );
 
@@ -2763,6 +2768,7 @@ async function ACS_openNextFinanceMonth(
       cost_navigation = 0,
       cost_overflight = 0,
       cost_loans = 0,
+      cost_flight_pax_taxes = 0,
 
       cost_new_aircraft_purchase = 0,
       cost_used_aircraft_purchase = 0,
