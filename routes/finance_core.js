@@ -2495,6 +2495,7 @@ async function ACS_archiveFinanceMonth(
       cost_airport,
       cost_maintenance,
       cost_hr,
+      cost_training_qualification,
       cost_leasing,
       cost_insurance,
       cost_depreciation,
@@ -2553,15 +2554,16 @@ async function ACS_archiveFinanceMonth(
       $25,
       $26,
       $27,
-
       $28,
-      $29,
 
+      $29,
       $30,
+
+      $31,
       0,
 
-      $31,
-      $31,
+      $32,
+      $32,
       'MONTHLY_CLOSE',
       'VERIFIED',
       MAKE_DATE($2, $3, 1)::TIMESTAMP,
@@ -2614,6 +2616,9 @@ async function ACS_archiveFinanceMonth(
       ACS_toInteger(finance.cost_airport),
       ACS_toInteger(finance.cost_maintenance),
       ACS_toInteger(finance.cost_hr),
+      ACS_toInteger(
+        finance.cost_training_qualification
+      ),
       ACS_toInteger(finance.cost_leasing),
       ACS_toInteger(finance.cost_insurance),
       ACS_toInteger(finance.cost_depreciation),
@@ -2754,6 +2759,7 @@ async function ACS_openNextFinanceMonth(
       cost_fuel = 0,
       cost_maintenance = 0,
       cost_hr = 0,
+      cost_training_qualification = 0,
       cost_leasing = 0,
       cost_insurance = 0,
       cost_depreciation = 0,
