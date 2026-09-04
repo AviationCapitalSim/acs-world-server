@@ -122,7 +122,17 @@ router.get(
               ON ams.aircraft_id = af.id
              AND ams.airline_id = af.airline_id
 
-          WHERE af.airline_id = $1
+                    WHERE af.airline_id = $1
+
+            AND UPPER(
+              COALESCE(
+                af.status,
+                ''
+              )
+            ) NOT IN (
+              'FOR_SALE',
+              'FOR_LEASE'
+            )
 
           ORDER BY af.id
           `,
