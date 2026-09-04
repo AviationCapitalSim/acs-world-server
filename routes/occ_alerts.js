@@ -917,23 +917,102 @@ router.get("/occ/alerts", requireAuth, async (req, res) => {
   try {
     const result = await pool.query(
       `
+          const result = await pool.query(
+      `
       SELECT
-        id,
-        airline_id,
-        alert_key,
-        category,
-        level,
-        title,
-        message,
-        source,
-        source_ref,
-        event_sim_time,
-        created_at,
-        updated_at
-      FROM public.occ_alerts
-      WHERE airline_id = $1
-        AND deleted_at IS NULL
-      ORDER BY created_at DESC, id DESC
+        alert.id,
+        alert.airline_id,
+        alert.alert_key,
+        alert.category,
+        alert.level,
+        alert.title,
+        alert.message,
+        alert.source,
+        alert.source_ref,
+        alert.event_sim_time,
+        alert.created_at,
+        alert.updated_at
+
+      FROM public.occ_alerts alert
+
+      WHERE alert.airline_id = $1
+        AND alert.deleted_at IS NULL
+
+        AND NOT (
+          LOWER(
+            COALESCE(
+              alert.category,
+              ''
+            )
+          ) = 'maintenance'
+
+          AND EXISTS (
+            SELECT 1
+
+            FROM public.aircraft_fleet aircraft
+
+            WHERE aircraft.airline_id =
+                  alert.airline_id
+
+              AND UPPER(
+                COALESCE(
+                  aircraft.status,
+                  ''
+                )
+              ) IN (
+                'FOR_SALE',
+                'FOR_LEASE'
+              )
+
+              AND (
+                (
+                  LOWER(
+                    COALESCE(
+                      alert.source,
+                      ''
+                    )
+                  ) =
+                  'aircraft_maintenance_status'
+
+                  AND alert.source_ref =
+                      aircraft.id::TEXT
+                )
+
+                OR
+
+                (
+                  LOWER(
+                    COALESCE(
+                      alert.source,
+                      ''
+                    )
+                  ) =
+                  'aircraft_maintenance_events'
+
+                  AND EXISTS (
+                    SELECT 1
+
+                    FROM
+                      public.aircraft_maintenance_events
+                        maintenance_event
+
+                    WHERE maintenance_event.id::TEXT =
+                          alert.source_ref
+
+                      AND maintenance_event.airline_id =
+                          alert.airline_id
+
+                      AND maintenance_event.aircraft_id =
+                          aircraft.id
+                  )
+                )
+              )
+          )
+        )
+
+      ORDER BY
+        alert.created_at DESC,
+        alert.id DESC
       `,
       [airlineId]
     );
