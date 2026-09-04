@@ -136,7 +136,16 @@ router.get("/snapshot", requireAuth, async (req, res) => {
           ON ams.aircraft_id = af.id
          AND ams.airline_id = af.airline_id
 
-        WHERE UPPER(COALESCE(af.status, '')) <> 'SCRAPPED'
+         WHERE UPPER(
+          COALESCE(
+            af.status,
+            ''
+          )
+        ) NOT IN (
+          'SCRAPPED',
+          'FOR_SALE',
+          'FOR_LEASE'
+        )
       )
 
       SELECT
