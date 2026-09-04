@@ -1,6 +1,6 @@
 /* ============================================================
-   ACS HR TRAINING — PILOT QUALIFICATION AUTHORITY
-   Status, quote and training start
+   ACS HR TRAINING — COMPLETE OCC AUTHORITY
+   Personnel training, pilot qualification and runtime settlement
    ============================================================ */
 
 import express from "express";
@@ -11,6 +11,7 @@ import { ACS_ensureFinancePeriod } from "./finance_core.js";
 const router = express.Router();
 
 const HR_TRAINING_LOCK_NAMESPACE = 1095783254;
+const HR_TRAINING_DEFAULT_BATCH_SIZE = 100;
 
 const PILOT_CATEGORY_RANK = Object.freeze({
   pilots_small: 1,
@@ -89,6 +90,16 @@ function readTrainingRequest(req) {
     targetDeptId,
     quantity
   };
+}
+
+function normalizeTrainingBatchSize(value) {
+  const batchSize = Math.trunc(Number(value));
+
+  if (!Number.isInteger(batchSize) || batchSize <= 0) {
+    return HR_TRAINING_DEFAULT_BATCH_SIZE;
+  }
+
+  return Math.min(batchSize, 1000);
 }
 
 async function buildPilotTrainingQuote(
@@ -518,6 +529,715 @@ if (updatedFinance.rowCount !== 1) {
 }
 
 /* ============================================================
+   ACS HR TRAINING — COMPLETE DUE PILOT TRAINING
+   ------------------------------------------------------------
+   • Uses the official simulation clock supplied by runtime
+   • Moves staff only after the configured training duration
+   • Recalculates payroll for both affected departments
+   • Creates CREW TRAINING FINISHED exactly once
+   ============================================================ */
+
+async function completePilotTrainingById(
+  trainingId,
+  simTime
+) {
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const trainingResult = await client.query(
+      `
+      SELECT
+        training_id,
+        training_key,
+        airline_id,
+        training_type,
+        source_dept_id,
+        target_dept_id,
+        quantity,
+        completes_sim_at
+      FROM public.hr_pilot_training
+      WHERE training_id = $1::BIGINT
+        AND status = 'ACTIVE'
+        AND completes_sim_at <= $2::TIMESTAMP
+      FOR UPDATE
+      `,
+      [trainingId, simTime]
+    );
+
+    if (trainingResult.rowCount !== 1) {
+      await client.query("ROLLBACK");
+      return false;
+    }
+
+    const training = trainingResult.rows[0];
+    const airlineId = Number(training.airline_id);
+    const quantity = Number(training.quantity);
+
+    await client.query(
+      "SELECT pg_advisory_xact_lock($1, $2)",
+      [HR_TRAINING_LOCK_NAMESPACE, airlineId]
+    );
+
+    const departmentsResult = await client.query(
+      `
+      SELECT
+        dept_id,
+        dept_name,
+        staff,
+        salary
+      FROM public.hr_departments
+      WHERE airline_id = $1::INTEGER
+        AND dept_id = ANY($2::TEXT[])
+      ORDER BY dept_id
+      FOR UPDATE
+      `,
+      [
+        airlineId,
+        [training.source_dept_id, training.target_dept_id]
+      ]
+    );
+
+    if (departmentsResult.rowCount !== 2) {
+      throw new Error(
+        `PILOT_TRAINING_DEPARTMENT_NOT_FOUND:${training.training_key}`
+      );
+    }
+
+    const source = departmentsResult.rows.find(
+      row => row.dept_id === training.source_dept_id
+    );
+
+    const target = departmentsResult.rows.find(
+      row => row.dept_id === training.target_dept_id
+    );
+
+    if (!source || !target) {
+      throw new Error(
+        `PILOT_TRAINING_DEPARTMENT_NOT_FOUND:${training.training_key}`
+      );
+    }
+
+    if (Number(source.staff || 0) < quantity) {
+      throw new Error(
+        `PILOT_TRAINING_SOURCE_STAFF_CONFLICT:${training.training_key}`
+      );
+    }
+
+    const staffResult = await client.query(
+      `
+      UPDATE public.hr_departments
+      SET
+        staff = CASE
+          WHEN dept_id = $2::TEXT
+            THEN staff - $4::INTEGER
+          WHEN dept_id = $3::TEXT
+            THEN staff + $4::INTEGER
+          ELSE staff
+        END,
+
+        payroll = ROUND(
+          (
+            CASE
+              WHEN dept_id = $2::TEXT
+                THEN staff - $4::INTEGER
+              WHEN dept_id = $3::TEXT
+                THEN staff + $4::INTEGER
+              ELSE staff
+            END
+          )::NUMERIC * COALESCE(salary, 0)::NUMERIC
+        )::BIGINT,
+
+        updated_at = NOW()
+      WHERE airline_id = $1::INTEGER
+        AND dept_id = ANY($5::TEXT[])
+      RETURNING dept_id, staff, payroll
+      `,
+      [
+        airlineId,
+        training.source_dept_id,
+        training.target_dept_id,
+        quantity,
+        [training.source_dept_id, training.target_dept_id]
+      ]
+    );
+
+    if (staffResult.rowCount !== 2) {
+      throw new Error(
+        `PILOT_TRAINING_STAFF_UPDATE_FAILED:${training.training_key}`
+      );
+    }
+
+    const completedResult = await client.query(
+      `
+      UPDATE public.hr_pilot_training
+      SET
+        status = 'COMPLETED',
+        completed_sim_at = completes_sim_at,
+        updated_at = NOW()
+      WHERE training_id = $1::BIGINT
+        AND status = 'ACTIVE'
+      RETURNING *
+      `,
+      [training.training_id]
+    );
+
+    if (completedResult.rowCount !== 1) {
+      throw new Error(
+        `PILOT_TRAINING_COMPLETION_FAILED:${training.training_key}`
+      );
+    }
+
+    await client.query(
+      `
+      INSERT INTO public.occ_alerts (
+        airline_id,
+        alert_key,
+        category,
+        level,
+        title,
+        message,
+        source,
+        source_ref,
+        event_sim_time,
+        created_at,
+        updated_at
+      )
+      VALUES (
+        $1::BIGINT,
+        $2::TEXT,
+        'hr',
+        'info',
+        'CREW TRAINING FINISHED',
+        $3::TEXT,
+        'hr_pilot_training',
+        $4::TEXT,
+        $5::TIMESTAMP,
+        NOW(),
+        NOW()
+      )
+      ON CONFLICT (airline_id, alert_key)
+        WHERE deleted_at IS NULL
+      DO NOTHING
+      `,
+      [
+        airlineId,
+        `HR_PILOT_TRAINING_FINISHED:${training.training_key}`,
+        `${quantity} pilot${quantity === 1 ? "" : "s"} completed ` +
+          `${String(training.training_type).toLowerCase()} training from ` +
+          `${source.dept_name} to ${target.dept_name}.`,
+        training.training_key,
+        training.completes_sim_at
+      ]
+    );
+
+    await client.query("COMMIT");
+    return true;
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (_) {}
+
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function completeDuePilotTraining(
+  simTime,
+  batchSize
+) {
+  const dueResult = await pool.query(
+    `
+    SELECT training_id
+    FROM public.hr_pilot_training
+    WHERE status = 'ACTIVE'
+      AND completes_sim_at <= $1::TIMESTAMP
+    ORDER BY completes_sim_at, training_id
+    LIMIT $2::INTEGER
+    `,
+    [simTime, batchSize]
+  );
+
+  let completedCount = 0;
+
+  for (const row of dueResult.rows) {
+    const completed = await completePilotTrainingById(
+      row.training_id,
+      simTime
+    );
+
+    if (completed) {
+      completedCount += 1;
+    }
+  }
+
+  return completedCount;
+}
+
+/* ============================================================
+   ACS HR TRAINING — PERSONNEL CYCLE BOUNDARIES
+   ------------------------------------------------------------
+   • First cycle closes at the start of simulation day 16
+   • Second cycle closes at the start of the following month
+   • PostgreSQL calculates every crossed boundary
+   ============================================================ */
+
+async function getPersonnelTrainingBoundaries(
+  previousSimTime,
+  currentSimTime
+) {
+  const result = await pool.query(
+    `
+    WITH limits AS (
+      SELECT
+        COALESCE(
+          $1::TIMESTAMP,
+          DATE_TRUNC('month', $2::TIMESTAMP)
+        ) AS previous_time,
+        $2::TIMESTAMP AS current_time
+    ),
+    months AS (
+      SELECT GENERATE_SERIES(
+        DATE_TRUNC('month', previous_time),
+        DATE_TRUNC('month', current_time),
+        INTERVAL '1 month'
+      )::TIMESTAMP AS month_start
+      FROM limits
+    ),
+    boundaries AS (
+      SELECT
+        EXTRACT(YEAR FROM month_start)::INTEGER AS cycle_year,
+        EXTRACT(MONTH FROM month_start)::INTEGER AS cycle_month,
+        1::INTEGER AS cycle_half,
+        month_start AS period_start_sim,
+        month_start + INTERVAL '15 days' AS period_end_sim,
+        month_start + INTERVAL '15 days' AS charged_sim_at
+      FROM months
+
+      UNION ALL
+
+      SELECT
+        EXTRACT(YEAR FROM month_start)::INTEGER,
+        EXTRACT(MONTH FROM month_start)::INTEGER,
+        2::INTEGER,
+        month_start + INTERVAL '15 days',
+        month_start + INTERVAL '1 month',
+        month_start + INTERVAL '1 month'
+      FROM months
+    )
+    SELECT
+      cycle_year,
+      cycle_month,
+      cycle_half,
+      period_start_sim,
+      period_end_sim,
+      charged_sim_at
+    FROM boundaries
+    CROSS JOIN limits
+    WHERE charged_sim_at > previous_time
+      AND charged_sim_at <= current_time
+    ORDER BY charged_sim_at, cycle_half
+    `,
+    [previousSimTime || null, currentSimTime]
+  );
+
+  return result.rows;
+}
+
+/* ============================================================
+   ACS HR TRAINING — PERSONNEL TRAINING SETTLEMENT
+   ------------------------------------------------------------
+   • Charges every real HR department, including pilots
+   • Uses historical salary, department rule and era factor
+   • Never adds Training to Salaries / cost_hr
+   • finance_log reference_uid guarantees cycle idempotency
+   ============================================================ */
+
+async function settlePersonnelTrainingBoundary(
+  boundary,
+  currentSimTime
+) {
+  const cycleYear = Number(boundary.cycle_year);
+  const cycleMonth = Number(boundary.cycle_month);
+  const cycleHalf = Number(boundary.cycle_half);
+  const salaryHalf = cycleMonth <= 6 ? 1 : 2;
+  const monthKey =
+    `${cycleYear}-${String(cycleMonth).padStart(2, "0")}`;
+
+  const airlinesResult = await pool.query(
+    `
+    SELECT DISTINCT department.airline_id
+    FROM public.hr_departments AS department
+    JOIN public.company_finance AS finance
+      ON finance.airline_id = department.airline_id
+    WHERE finance.current_sim_year = $1::INTEGER
+      AND finance.current_sim_month = $2::INTEGER
+    ORDER BY department.airline_id
+    `,
+    [cycleYear, cycleMonth]
+  );
+
+  let chargedAirlines = 0;
+  let chargedTotal = 0;
+
+  for (const airline of airlinesResult.rows) {
+    const airlineId = Number(airline.airline_id);
+    const client = await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      await client.query(
+        "SELECT pg_advisory_xact_lock($1, $2)",
+        [HR_TRAINING_LOCK_NAMESPACE, airlineId]
+      );
+
+      const financeResult = await client.query(
+        `
+        SELECT
+          current_sim_year,
+          current_sim_month
+        FROM public.company_finance
+        WHERE airline_id = $1::INTEGER
+        FOR UPDATE
+        `,
+        [airlineId]
+      );
+
+      if (financeResult.rowCount !== 1) {
+        throw new Error(
+          `COMPANY_FINANCE_NOT_FOUND:${airlineId}`
+        );
+      }
+
+      const finance = financeResult.rows[0];
+
+      if (
+        Number(finance.current_sim_year) !== cycleYear ||
+        Number(finance.current_sim_month) !== cycleMonth
+      ) {
+        throw new Error(
+          `HR_TRAINING_FINANCE_PERIOD_MISMATCH:` +
+          `${airlineId}:${monthKey}`
+        );
+      }
+
+      const policyResult = await client.query(
+        `
+        SELECT recurring_training_rate
+        FROM public.hr_training_policy
+        WHERE is_active = TRUE
+        LIMIT 1
+        `
+      );
+
+      if (policyResult.rowCount !== 1) {
+        throw new Error(
+          "ACTIVE_HR_TRAINING_POLICY_NOT_FOUND"
+        );
+      }
+
+      const recurringTrainingRate = Number(
+        policyResult.rows[0].recurring_training_rate
+      );
+
+      if (
+        !Number.isFinite(recurringTrainingRate) ||
+        recurringTrainingRate < 0
+      ) {
+        throw new Error(
+          "INVALID_RECURRING_TRAINING_RATE"
+        );
+      }
+
+      const calculationResult = await client.query(
+        `
+        SELECT
+          department.dept_id,
+          department.dept_name,
+          GREATEST(
+            COALESCE(department.staff, 0),
+            0
+          )::INTEGER AS staff_count,
+          rule.salary_source,
+          rule.recurring_training_factor,
+          era.era_factor,
+          CASE
+            WHEN rule.salary_source =
+                 'standard_two_crew_cost'
+              THEN standard.standard_two_crew_cost
+            ELSE standard.monthly_salary
+          END::BIGINT AS historical_salary,
+
+          CASE
+            WHEN rule.salary_source IS NULL
+              OR rule.recurring_training_factor IS NULL
+              OR era.era_factor IS NULL
+              OR CASE
+                   WHEN rule.salary_source =
+                        'standard_two_crew_cost'
+                     THEN standard.standard_two_crew_cost
+                   ELSE standard.monthly_salary
+                 END IS NULL
+              THEN NULL
+            ELSE ROUND(
+              GREATEST(
+                COALESCE(department.staff, 0),
+                0
+              )::NUMERIC *
+              (
+                CASE
+                  WHEN rule.salary_source =
+                       'standard_two_crew_cost'
+                    THEN standard.standard_two_crew_cost
+                  ELSE standard.monthly_salary
+                END
+              )::NUMERIC *
+              $4::NUMERIC *
+              rule.recurring_training_factor::NUMERIC *
+              era.era_factor::NUMERIC
+            )::BIGINT
+          END AS department_cost
+        FROM public.hr_departments AS department
+        LEFT JOIN public.hr_training_department_rules AS rule
+          ON rule.dept_id = department.dept_id
+        LEFT JOIN public.hr_salary_standards AS standard
+          ON standard.dept_id = department.dept_id
+         AND standard.cycle_year = $2::INTEGER
+         AND standard.cycle_half = $3::INTEGER
+        LEFT JOIN public.hr_training_era_rules AS era
+          ON $2::INTEGER BETWEEN era.start_year AND era.end_year
+        WHERE department.airline_id = $1::INTEGER
+        ORDER BY department.dept_id
+        `,
+        [
+          airlineId,
+          cycleYear,
+          salaryHalf,
+          recurringTrainingRate
+        ]
+      );
+
+      if (calculationResult.rowCount < 1) {
+        throw new Error(
+          `HR_TRAINING_DEPARTMENTS_NOT_FOUND:${airlineId}`
+        );
+      }
+
+      const incompleteDepartment =
+        calculationResult.rows.find(row => (
+          !String(row.salary_source || "").trim() ||
+          row.recurring_training_factor === null ||
+          row.era_factor === null ||
+          row.historical_salary === null
+        ));
+
+      if (incompleteDepartment) {
+        throw new Error(
+          `HR_TRAINING_RULE_NOT_FOUND:` +
+          `${airlineId}:${incompleteDepartment.dept_id}`
+        );
+      }
+
+      const totalCost = calculationResult.rows.reduce(
+        (total, department) => {
+          const departmentCost = Number(
+            department.department_cost
+          );
+
+          if (!Number.isSafeInteger(departmentCost)) {
+            throw new Error(
+              `INVALID_HR_TRAINING_COST:` +
+              `${airlineId}:${department.dept_id}`
+            );
+          }
+
+          return total + departmentCost;
+        },
+        0
+      );
+
+      if (!Number.isSafeInteger(totalCost) || totalCost < 0) {
+        throw new Error(
+          `INVALID_HR_TRAINING_TOTAL:${airlineId}:${monthKey}`
+        );
+      }
+
+      if (totalCost === 0) {
+        await client.query("COMMIT");
+        continue;
+      }
+
+      const referenceUid =
+        `HR_TRAINING_PERSONNEL:${airlineId}:` +
+        `${monthKey}:H${cycleHalf}`;
+
+      const logResult = await client.query(
+        `
+        INSERT INTO public.finance_log (
+          airline_id,
+          type,
+          source,
+          amount,
+          timestamp,
+          reference_uid,
+          description,
+          created_at
+        )
+        VALUES (
+          $1::INTEGER,
+          'EXPENSE',
+          'HR TRAINING PERSONNEL',
+          $2::BIGINT,
+          FLOOR(
+            EXTRACT(EPOCH FROM $3::TIMESTAMP) * 1000
+          )::BIGINT,
+          $4::TEXT,
+          $5::TEXT,
+          NOW()
+        )
+        ON CONFLICT (reference_uid)
+        DO NOTHING
+        RETURNING id
+        `,
+        [
+          airlineId,
+          totalCost,
+          boundary.charged_sim_at || currentSimTime,
+          referenceUid,
+          `HR Training Personnel — ${monthKey} H${cycleHalf}`
+        ]
+      );
+
+      if (logResult.rowCount === 0) {
+        await client.query("COMMIT");
+        continue;
+      }
+
+      const updatedFinance = await client.query(
+        `
+        UPDATE public.company_finance
+        SET
+          capital =
+            COALESCE(capital, 0) - $2::BIGINT,
+          expenses =
+            COALESCE(expenses, 0) + $2::BIGINT,
+          profit =
+            COALESCE(profit, 0) - $2::BIGINT,
+          cost_training_qualification =
+            COALESCE(
+              cost_training_qualification,
+              0
+            ) + $2::BIGINT,
+          updated_at = NOW()
+        WHERE airline_id = $1::INTEGER
+        RETURNING cost_training_qualification
+        `,
+        [airlineId, totalCost]
+      );
+
+      if (updatedFinance.rowCount !== 1) {
+        throw new Error(
+          `HR_TRAINING_FINANCE_UPDATE_FAILED:${airlineId}`
+        );
+      }
+
+      await client.query("COMMIT");
+
+      chargedAirlines += 1;
+      chargedTotal += totalCost;
+    } catch (error) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (_) {}
+
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  return {
+    chargedAirlines,
+    chargedTotal
+  };
+}
+
+/* ============================================================
+   ACS HR TRAINING — RUNTIME AUTHORITY
+   ------------------------------------------------------------
+   • Completes due pilot training
+   • Charges crossed personnel-training boundaries
+   • Returns one canonical processed count to the supervisor
+   ============================================================ */
+
+async function ACS_runHRTrainingRuntime({
+  job,
+  simTime
+} = {}) {
+  let officialSimTime = simTime;
+
+  if (!officialSimTime) {
+    const clockResult = await pool.query(
+      `
+      SELECT acs_get_current_sim_time() AS sim_time
+      `
+    );
+
+    officialSimTime = clockResult.rows[0]?.sim_time;
+  }
+
+  if (!officialSimTime) {
+    throw new Error("HR_TRAINING_SIM_TIME_NOT_FOUND");
+  }
+
+  const batchSize = normalizeTrainingBatchSize(
+    job?.config?.pilot_completion_batch_size ??
+    job?.batch_size
+  );
+
+  const completedPilotTraining =
+    await completeDuePilotTraining(
+      officialSimTime,
+      batchSize
+    );
+
+  const boundaries =
+    await getPersonnelTrainingBoundaries(
+      job?.last_cursor_sim_time || null,
+      officialSimTime
+    );
+
+  let personnelCycles = 0;
+  let personnelAirlines = 0;
+  let personnelChargedTotal = 0;
+
+  for (const boundary of boundaries) {
+    const settlement =
+      await settlePersonnelTrainingBoundary(
+        boundary,
+        officialSimTime
+      );
+
+    personnelCycles += 1;
+    personnelAirlines += settlement.chargedAirlines;
+    personnelChargedTotal += settlement.chargedTotal;
+  }
+
+  return {
+    processedCount:
+      completedPilotTraining + personnelAirlines,
+    completedPilotTraining,
+    personnelCycles,
+    personnelAirlines,
+    personnelChargedTotal
+  };
+}
+
+/* ============================================================
    GET HR TRAINING STATUS
    ============================================================ */
 
@@ -716,10 +1436,13 @@ router.post(
 );
 
 export {
+  ACS_runHRTrainingRuntime,
   buildPilotTrainingQuote,
+  completeDuePilotTraining,
   PILOT_DEPARTMENT_IDS,
   readTrainingRequest,
   sendTrainingError,
+  startPilotTraining,
   trainingError
 };
 
