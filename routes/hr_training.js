@@ -428,6 +428,49 @@ async function startPilotTraining(
       throw new Error("TRAINING_FINANCE_UPDATE_FAILED");
     }
 
+    await client.query(
+      `
+      INSERT INTO public.occ_alerts (
+        airline_id,
+        alert_key,
+        category,
+        level,
+        title,
+        message,
+        source,
+        source_ref,
+        event_sim_time,
+        created_at,
+        updated_at
+      )
+      VALUES (
+        $1,
+        $2,
+        'hr',
+        'info',
+        'PILOT TRAINING',
+        $3,
+        'hr_pilot_training',
+        $4,
+        $5::TIMESTAMP,
+        NOW(),
+        NOW()
+      )
+      ON CONFLICT (airline_id, alert_key)
+        WHERE deleted_at IS NULL
+      DO NOTHING
+      `,
+      [
+        airlineId,
+        `HR_PILOT_TRAINING_STARTED:${training.training_key}`,
+        `${quantity} pilot${quantity === 1 ? "" : "s"} started ` +
+          `${String(quote.training_type).toLowerCase()} training from ` +
+          `${quote.source_dept_name} to ${quote.target_dept_name}.`,
+        training.training_key,
+        quote.started_sim_at
+      ]
+    );
+
     await client.query("COMMIT");
 
     return {
