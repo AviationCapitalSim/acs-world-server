@@ -498,11 +498,13 @@ export async function ACS_runHRTrainingRuntime({ job, simTime } = {}) {
     chargedTotal += result.chargedTotal;
   }
 
-  return {
-    processedCount: completedCount + cycleCount,
-    completedCount,
-    cycleCount,
-    chargedTotal
-  };
-}
+ export {
+  buildPilotTrainingQuote,
+  PILOT_DEPARTMENT_IDS,
+  readTrainingRequest,
+  sendTrainingError,
+  trainingError
+};
+
+export default router;
 
