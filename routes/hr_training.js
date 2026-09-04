@@ -373,79 +373,89 @@ FROM next_training
 
     const training = trainingResult.rows[0];
     const logResult = await client.query(
-      `
-      INSERT INTO public.finance_log (
-        airline_id,
-        type,
-        source,
-        amount,
-        timestamp,
-        reference_uid,
-        description,
-        created_at
-      )
-      VALUES (
-        $1,
-        'EXPENSE',
-        'HR_TRAINING_QUALIFICATION',
-        $2,
-        FLOOR(
-          EXTRACT(
-            EPOCH FROM $3::TIMESTAMP
-          ) * 1000
-        )::BIGINT,
-        $4,
-        $5,
-        NOW()
-      )
-      RETURNING id
-      `,
-      [
-        airlineId,
-        quote.total_cost,
-        quote.started_sim_at,
-        `HR_TRAINING_QUALIFICATION:${training.training_key}`,
-        `Pilot ${quote.training_type}: ` +
-          `${quote.source_dept_name} to ${quote.target_dept_name} — ` +
-          `${quantity} pilot${quantity === 1 ? "" : "s"}`
-      ]
-    );
+  `
+  INSERT INTO public.finance_log (
+    airline_id,
+    type,
+    source,
+    amount,
+    timestamp,
+    reference_uid,
+    description,
+    created_at
+  )
+  VALUES (
+    $1::INTEGER,
+    'EXPENSE',
+    'TRAINING PILOTS',
+    $2::BIGINT,
+    FLOOR(
+      EXTRACT(EPOCH FROM $3::TIMESTAMP) * 1000
+    )::BIGINT,
+    $4::TEXT,
+    $5::TEXT,
+    NOW()
+  )
+  RETURNING id
+  `,
+  [
+    airlineId,
+    quote.total_cost,
+    quote.started_sim_at,
+    `HR_TRAINING_PILOTS:${training.training_key}`,
+    `Training Pilots — ${quote.training_type} — ` +
+      `${quote.source_dept_name} to ${quote.target_dept_name} — ` +
+      `${quantity} pilot${quantity === 1 ? "" : "s"}`
+  ]
+);
 
-    if (logResult.rowCount !== 1) {
-      throw new Error("PILOT_TRAINING_FINANCE_LOG_FAILED");
-    }
+if (logResult.rowCount !== 1) {
+  throw new Error("PILOT_TRAINING_FINANCE_LOG_FAILED");
+}
 
-    const financeLogId = Number(logResult.rows[0].id);
+const financeLogId = Number(logResult.rows[0].id);
 
-    await client.query(
-      `
-      UPDATE public.hr_pilot_training
-      SET finance_log_id = $2, updated_at = NOW()
-      WHERE training_id = $1
-      `,
-      [training.training_id, financeLogId]
-    );
+await client.query(
+  `
+  UPDATE public.hr_pilot_training
+  SET
+    finance_log_id = $2::BIGINT,
+    updated_at = NOW()
+  WHERE training_id = $1::BIGINT
+  `,
+  [training.training_id, financeLogId]
+);
 
-    const updatedFinance = await client.query(
-      `
-      UPDATE public.company_finance
-      SET
-        capital = COALESCE(capital, 0) - $2,
-        expenses = COALESCE(expenses, 0) + $2,
-        profit = COALESCE(profit, 0) - $2,
-        cost_hr = COALESCE(cost_hr, 0) + $2,
-        cost_training_qualification =
-          COALESCE(cost_training_qualification, 0) + $2,
-        updated_at = NOW()
-      WHERE airline_id = $1
-      RETURNING capital
-      `,
-      [airlineId, quote.total_cost]
-    );
+const updatedFinance = await client.query(
+  `
+  UPDATE public.company_finance
+  SET
+    capital =
+      COALESCE(capital, 0) - $2::BIGINT,
 
-    if (updatedFinance.rowCount !== 1) {
-      throw new Error("TRAINING_FINANCE_UPDATE_FAILED");
-    }
+    expenses =
+      COALESCE(expenses, 0) + $2::BIGINT,
+
+    profit =
+      COALESCE(profit, 0) - $2::BIGINT,
+
+    cost_training_qualification =
+      COALESCE(cost_training_qualification, 0) + $2::BIGINT,
+
+    updated_at = NOW()
+  WHERE airline_id = $1::INTEGER
+  RETURNING
+    capital,
+    expenses,
+    profit,
+    cost_training_qualification
+  `,
+  [airlineId, quote.total_cost]
+);
+
+if (updatedFinance.rowCount !== 1) {
+  throw new Error("TRAINING_FINANCE_UPDATE_FAILED");
+}
 
     await client.query(
       `
