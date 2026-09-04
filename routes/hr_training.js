@@ -325,13 +325,28 @@ async function startPilotTraining(
         status
       )
       SELECT
-        next_training.training_id,
-        'HRPT:' || $1::TEXT || ':' || next_training.training_id::TEXT,
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-        $13::TIMESTAMP,
-        $13::TIMESTAMP + ($14::INTEGER * INTERVAL '1 hour'),
-        'ACTIVE'
-      FROM next_training
+  next_training.training_id,
+  'HRPT:' ||
+    ($1::INTEGER)::TEXT ||
+    ':' ||
+    next_training.training_id::TEXT,
+  $1::INTEGER,
+  $2::VARCHAR,
+  $3::TEXT,
+  $4::TEXT,
+  $5::INTEGER,
+  $6::INTEGER,
+  $7::INTEGER,
+  $8::INTEGER,
+  $9::INTEGER,
+  $10::INTEGER,
+  $11::BIGINT,
+  $12::BIGINT,
+  $13::TIMESTAMP,
+  $13::TIMESTAMP +
+    ($14::INTEGER * INTERVAL '1 hour'),
+  'ACTIVE'::VARCHAR
+FROM next_training
       RETURNING *
       `,
       [
