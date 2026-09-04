@@ -2572,13 +2572,13 @@ async function ACS_archiveFinanceMonth(
         + INTERVAL '1 month'
       )::TIMESTAMP,
       'ACS_FINANCE_RUNTIME_V1',
-       JSONB_BUILD_OBJECT(
+             JSONB_BUILD_OBJECT(
         'month_key',
         $4::VARCHAR,
         'monthly_breakdown_available',
         TRUE
       ),
-      $32,
+      $33,
       NOW()
     )
 
