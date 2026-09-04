@@ -24,6 +24,20 @@ const PILOT_DEPARTMENT_IDS = Object.freeze(
   Object.keys(PILOT_CATEGORY_RANK)
 );
 
+const PILOT_DEPARTMENT_NAMES = Object.freeze({
+  pilots_small: "Flight Crew — Light Fleet",
+  pilots_medium: "Flight Crew — Regional Fleet",
+  pilots_large: "Flight Crew — Mainline Fleet",
+  pilots_vlarge: "Flight Crew — Heavy Fleet"
+});
+
+function getPilotDepartmentName(deptId) {
+  return (
+    PILOT_DEPARTMENT_NAMES[deptId] ||
+    String(deptId || "").trim()
+  );
+}
+
 function normalizePilotDepartment(value) {
   const deptId = String(value || "").trim();
 
@@ -103,6 +117,7 @@ function normalizeTrainingBatchSize(value) {
 }
 
 async function buildPilotTrainingQuote(
+   
   client,
   airlineId,
   sourceDeptId,
@@ -230,9 +245,14 @@ async function buildPilotTrainingQuote(
     airline_id: airlineId,
     training_type: trainingType,
     source_dept_id: sourceDeptId,
-    source_dept_name: source.dept_name,
+    source_dept_name:
+    getPilotDepartmentName(sourceDeptId),
+
     target_dept_id: targetDeptId,
-    target_dept_name: target.dept_name,
+
+    target_dept_name:
+    getPilotDepartmentName(targetDeptId),
+     
     quantity,
     source_staff_at_start: sourceStaff,
     source_required_at_start: sourceRequired,
@@ -726,7 +746,11 @@ async function completePilotTrainingById(
         `HR_PILOT_TRAINING_FINISHED:${training.training_key}`,
         `${quantity} pilot${quantity === 1 ? "" : "s"} completed ` +
           `${String(training.training_type).toLowerCase()} training from ` +
-          `${source.dept_name} to ${target.dept_name}.`,
+          `${getPilotDepartmentName(
+  training.source_dept_id
+)} to ${getPilotDepartmentName(
+  training.target_dept_id
+)}.`,
         training.training_key,
         training.completes_sim_at
       ]
