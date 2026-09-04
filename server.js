@@ -66,9 +66,7 @@ import {
 import {
   ACS_runFinanceMonthlyCloseRuntime
 } from "./services/acs_finance_runtime.js";
-import {
-  ACS_runHRTrainingRuntime
-} from "./services/acs_hr_training_runtime.js";
+
 import {
   ACS_runFactoryCapacityRuntime
 } from "./services/acs_factory_capacity_runtime.js";
@@ -209,22 +207,6 @@ registerACSRuntimeJobHandler(
   async () => {
     const result =
       await ACS_runFinanceMonthlyCloseRuntime();
-
-    return {
-      processedCount:
-        Number(result?.processedCount || 0)
-    };
-  }
-);
-
-registerACSRuntimeJobHandler(
-  "HR_TRAINING",
-  async ({ job, simTime }) => {
-    const result =
-      await ACS_runHRTrainingRuntime({
-        job,
-        simTime
-      });
 
     return {
       processedCount:
