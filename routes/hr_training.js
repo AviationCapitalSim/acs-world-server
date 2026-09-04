@@ -374,7 +374,11 @@ async function startPilotTraining(
         'EXPENSE',
         'HR_TRAINING_QUALIFICATION',
         $2,
-        FLOOR(EXTRACT(EPOCH FROM $3::TIMESTAMP) * 1000)::BIGINT,
+        FLOOR(
+          EXTRACT(
+            EPOCH FROM $3::TIMESTAMP
+          ) * 1000
+        )::BIGINT,
         $4,
         $5,
         NOW()
