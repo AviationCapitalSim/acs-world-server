@@ -796,52 +796,100 @@ async function getPersonnelTrainingBoundaries(
         COALESCE(
           $1::TIMESTAMP,
           DATE_TRUNC('month', $2::TIMESTAMP)
-        ) AS previous_time,
-        $2::TIMESTAMP AS current_time
+        ) AS previous_sim_time,
+        $2::TIMESTAMP AS current_sim_time
     ),
     months AS (
       SELECT GENERATE_SERIES(
-        DATE_TRUNC('month', previous_time),
-        DATE_TRUNC('month', current_time),
+        DATE_TRUNC(
+          'month',
+          limits.previous_sim_time
+        ),
+        DATE_TRUNC(
+          'month',
+          limits.current_sim_time
+        ),
         INTERVAL '1 month'
       )::TIMESTAMP AS month_start
       FROM limits
     ),
     boundaries AS (
       SELECT
-        EXTRACT(YEAR FROM month_start)::INTEGER AS cycle_year,
-        EXTRACT(MONTH FROM month_start)::INTEGER AS cycle_month,
+        EXTRACT(
+          YEAR FROM month_start
+        )::INTEGER AS cycle_year,
+
+        EXTRACT(
+          MONTH FROM month_start
+        )::INTEGER AS cycle_month,
+
         1::INTEGER AS cycle_half,
         month_start AS period_start_sim,
-        month_start + INTERVAL '15 days' AS period_end_sim,
-        month_start + INTERVAL '15 days' AS charged_sim_at
+
+        month_start +
+          INTERVAL '14 days'
+            AS period_end_sim,
+
+        month_start +
+          INTERVAL '14 days'
+            AS charged_sim_at
+
       FROM months
 
       UNION ALL
 
       SELECT
-        EXTRACT(YEAR FROM month_start)::INTEGER,
-        EXTRACT(MONTH FROM month_start)::INTEGER,
-        2::INTEGER,
-        month_start + INTERVAL '15 days',
-        month_start + INTERVAL '1 month',
-        month_start + INTERVAL '1 month'
+        EXTRACT(
+          YEAR FROM month_start
+        )::INTEGER,
+
+        EXTRACT(
+          MONTH FROM month_start
+        )::INTEGER,
+
+        2::INTEGER AS cycle_half,
+
+        month_start +
+          INTERVAL '15 days'
+            AS period_start_sim,
+
+        month_start +
+          INTERVAL '1 month' -
+          INTERVAL '1 day'
+            AS period_end_sim,
+
+        month_start +
+          INTERVAL '1 month' -
+          INTERVAL '1 day'
+            AS charged_sim_at
+
       FROM months
     )
     SELECT
-      cycle_year,
-      cycle_month,
-      cycle_half,
-      period_start_sim,
-      period_end_sim,
-      charged_sim_at
+      boundaries.cycle_year,
+      boundaries.cycle_month,
+      boundaries.cycle_half,
+      boundaries.period_start_sim,
+      boundaries.period_end_sim,
+      boundaries.charged_sim_at
+
     FROM boundaries
     CROSS JOIN limits
-    WHERE charged_sim_at > previous_time
-      AND charged_sim_at <= current_time
-    ORDER BY charged_sim_at, cycle_half
+
+    WHERE boundaries.charged_sim_at >
+          limits.previous_sim_time
+
+      AND boundaries.charged_sim_at <=
+          limits.current_sim_time
+
+    ORDER BY
+      boundaries.charged_sim_at,
+      boundaries.cycle_half
     `,
-    [previousSimTime || null, currentSimTime]
+    [
+      previousSimTime || null,
+      currentSimTime
+    ]
   );
 
   return result.rows;
