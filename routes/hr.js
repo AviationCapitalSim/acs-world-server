@@ -1359,7 +1359,15 @@ export async function resolveHROperationalRisk(airlineId) {
     SELECT
       department.dept_id,
       department.dept_name,
-      department.staff,
+      GREATEST(
+        COALESCE(department.staff, 0) -
+        COALESCE(
+          active_training.active_quantity,
+          0
+        ),
+        0
+      )::INTEGER AS staff,
+
       department.required,
       department.morale,
       department.salary,
@@ -1375,6 +1383,22 @@ export async function resolveHROperationalRisk(airlineId) {
       END AS standard_salary
 
     FROM public.hr_departments department
+
+    LEFT JOIN (
+      SELECT
+        airline_id,
+        source_dept_id,
+        SUM(quantity)::INTEGER AS active_quantity
+      FROM public.hr_pilot_training
+      WHERE status = 'ACTIVE'
+      GROUP BY
+        airline_id,
+        source_dept_id
+    ) AS active_training
+      ON active_training.airline_id =
+         department.airline_id
+     AND active_training.source_dept_id =
+         department.dept_id
 
     JOIN public.hr_salary_standards standard
       ON standard.dept_id =
