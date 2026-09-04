@@ -139,7 +139,17 @@ router.get("/global", requireAuth, async (req, res) => {
       ) si ON true
 
       WHERE
-        UPPER(COALESCE(af.status, '')) <> 'SCRAPPED'
+        UPPER(
+          COALESCE(
+            af.status,
+            ''
+          )
+        ) NOT IN (
+          'SCRAPPED',
+          'FOR_SALE',
+          'FOR_LEASE'
+        )
+
         AND af.airline_id <> $1
 
       ORDER BY
