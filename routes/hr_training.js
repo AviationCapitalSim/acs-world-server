@@ -1,5 +1,5 @@
 /* ============================================================
-   ACS HR TRAINING — PILOT QUALIFICATION AUTHORITY
+   ACS HR TRAINING —  PILOT QUALIFICATION AUTHORITY
    Status, quote and training start
    ============================================================ */
 
