@@ -2546,6 +2546,7 @@ SKIP LOCKED
    • Recalculates operational demand
    • Applies Auto Hire and Auto Salary when enabled
    • Returns PostgreSQL values without frontend fallbacks
+   • Exposes active pilot training and transferable surplus
    ============================================================ */
 
 router.get(
@@ -2587,18 +2588,20 @@ router.get(
         sessionAirlineId
       );
 
-            const result = await pool.query(
+      const result = await pool.query(
         `
-        WITH active_by_source AS (
+        WITH active_pilot_training AS (
           SELECT
             source_dept_id,
-            SUM(quantity)::INTEGER AS active_quantity
+            COALESCE(
+              SUM(quantity),
+              0
+            )::INTEGER AS active_training_quantity
           FROM public.hr_pilot_training
-          WHERE airline_id = $1
+          WHERE airline_id = $1::INTEGER
             AND status = 'ACTIVE'
           GROUP BY source_dept_id
         )
-
         SELECT
           department.dept_id,
           department.dept_name,
@@ -2609,8 +2612,14 @@ router.get(
           department.salary,
 
           ROUND(
-            COALESCE(department.staff, 0)::NUMERIC *
-            COALESCE(department.salary, 0)::NUMERIC
+            COALESCE(
+              department.staff,
+              0
+            )::NUMERIC *
+            COALESCE(
+              department.salary,
+              0
+            )::NUMERIC
           )::BIGINT AS payroll,
 
           department.bonus,
@@ -2622,40 +2631,35 @@ router.get(
           department.captain_salary,
           department.first_officer_salary,
 
-          CASE
-            WHEN LEFT(department.dept_id, 7) = 'pilots_'
-              THEN COALESCE(
-                active.active_quantity,
-                0
-              )
-            ELSE NULL
-          END::INTEGER AS active_training_quantity,
+          COALESCE(
+            training.active_training_quantity,
+            0
+          )::INTEGER AS active_training_quantity,
 
-          CASE
-            WHEN LEFT(department.dept_id, 7) = 'pilots_'
-              THEN GREATEST(
-                COALESCE(department.staff, 0) -
-                COALESCE(department.required, 0) -
-                COALESCE(active.active_quantity, 0),
-                0
-              )
-            ELSE NULL
-          END::INTEGER AS transferable_quantity,
-
-          CASE
-            WHEN LEFT(department.dept_id, 7) = 'pilots_'
-             AND COALESCE(active.active_quantity, 0) > 0
-              THEN 'TRAINING'
-            ELSE NULL
-          END AS training_status
+          GREATEST(
+            COALESCE(
+              department.staff,
+              0
+            ) -
+            COALESCE(
+              department.required,
+              0
+            ) -
+            COALESCE(
+              training.active_training_quantity,
+              0
+            ),
+            0
+          )::INTEGER AS transferable_quantity
 
         FROM public.hr_departments AS department
 
-        LEFT JOIN active_by_source AS active
-          ON active.source_dept_id =
+        LEFT JOIN active_pilot_training AS training
+          ON training.source_dept_id =
              department.dept_id
 
-        WHERE department.airline_id = $1
+        WHERE department.airline_id = $1::INTEGER
+
         ORDER BY department.dept_id
         `,
         [sessionAirlineId]
