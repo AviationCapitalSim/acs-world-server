@@ -12,8 +12,9 @@ import hrRoutes, {
   startHRMoraleScheduler,
   stopHRMoraleScheduler
 } from "./routes/hr.js";
-import hrTrainingRoutes
-  from "./routes/hr_training.js";
+import hrTrainingRoutes, {
+  ACS_runHRTrainingRuntime
+} from "./routes/hr_training.js";
 import financeRoutes from "./routes/finance.js";
 import bankRoutes from "./routes/bank.js";
 import companySettingsRoutes from "./routes/company_settings.js";
@@ -203,13 +204,30 @@ registerACSRuntimeJobHandler(
 
 registerACSRuntimeJobHandler(
   "FINANCE_MONTHLY_CLOSE",
-  async () => {
-    const result =
+  async ({ job, simTime }) => {
+    /*
+     * HR Training must run before Finance closes the month.
+     *
+     * This guarantees that the charge scheduled for the final
+     * simulation day is included in the month being archived.
+     */
+    const trainingResult =
+      await ACS_runHRTrainingRuntime({
+        job,
+        simTime
+      });
+
+    const financeResult =
       await ACS_runFinanceMonthlyCloseRuntime();
 
     return {
       processedCount:
-        Number(result?.processedCount || 0)
+        Number(
+          trainingResult?.processedCount || 0
+        ) +
+        Number(
+          financeResult?.processedCount || 0
+        )
     };
   }
 );
