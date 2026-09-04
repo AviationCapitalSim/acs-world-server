@@ -12,8 +12,6 @@ import hrRoutes, {
   startHRMoraleScheduler,
   stopHRMoraleScheduler
 } from "./routes/hr.js";
-import hrTrainingRoutes
-  from "./routes/hr_training.js";
 import financeRoutes from "./routes/finance.js";
 import bankRoutes from "./routes/bank.js";
 import companySettingsRoutes from "./routes/company_settings.js";
@@ -66,7 +64,6 @@ import {
 import {
   ACS_runFinanceMonthlyCloseRuntime
 } from "./services/acs_finance_runtime.js";
-
 import {
   ACS_runFactoryCapacityRuntime
 } from "./services/acs_factory_capacity_runtime.js";
@@ -385,7 +382,6 @@ app.use("/v1/auth/reset-password", resetPasswordLimiter);
 app.use("/v1", authRoutes);
 app.use("/v1", airlineRoutes);
 app.use("/v1", hrRoutes);
-app.use("/v1", hrTrainingRoutes);
 app.use("/v1", companySettingsRoutes);
 app.use("/v1", companyContextRoutes);
 app.use("/v1", financeRoutes);
