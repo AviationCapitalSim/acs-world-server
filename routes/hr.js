@@ -2587,31 +2587,76 @@ router.get(
         sessionAirlineId
       );
 
-      const result = await pool.query(
+            const result = await pool.query(
         `
+        WITH active_by_source AS (
+          SELECT
+            source_dept_id,
+            SUM(quantity)::INTEGER AS active_quantity
+          FROM public.hr_pilot_training
+          WHERE airline_id = $1
+            AND status = 'ACTIVE'
+          GROUP BY source_dept_id
+        )
+
         SELECT
-          dept_id,
-          dept_name,
-          base_role,
-          staff,
-          required,
-          morale,
-          salary,
+          department.dept_id,
+          department.dept_name,
+          department.base_role,
+          department.staff,
+          department.required,
+          department.morale,
+          department.salary,
+
           ROUND(
-            COALESCE(staff, 0)::NUMERIC *
-            COALESCE(salary, 0)::NUMERIC
+            COALESCE(department.staff, 0)::NUMERIC *
+            COALESCE(department.salary, 0)::NUMERIC
           )::BIGINT AS payroll,
-          bonus,
-          years,
-          salary_percent,
-          salary_decade,
-          salary_cycle_year,
-          salary_cycle_half,
-          captain_salary,
-          first_officer_salary
-        FROM public.hr_departments
-        WHERE airline_id = $1
-        ORDER BY dept_id
+
+          department.bonus,
+          department.years,
+          department.salary_percent,
+          department.salary_decade,
+          department.salary_cycle_year,
+          department.salary_cycle_half,
+          department.captain_salary,
+          department.first_officer_salary,
+
+          CASE
+            WHEN LEFT(department.dept_id, 7) = 'pilots_'
+              THEN COALESCE(
+                active.active_quantity,
+                0
+              )
+            ELSE NULL
+          END::INTEGER AS active_training_quantity,
+
+          CASE
+            WHEN LEFT(department.dept_id, 7) = 'pilots_'
+              THEN GREATEST(
+                COALESCE(department.staff, 0) -
+                COALESCE(department.required, 0) -
+                COALESCE(active.active_quantity, 0),
+                0
+              )
+            ELSE NULL
+          END::INTEGER AS transferable_quantity,
+
+          CASE
+            WHEN LEFT(department.dept_id, 7) = 'pilots_'
+             AND COALESCE(active.active_quantity, 0) > 0
+              THEN 'TRAINING'
+            ELSE NULL
+          END AS training_status
+
+        FROM public.hr_departments AS department
+
+        LEFT JOIN active_by_source AS active
+          ON active.source_dept_id =
+             department.dept_id
+
+        WHERE department.airline_id = $1
+        ORDER BY department.dept_id
         `,
         [sessionAirlineId]
       );
@@ -2723,10 +2768,51 @@ router.patch(
           Math.trunc(Number(department.staff || 0))
         );
 
+                let activeTrainingQuantity = 0;
+
+        if (
+          delta < 0 &&
+          isHRPilotDepartment(deptId)
+        ) {
+          const activeTrainingResult =
+            await client.query(
+              `
+              SELECT
+                COALESCE(
+                  SUM(quantity),
+                  0
+                )::INTEGER AS active_quantity
+              FROM public.hr_pilot_training
+              WHERE airline_id = $1
+                AND source_dept_id = $2
+                AND status = 'ACTIVE'
+              `,
+              [airlineId, deptId]
+            );
+
+          activeTrainingQuantity = Number(
+            activeTrainingResult.rows[0]
+              ?.active_quantity || 0
+          );
+        }
+
         const nextStaff = Math.max(
           0,
           currentStaff + delta
         );
+
+        if (
+          nextStaff < activeTrainingQuantity
+        ) {
+          await client.query("ROLLBACK");
+
+          return res.status(409).json({
+            ok: false,
+            error: "PILOTS_IN_TRAINING",
+            protected_staff:
+              activeTrainingQuantity
+          });
+        }
 
         const removedStaff = Math.max(
           0,
