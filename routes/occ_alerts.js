@@ -914,10 +914,8 @@ router.get("/occ/alerts", requireAuth, async (req, res) => {
     });
   }
 
-  try {
+    try {
     const result = await pool.query(
-      `
-          const result = await pool.query(
       `
       SELECT
         alert.id,
