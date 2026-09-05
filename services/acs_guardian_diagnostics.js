@@ -36,6 +36,111 @@ const ACTIONS = Object.freeze({
     "PASSENGER_MARKET_DAILY_BETA_COMPACTION"
 });
 
+function ACS_quoteIdentifier(identifier) {
+  return `"${String(identifier).replaceAll('"', '""')}"`;
+}
+
+
+/* ============================================================
+   ACS GUARDIAN — FINANCE REFERENCE PROTECTION
+   READ-ONLY DIAGNOSTIC
+   ============================================================ */
+
+async function ACS_buildFinanceReferenceProtection(
+  client,
+  financeAlias = "log"
+) {
+  const result = await client.query(`
+    SELECT DISTINCT
+      child_namespace.nspname
+        AS table_schema,
+
+      child_table.relname
+        AS table_name,
+
+      child_column.attname
+        AS column_name
+
+    FROM
+      pg_constraint constraint_record
+
+    JOIN pg_class child_table
+      ON child_table.oid =
+        constraint_record.conrelid
+
+    JOIN pg_namespace child_namespace
+      ON child_namespace.oid =
+        child_table.relnamespace
+
+    JOIN LATERAL
+      generate_subscripts(
+        constraint_record.confkey,
+        1
+      ) AS key_position(position)
+      ON TRUE
+
+    JOIN pg_attribute parent_column
+      ON parent_column.attrelid =
+        constraint_record.confrelid
+      AND parent_column.attnum =
+        constraint_record.confkey[
+          key_position.position
+        ]
+
+    JOIN pg_attribute child_column
+      ON child_column.attrelid =
+        constraint_record.conrelid
+      AND child_column.attnum =
+        constraint_record.conkey[
+          key_position.position
+        ]
+
+    WHERE
+      constraint_record.contype = 'f'
+
+      AND constraint_record.confrelid =
+        'public.finance_log'::regclass
+
+      AND parent_column.attname = 'id'
+
+    ORDER BY
+      child_namespace.nspname,
+      child_table.relname,
+      child_column.attname
+  `);
+
+  return result.rows
+    .map((reference) => {
+
+      const schema =
+        ACS_quoteIdentifier(
+          reference.table_schema
+        );
+
+      const table =
+        ACS_quoteIdentifier(
+          reference.table_name
+        );
+
+      const column =
+        ACS_quoteIdentifier(
+          reference.column_name
+        );
+
+      return `
+        AND NOT EXISTS (
+          SELECT 1
+          FROM ${schema}.${table}
+            guardian_finance_reference
+          WHERE
+            guardian_finance_reference.${column} =
+              ${financeAlias}.id
+        )
+      `;
+    })
+    .join("\n");
+}
+
 function ACS_toNumber(value) {
   const parsed = Number(value);
 
@@ -370,6 +475,12 @@ async function ACS_detectClosedFlightHistory(
 async function ACS_detectClosedFinanceDetail(
   client
 ) {
+  const financeReferenceProtection =
+    await ACS_buildFinanceReferenceProtection(
+      client,
+      "log"
+    );
+
   const result = await client.query(`
     WITH eligible AS MATERIALIZED (
       SELECT
@@ -427,24 +538,7 @@ async function ACS_detectClosedFinanceDetail(
                 ) * 1000
               )::bigint
         )
-
-        AND NOT EXISTS (
-          SELECT
-            1
-          FROM
-            public.corporate_tax tax
-          WHERE
-            tax.finance_log_id = log.id
-        )
-
-        AND NOT EXISTS (
-          SELECT
-            1
-          FROM
-            public.airline_infrastructure_changes infrastructure
-          WHERE
-            infrastructure.finance_log_id = log.id
-        )
+        ${financeReferenceProtection}
     )
 
     SELECT
