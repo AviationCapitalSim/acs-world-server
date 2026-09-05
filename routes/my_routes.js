@@ -850,7 +850,7 @@ for (const row of classRevenueResult.rows) {
                 ? Math.round((passengers / availableSeats) * 10000) / 10000
                 : 0
           },
-          passenger_data_status: "LEGACY_SETTLEMENT"
+            passenger_data_status: "ACS_GLOBAL_PAX_V3"
         });
       }
 
@@ -972,7 +972,7 @@ for (const row of classRevenueResult.rows) {
               returnCurrent,
               returnPrevious
             ),
-            passenger_data_status: "LEGACY_SETTLEMENT"
+               passenger_data_status: "ACS_GLOBAL_PAX_V3"
           },
 
            route_result: {
@@ -1038,7 +1038,7 @@ summary: {
             summaryCurrent,
             summaryPrevious
           ),
-          passenger_data_status: "LEGACY_SETTLEMENT"
+            passenger_data_status: "ACS_GLOBAL_PAX_V3"
         },
         routes,
         count: routes.length
