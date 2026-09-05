@@ -1021,7 +1021,7 @@ for (const row of classRevenueResult.rows) {
       return res.json({
         ok: true,
         endpoint: "ACS_MY_ROUTES_OCC",
-        version: "v1.0",
+        version: "v3.0",
         authority: "POSTGRESQL_MY_ROUTES_OCC",
         current_sim_time: currentSimTime,
 airline_id: airlineId,
@@ -1369,8 +1369,8 @@ router.get(
                   ) / 10000
                 : 0
           },
-          traffic_data_status:
-            "LEGACY_SETTLEMENT"
+           traffic_data_status:
+            "ACS_GLOBAL_PAX_V3"
         };
       });
 
