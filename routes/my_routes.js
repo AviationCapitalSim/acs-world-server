@@ -1498,21 +1498,33 @@ router.get(
             history.effective_from_sim_time DESC,
             history.id DESC
         ),
-        route_references AS MATERIALIZED (
+               route_references AS MATERIALIZED (
           SELECT
             rule.service_class,
-            ROUND(
-              route.distance_nm::numeric
-              * rule.base_yield_usd_per_pax_nm
-              * rule.class_multiplier,
-              2
-            ) AS reference_fare_usd
+            resolved.reference_fare_usd
+
           FROM current_rules rule
-          INNER JOIN public.route_plans route
+
+          JOIN public.route_plans route
             ON route.airline_id = $1
            AND COALESCE(route.distance_nm, 0) > 0
            AND UPPER(COALESCE(route.route_state, 'ACTIVE')) = 'ACTIVE'
-           AND UPPER(COALESCE(route.route_type, 'PASSENGER')) = 'PASSENGER'
+           AND UPPER(COALESCE(route.route_type, 'PASSENGER'))
+               = 'PASSENGER'
+
+          CROSS JOIN LATERAL (
+            VALUES
+              ('OUTBOUND'::text),
+              ('RETURN'::text)
+          ) direction(flight_direction)
+
+          JOIN LATERAL public.acs_resolve_route_direction_fare(
+            route.airline_id,
+            route.id,
+            direction.flight_direction,
+            rule.service_class,
+            $2::timestamp
+          ) resolved ON true
         )
         SELECT
           rule.service_class,
