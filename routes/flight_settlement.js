@@ -86,6 +86,12 @@ export async function ACS_runFlightSettlementRuntime({
               = finance.current_sim_month
           AND occurrence.settled_at IS NULL
           AND occurrence.arrived_at IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1
+            FROM public.acs_passenger_flight_results passenger_result
+            WHERE passenger_result.occurrence_id = occurrence.id
+              AND passenger_result.result_status = 'VOID'
+          )
           AND (
             cutoff.cutoff_sim_time IS NULL
             OR occurrence.arrived_at > cutoff.cutoff_sim_time
@@ -98,15 +104,12 @@ export async function ACS_runFlightSettlementRuntime({
         SELECT
           due.*,
           catalog.seats,
-          catalog.seats,
           catalog.fuel_burn_kgph,
           catalog.fuel_code,
           fuel_product.density_kg_per_us_gallon,
           fuel_market.resolved_fuel_code,
           fuel_market.resolved_price_year,
           fuel_market.price_usd_per_us_gallon,
-          flight_economics.passenger_yield_usd_per_pax_mile,
-          flight_economics.demand_multiplier,
           flight_economics.handling_base_usd,
           flight_economics.landing_fee_base_usd,
           flight_economics.navigation_usd_per_nm,
@@ -122,7 +125,10 @@ export async function ACS_runFlightSettlementRuntime({
           allocation.captured_total AS allocated_passengers,
           allocation.load_factor AS allocated_load_factor,
           allocation.competition_score,
-          allocation.route_maturity
+          allocation.route_maturity,
+          fare_y.final_fare_usd AS fare_y_usd,
+          fare_c.final_fare_usd AS fare_c_usd,
+          fare_f.final_fare_usd AS fare_f_usd
         FROM due
         JOIN public.route_plans route
           ON route.id = due.route_plan_id
@@ -160,6 +166,30 @@ export async function ACS_runFlightSettlementRuntime({
         JOIN LATERAL public.acs_allocate_passengers_for_flight(
           due.id
         ) allocation ON true
+
+        JOIN LATERAL public.acs_resolve_route_direction_fare(
+          due.airline_id,
+          due.route_plan_id,
+          due.flight_direction,
+          'Y',
+          due.scheduled_departure_at
+        ) fare_y ON true
+
+        JOIN LATERAL public.acs_resolve_route_direction_fare(
+          due.airline_id,
+          due.route_plan_id,
+          due.flight_direction,
+          'C',
+          due.scheduled_departure_at
+        ) fare_c ON true
+
+        JOIN LATERAL public.acs_resolve_route_direction_fare(
+          due.airline_id,
+          due.route_plan_id,
+          due.flight_direction,
+          'F',
+          due.scheduled_departure_at
+        ) fare_f ON true
       ),
             base_amounts AS MATERIALIZED (
         SELECT
@@ -250,17 +280,9 @@ export async function ACS_runFlightSettlementRuntime({
           END AS load_factor,
 
           ROUND(
-            (
-              adjusted_captured_y
-              + adjusted_captured_c
-              + adjusted_captured_f
-            )
-            * COALESCE(distance_nm, 0)
-            * COALESCE(
-                passenger_yield_usd_per_pax_mile,
-                0
-              )
-            * COALESCE(demand_multiplier, 1)
+            adjusted_captured_y * COALESCE(fare_y_usd, 0)
+            + adjusted_captured_c * COALESCE(fare_c_usd, 0)
+            + adjusted_captured_f * COALESCE(fare_f_usd, 0)
           )::bigint AS revenue_amount,
 
           ROUND(
@@ -433,7 +455,8 @@ export async function ACS_runFlightSettlementRuntime({
             + amounts.flight_pax_taxes_amount
           )::bigint AS expenses,
           SUM(amounts.fuel_amount)::bigint AS fuel,
-          SUM(amounts.handling_amount + amounts.landing_amount)::bigint AS handling,
+          SUM(amounts.handling_amount)::bigint AS handling,
+          SUM(amounts.landing_amount)::bigint AS landing,
           SUM(amounts.navigation_amount)::bigint AS navigation,
           SUM(amounts.overflight_amount)::bigint AS overflight,
           SUM(amounts.flight_pax_taxes_amount)::bigint AS flight_pax_taxes,
@@ -459,6 +482,7 @@ export async function ACS_runFlightSettlementRuntime({
           capital = COALESCE(finance.capital, 0) + delta.revenue - delta.expenses,
           cost_fuel = COALESCE(finance.cost_fuel, 0) + delta.fuel,
           cost_handling = COALESCE(finance.cost_handling, 0) + delta.handling,
+          cost_landing = COALESCE(finance.cost_landing, 0) + delta.landing,
           cost_navigation = COALESCE(finance.cost_navigation, 0) + delta.navigation,
           cost_overflight = COALESCE(finance.cost_overflight, 0) + delta.overflight,
           cost_flight_pax_taxes =
