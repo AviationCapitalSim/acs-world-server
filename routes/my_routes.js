@@ -236,7 +236,7 @@ if (!airline) {
   });
 }
      
-      const routeResult = await client.query(
+   const routeResult = await client.query(
         `
         WITH clock AS MATERIALIZED (
           SELECT $2::timestamp AS sim_time
@@ -348,218 +348,38 @@ if (!airline) {
         [airlineId, currentSimTime]
       );
 
-           const routeImageResult = await client.query(
+   const routeImageResult = await client.query(
         `
-        WITH
-        clock AS MATERIALIZED (
+        WITH clock AS MATERIALIZED (
           SELECT $2::timestamp AS sim_time
-        ),
-        rules AS MATERIALIZED (
-          SELECT active_rule.*
-          FROM public.acs_passenger_settlement_rules active_rule
-          WHERE active_rule.is_active = true
-          ORDER BY
-            active_rule.updated_at DESC,
-            active_rule.rule_code
-          LIMIT 1
-        ),
-        evaluated AS MATERIALIZED (
-          SELECT
-            route.id AS route_plan_id,
-            GREATEST(
-              COALESCE(jsonb_array_length(route.selected_days), 1),
-              1
-            ) AS frequency_days,
-            evaluation.organic_awareness,
-            evaluation.operational_bonus,
-            evaluation.cabin_unlock_factor,
-            evaluation.maturity_score,
-            LEAST(
-              COALESCE(maturity.marketing_bonus, 0),
-              rules.marketing_bonus_max
-            ) AS marketing_bonus,
-            LEAST(
-              rules.cabin_bonus_max,
-              COALESCE(
-                (
-                  COALESCE(fleet.y_seats, 0)
-                  * public.acs_cabin_product_bonus(fleet.y_product)
-                  +
-                  COALESCE(fleet.c_seats, 0)
-                  * public.acs_cabin_product_bonus(fleet.c_product)
-                  +
-                  COALESCE(fleet.f_seats, 0)
-                  * public.acs_cabin_product_bonus(fleet.f_product)
-                )
-                /
-                NULLIF(
-                  COALESCE(fleet.y_seats, 0)
-                  + COALESCE(fleet.c_seats, 0)
-                  + COALESCE(fleet.f_seats, 0),
-                  0
-                ),
-                0
-              )
-            ) * evaluation.cabin_unlock_factor AS cabin_bonus
-          FROM public.route_plans route
-          CROSS JOIN clock
-          CROSS JOIN rules
-          JOIN LATERAL public.acs_evaluate_route_maturity(
-            route.id,
-            clock.sim_time
-          ) evaluation ON true
-          LEFT JOIN public.acs_route_market_maturity maturity
-            ON maturity.route_plan_id = route.id
-          LEFT JOIN public.aircraft_fleet fleet
-            ON fleet.id = route.aircraft_id
-           AND fleet.airline_id = route.airline_id
-          WHERE route.airline_id = $1
-            AND UPPER(COALESCE(route.route_state, 'ACTIVE')) = 'ACTIVE'
-            AND UPPER(COALESCE(route.route_type, 'PASSENGER'))
-                = 'PASSENGER'
-        ),
-        activity AS MATERIALIZED (
-          SELECT
-            evaluated.route_plan_id,
-            evaluated.frequency_days,
-            evaluated.organic_awareness,
-            evaluated.operational_bonus,
-            evaluated.maturity_score,
-            evaluated.cabin_bonus,
-            evaluated.marketing_bonus,
-
-            COUNT(occurrence.id) FILTER (
-              WHERE occurrence.scheduled_departure_at >=
-                    clock.sim_time - INTERVAL '90 days'
-                AND occurrence.scheduled_departure_at < clock.sim_time
-            )::integer AS due_flights_90d,
-
-            COUNT(occurrence.id) FILTER (
-              WHERE occurrence.scheduled_departure_at >=
-                    clock.sim_time - INTERVAL '90 days'
-                AND occurrence.scheduled_departure_at < clock.sim_time
-                AND occurrence.operational_status = 'ARRIVED'
-                AND occurrence.arrived_at IS NOT NULL
-                AND occurrence.arrived_at <= clock.sim_time
-            )::integer AS completed_flights_90d,
-
-            COUNT(occurrence.id) FILTER (
-              WHERE occurrence.scheduled_departure_at >=
-                    clock.sim_time - INTERVAL '90 days'
-                AND occurrence.scheduled_departure_at < clock.sim_time
-                AND occurrence.operational_status = 'HELD'
-            )::integer AS held_flights_90d,
-
-            MAX(occurrence.arrived_at) FILTER (
-              WHERE occurrence.operational_status = 'ARRIVED'
-                AND occurrence.arrived_at <= clock.sim_time
-            ) AS last_arrived_at
-
-          FROM evaluated
-          CROSS JOIN clock
-          LEFT JOIN public.flight_occurrences occurrence
-            ON occurrence.route_plan_id = evaluated.route_plan_id
-          GROUP BY
-            evaluated.route_plan_id,
-            evaluated.frequency_days,
-            evaluated.organic_awareness,
-            evaluated.operational_bonus,
-            evaluated.maturity_score,
-            evaluated.cabin_bonus,
-            evaluated.marketing_bonus
-        ),
-        scored AS (
-          SELECT
-            activity.*,
-
-            CASE
-              WHEN activity.due_flights_90d = 0 THEN 1::numeric
-              ELSE LEAST(
-                1::numeric,
-                (
-                  activity.completed_flights_90d
-                  + GREATEST(activity.frequency_days * 2, 2)
-                )::numeric
-                /
-                (
-                  activity.due_flights_90d
-                  + GREATEST(activity.frequency_days * 2, 2)
-                )::numeric
-              )
-            END AS reliability_factor,
-
-            GREATEST(
-              0::numeric,
-              LEAST(
-                1::numeric,
-                1::numeric
-                -
-                (
-                  GREATEST(
-                    (
-                      EXTRACT(
-                        EPOCH FROM (
-                          clock.sim_time
-                          - COALESCE(
-                              activity.last_arrived_at,
-                              clock.sim_time
-                            )
-                        )
-                      ) / 86400
-                    )
-                    -
-                    (
-                      7::numeric
-                      / activity.frequency_days::numeric
-                    ),
-                    0
-                  )
-                  / 90::numeric
-                )
-              )
-            ) AS recency_factor
-
-          FROM activity
-          CROSS JOIN clock
         )
         SELECT
-          scored.route_plan_id,
-          scored.due_flights_90d,
-          scored.completed_flights_90d,
-          scored.held_flights_90d,
-          scored.organic_awareness,
-          scored.operational_bonus,
-          scored.cabin_bonus,
-          scored.marketing_bonus,
-
-          LEAST(
-            scored.reliability_factor,
-            scored.recency_factor
-          ) AS continuity_factor,
-
-          ROUND(
-            LEAST(
-              rules.absolute_capture_max,
-              scored.maturity_score
-              + scored.cabin_bonus
-              + scored.marketing_bonus
-            )
-            *
-            LEAST(
-              scored.reliability_factor,
-              scored.recency_factor
-            ),
-            6
-          ) AS route_image_score
-
-        FROM scored
-        CROSS JOIN rules
-        ORDER BY scored.route_plan_id
+          route_image.route_plan_id,
+          route_image.route_image_score,
+          route_image.continuity_factor,
+          route_image.due_flights_90d,
+          route_image.completed_flights_90d,
+          route_image.held_flights_90d,
+          route_image.organic_awareness,
+          route_image.operational_bonus,
+          route_image.cabin_bonus,
+          route_image.marketing_bonus
+        FROM public.route_plans route
+        CROSS JOIN clock
+        JOIN LATERAL public.acs_calculate_route_image(
+          route.id,
+          clock.sim_time
+        ) route_image ON true
+        WHERE route.airline_id = $1
+          AND UPPER(COALESCE(route.route_state, 'ACTIVE')) = 'ACTIVE'
+          AND UPPER(COALESCE(route.route_type, 'PASSENGER'))
+              = 'PASSENGER'
+        ORDER BY route.id
         `,
         [airlineId, currentSimTime]
       );
        
-      const performanceResult = await client.query(
+            const performanceResult = await client.query(
         `
         WITH clock AS MATERIALIZED (
           SELECT $2::timestamp AS sim_time
@@ -569,100 +389,127 @@ if (!airline) {
           occurrence.flight_direction,
 
           COUNT(*) FILTER (
-            WHERE occurrence.arrived_at >= clock.sim_time - INTERVAL '7 days'
+            WHERE occurrence.arrived_at >=
+                    clock.sim_time - INTERVAL '7 days'
               AND occurrence.arrived_at < clock.sim_time
-              AND occurrence.settled_at IS NOT NULL
           )::integer AS current_flights,
 
-          COALESCE(SUM(occurrence.settled_passengers) FILTER (
-            WHERE occurrence.arrived_at >= clock.sim_time - INTERVAL '7 days'
-              AND occurrence.arrived_at < clock.sim_time
-              AND occurrence.settled_at IS NOT NULL
-          ), 0)::bigint AS current_passengers,
+          COALESCE(
+            SUM(occurrence.settled_passengers) FILTER (
+              WHERE occurrence.arrived_at >=
+                      clock.sim_time - INTERVAL '7 days'
+                AND occurrence.arrived_at < clock.sim_time
+            ),
+            0
+          )::bigint AS current_passengers,
 
-          COALESCE(SUM(
-            CASE
-              WHEN occurrence.settled_load_factor > 0
-                THEN ROUND(
-                  occurrence.settled_passengers::numeric /
-                  occurrence.settled_load_factor
-                )
-              ELSE 0
-            END
-          ) FILTER (
-            WHERE occurrence.arrived_at >= clock.sim_time - INTERVAL '7 days'
-              AND occurrence.arrived_at < clock.sim_time
-              AND occurrence.settled_at IS NOT NULL
-          ), 0)::bigint AS current_available_seats,
+          COALESCE(
+            SUM(passenger_result.offered_seats) FILTER (
+              WHERE occurrence.arrived_at >=
+                      clock.sim_time - INTERVAL '7 days'
+                AND occurrence.arrived_at < clock.sim_time
+            ),
+            0
+          )::bigint AS current_available_seats,
 
-          COALESCE(SUM(occurrence.settled_revenue) FILTER (
-            WHERE occurrence.arrived_at >= clock.sim_time - INTERVAL '7 days'
-              AND occurrence.arrived_at < clock.sim_time
-              AND occurrence.settled_at IS NOT NULL
-          ), 0)::bigint AS current_revenue,
+          COALESCE(
+            SUM(occurrence.settled_revenue) FILTER (
+              WHERE occurrence.arrived_at >=
+                      clock.sim_time - INTERVAL '7 days'
+                AND occurrence.arrived_at < clock.sim_time
+            ),
+            0
+          )::bigint AS current_revenue,
 
-          COALESCE(SUM(occurrence.settled_expenses) FILTER (
-            WHERE occurrence.arrived_at >= clock.sim_time - INTERVAL '7 days'
-              AND occurrence.arrived_at < clock.sim_time
-              AND occurrence.settled_at IS NOT NULL
-          ), 0)::bigint AS current_expenses,
+          COALESCE(
+            SUM(occurrence.settled_expenses) FILTER (
+              WHERE occurrence.arrived_at >=
+                      clock.sim_time - INTERVAL '7 days'
+                AND occurrence.arrived_at < clock.sim_time
+            ),
+            0
+          )::bigint AS current_expenses,
 
-          COALESCE(SUM(occurrence.settled_profit) FILTER (
-            WHERE occurrence.arrived_at >= clock.sim_time - INTERVAL '7 days'
-              AND occurrence.arrived_at < clock.sim_time
-              AND occurrence.settled_at IS NOT NULL
-          ), 0)::bigint AS current_profit,
+          COALESCE(
+            SUM(occurrence.settled_profit) FILTER (
+              WHERE occurrence.arrived_at >=
+                      clock.sim_time - INTERVAL '7 days'
+                AND occurrence.arrived_at < clock.sim_time
+            ),
+            0
+          )::bigint AS current_profit,
 
           COUNT(*) FILTER (
-            WHERE occurrence.arrived_at >= clock.sim_time - INTERVAL '14 days'
-              AND occurrence.arrived_at < clock.sim_time - INTERVAL '7 days'
-              AND occurrence.settled_at IS NOT NULL
+            WHERE occurrence.arrived_at >=
+                    clock.sim_time - INTERVAL '14 days'
+              AND occurrence.arrived_at <
+                    clock.sim_time - INTERVAL '7 days'
           )::integer AS previous_flights,
 
-          COALESCE(SUM(occurrence.settled_passengers) FILTER (
-            WHERE occurrence.arrived_at >= clock.sim_time - INTERVAL '14 days'
-              AND occurrence.arrived_at < clock.sim_time - INTERVAL '7 days'
-              AND occurrence.settled_at IS NOT NULL
-          ), 0)::bigint AS previous_passengers,
+          COALESCE(
+            SUM(occurrence.settled_passengers) FILTER (
+              WHERE occurrence.arrived_at >=
+                      clock.sim_time - INTERVAL '14 days'
+                AND occurrence.arrived_at <
+                      clock.sim_time - INTERVAL '7 days'
+            ),
+            0
+          )::bigint AS previous_passengers,
 
-          COALESCE(SUM(
-            CASE
-              WHEN occurrence.settled_load_factor > 0
-                THEN ROUND(
-                  occurrence.settled_passengers::numeric /
-                  occurrence.settled_load_factor
-                )
-              ELSE 0
-            END
-          ) FILTER (
-            WHERE occurrence.arrived_at >= clock.sim_time - INTERVAL '14 days'
-              AND occurrence.arrived_at < clock.sim_time - INTERVAL '7 days'
-              AND occurrence.settled_at IS NOT NULL
-          ), 0)::bigint AS previous_available_seats,
+          COALESCE(
+            SUM(passenger_result.offered_seats) FILTER (
+              WHERE occurrence.arrived_at >=
+                      clock.sim_time - INTERVAL '14 days'
+                AND occurrence.arrived_at <
+                      clock.sim_time - INTERVAL '7 days'
+            ),
+            0
+          )::bigint AS previous_available_seats,
 
-          COALESCE(SUM(occurrence.settled_revenue) FILTER (
-            WHERE occurrence.arrived_at >= clock.sim_time - INTERVAL '14 days'
-              AND occurrence.arrived_at < clock.sim_time - INTERVAL '7 days'
-              AND occurrence.settled_at IS NOT NULL
-          ), 0)::bigint AS previous_revenue,
+          COALESCE(
+            SUM(occurrence.settled_revenue) FILTER (
+              WHERE occurrence.arrived_at >=
+                      clock.sim_time - INTERVAL '14 days'
+                AND occurrence.arrived_at <
+                      clock.sim_time - INTERVAL '7 days'
+            ),
+            0
+          )::bigint AS previous_revenue,
 
-          COALESCE(SUM(occurrence.settled_expenses) FILTER (
-            WHERE occurrence.arrived_at >= clock.sim_time - INTERVAL '14 days'
-              AND occurrence.arrived_at < clock.sim_time - INTERVAL '7 days'
-              AND occurrence.settled_at IS NOT NULL
-          ), 0)::bigint AS previous_expenses,
+          COALESCE(
+            SUM(occurrence.settled_expenses) FILTER (
+              WHERE occurrence.arrived_at >=
+                      clock.sim_time - INTERVAL '14 days'
+                AND occurrence.arrived_at <
+                      clock.sim_time - INTERVAL '7 days'
+            ),
+            0
+          )::bigint AS previous_expenses,
 
-          COALESCE(SUM(occurrence.settled_profit) FILTER (
-            WHERE occurrence.arrived_at >= clock.sim_time - INTERVAL '14 days'
-              AND occurrence.arrived_at < clock.sim_time - INTERVAL '7 days'
-              AND occurrence.settled_at IS NOT NULL
-          ), 0)::bigint AS previous_profit
+          COALESCE(
+            SUM(occurrence.settled_profit) FILTER (
+              WHERE occurrence.arrived_at >=
+                      clock.sim_time - INTERVAL '14 days'
+                AND occurrence.arrived_at <
+                      clock.sim_time - INTERVAL '7 days'
+            ),
+            0
+          )::bigint AS previous_profit
 
         FROM public.flight_occurrences occurrence
+
+        JOIN public.acs_passenger_flight_results passenger_result
+          ON passenger_result.occurrence_id = occurrence.id
+         AND passenger_result.result_status = 'CONSUMED'
+
         CROSS JOIN clock
+
         WHERE occurrence.airline_id = $1
-          AND occurrence.arrived_at >= clock.sim_time - INTERVAL '14 days'
+          AND occurrence.arrived_at >=
+                clock.sim_time - INTERVAL '14 days'
           AND occurrence.arrived_at < clock.sim_time
+          AND occurrence.settled_at IS NOT NULL
+
         GROUP BY
           occurrence.route_plan_id,
           occurrence.flight_direction
@@ -670,153 +517,143 @@ if (!airline) {
         [airlineId, currentSimTime]
       );
 
-      const classRevenueResult = await client.query(
-  `
-  WITH clock AS MATERIALIZED (
-    SELECT $2::timestamp AS sim_time
-  ),
-  occurrence_weights AS MATERIALIZED (
-    SELECT
-      occurrence.id AS occurrence_id,
-      occurrence.route_plan_id,
+   const classRevenueResult = await client.query(
+        `
+        WITH clock AS MATERIALIZED (
+          SELECT $2::timestamp AS sim_time
+        ),
+        occurrence_weights AS MATERIALIZED (
+          SELECT
+            occurrence.id AS occurrence_id,
+            occurrence.route_plan_id,
 
-      MAX(
-        COALESCE(occurrence.settled_revenue, 0)
-      )::numeric AS settled_revenue,
+            MAX(
+              COALESCE(occurrence.settled_revenue, 0)
+            )::numeric AS settled_revenue,
 
-      COALESCE(SUM(
-        passenger.passengers
-        * GREATEST(
-            COALESCE(fare.final_fare_usd, 1),
-            1
-          )
-      ) FILTER (
-        WHERE passenger.service_class = 'Y'
-      ), 0)::numeric AS weight_y,
-
-      COALESCE(SUM(
-        passenger.passengers
-        * GREATEST(
-            COALESCE(fare.final_fare_usd, 1),
-            1
-          )
-      ) FILTER (
-        WHERE passenger.service_class = 'C'
-      ), 0)::numeric AS weight_c,
-
-      COALESCE(SUM(
-        passenger.passengers
-        * GREATEST(
-            COALESCE(fare.final_fare_usd, 1),
-            1
-          )
-      ) FILTER (
-        WHERE passenger.service_class = 'F'
-      ), 0)::numeric AS weight_f
-
-    FROM public.flight_occurrences occurrence
-    CROSS JOIN clock
-
-    JOIN public.route_plans route
-      ON route.id = occurrence.route_plan_id
-     AND route.airline_id = occurrence.airline_id
-
-    LEFT JOIN public.acs_passenger_flight_results
-      passenger_result
-      ON passenger_result.occurrence_id = occurrence.id
-
-    CROSS JOIN LATERAL (
-      SELECT
-        class_passengers.service_class,
-        class_passengers.passengers
-
-      FROM (
-        VALUES
-          (
-            'Y'::text,
             COALESCE(
-              passenger_result.captured_y,
-              occurrence.settled_passengers,
+              SUM(
+                passenger.passengers
+                * COALESCE(fare.final_fare_usd, 0)
+              ) FILTER (
+                WHERE passenger.service_class = 'Y'
+              ),
               0
-            )::numeric
-          ),
-          (
-            'C'::text,
+            )::numeric AS weight_y,
+
             COALESCE(
-              passenger_result.captured_c,
+              SUM(
+                passenger.passengers
+                * COALESCE(fare.final_fare_usd, 0)
+              ) FILTER (
+                WHERE passenger.service_class = 'C'
+              ),
               0
-            )::numeric
-          ),
-          (
-            'F'::text,
+            )::numeric AS weight_c,
+
             COALESCE(
-              passenger_result.captured_f,
+              SUM(
+                passenger.passengers
+                * COALESCE(fare.final_fare_usd, 0)
+              ) FILTER (
+                WHERE passenger.service_class = 'F'
+              ),
               0
-            )::numeric
-          )
-      ) class_passengers(
-        service_class,
-        passengers
-      )
+            )::numeric AS weight_f
 
-      WHERE class_passengers.passengers > 0
-    ) passenger
+          FROM public.flight_occurrences occurrence
+          CROSS JOIN clock
 
-    LEFT JOIN LATERAL (
-      SELECT
-        resolved.final_fare_usd
+          JOIN public.route_plans route
+            ON route.id = occurrence.route_plan_id
+           AND route.airline_id = occurrence.airline_id
 
-      FROM public.acs_resolve_route_fare(
-        occurrence.airline_id,
-        occurrence.route_plan_id,
-        passenger.service_class,
-        occurrence.scheduled_departure_at
-      ) resolved
+          JOIN public.acs_passenger_flight_results passenger_result
+            ON passenger_result.occurrence_id = occurrence.id
+           AND passenger_result.result_status = 'CONSUMED'
 
-      LIMIT 1
-    ) fare ON true
+          CROSS JOIN LATERAL (
+            SELECT
+              class_passengers.service_class,
+              class_passengers.passengers
+            FROM (
+              VALUES
+                (
+                  'Y'::text,
+                  COALESCE(
+                    passenger_result.captured_y,
+                    0
+                  )::numeric
+                ),
+                (
+                  'C'::text,
+                  COALESCE(
+                    passenger_result.captured_c,
+                    0
+                  )::numeric
+                ),
+                (
+                  'F'::text,
+                  COALESCE(
+                    passenger_result.captured_f,
+                    0
+                  )::numeric
+                )
+            ) class_passengers(
+              service_class,
+              passengers
+            )
+            WHERE class_passengers.passengers > 0
+          ) passenger
 
-    WHERE occurrence.airline_id = $1
-      AND occurrence.arrived_at >=
-          clock.sim_time - INTERVAL '7 days'
-      AND occurrence.arrived_at < clock.sim_time
-      AND occurrence.settled_at IS NOT NULL
+          JOIN LATERAL public.acs_resolve_route_direction_fare(
+            occurrence.airline_id,
+            occurrence.route_plan_id,
+            occurrence.flight_direction,
+            passenger.service_class,
+            occurrence.scheduled_departure_at
+          ) fare ON true
 
-    GROUP BY
-      occurrence.id,
-      occurrence.route_plan_id
-  )
+          WHERE occurrence.airline_id = $1
+            AND occurrence.arrived_at >=
+                  clock.sim_time - INTERVAL '7 days'
+            AND occurrence.arrived_at < clock.sim_time
+            AND occurrence.settled_at IS NOT NULL
 
-  SELECT
-    route_plan_id,
+          GROUP BY
+            occurrence.id,
+            occurrence.route_plan_id
+        )
+        SELECT
+          route_plan_id,
 
-    COALESCE(
-      SUM(settled_revenue),
-      0
-    )::bigint AS total_revenue,
+          COALESCE(
+            SUM(settled_revenue),
+            0
+          )::bigint AS total_revenue,
 
-    COALESCE(
-      SUM(weight_y),
-      0
-    )::numeric AS weight_y,
+          COALESCE(
+            SUM(weight_y),
+            0
+          )::numeric AS weight_y,
 
-    COALESCE(
-      SUM(weight_c),
-      0
-    )::numeric AS weight_c,
+          COALESCE(
+            SUM(weight_c),
+            0
+          )::numeric AS weight_c,
 
-    COALESCE(
-      SUM(weight_f),
-      0
-    )::numeric AS weight_f
+          COALESCE(
+            SUM(weight_f),
+            0
+          )::numeric AS weight_f
 
-  FROM occurrence_weights
-  GROUP BY route_plan_id
-  `,
-  [airlineId, currentSimTime]
-);     
+        FROM occurrence_weights
+        GROUP BY route_plan_id
+        `,
+        [airlineId, currentSimTime]
+      );
 
-      const competitorResult = await client.query(
+   const competitorResult = await client.query(
         `
         WITH clock AS MATERIALIZED (
           SELECT $2::timestamp AS sim_time
@@ -829,7 +666,8 @@ if (!airline) {
           FROM public.route_plans
           WHERE airline_id = $1
             AND UPPER(COALESCE(route_state, 'ACTIVE')) = 'ACTIVE'
-            AND UPPER(COALESCE(route_type, 'PASSENGER')) = 'PASSENGER'
+            AND UPPER(COALESCE(route_type, 'PASSENGER'))
+                = 'PASSENGER'
         )
         SELECT
           mine.my_route_plan_id,
@@ -844,22 +682,26 @@ if (!airline) {
           airline.color_index,
           occurrence.aircraft_registration,
           occurrence.model_key,
+
           COUNT(*)::integer AS flights,
-          COALESCE(SUM(occurrence.settled_passengers), 0)::bigint
-            AS passengers,
-          COALESCE(SUM(
-            CASE
-              WHEN occurrence.settled_load_factor > 0
-                THEN ROUND(
-                  occurrence.settled_passengers::numeric /
-                  occurrence.settled_load_factor
-                )
-              ELSE 0
-            END
-          ), 0)::bigint AS available_seats
+
+          COALESCE(
+            SUM(
+              COALESCE(passenger_result.captured_y, 0)
+              + COALESCE(passenger_result.captured_c, 0)
+              + COALESCE(passenger_result.captured_f, 0)
+            ),
+            0
+          )::bigint AS passengers,
+
+          COALESCE(
+            SUM(passenger_result.offered_seats),
+            0
+          )::bigint AS available_seats
 
         FROM my_routes mine
         CROSS JOIN clock
+
         JOIN public.flight_occurrences occurrence
           ON LEAST(
                UPPER(occurrence.origin),
@@ -872,8 +714,13 @@ if (!airline) {
          AND occurrence.airline_id <> $1
          AND occurrence.operational_status = 'ARRIVED'
          AND occurrence.settled_at IS NOT NULL
-         AND occurrence.arrived_at >= clock.sim_time - INTERVAL '7 days'
+         AND occurrence.arrived_at >=
+               clock.sim_time - INTERVAL '7 days'
          AND occurrence.arrived_at < clock.sim_time
+
+        JOIN public.acs_passenger_flight_results passenger_result
+          ON passenger_result.occurrence_id = occurrence.id
+         AND passenger_result.result_status = 'CONSUMED'
 
         JOIN public.airlines airline
           ON airline.airline_id = occurrence.airline_id
@@ -902,7 +749,7 @@ if (!airline) {
         [airlineId, currentSimTime]
       );
 
-            const routeImageByRoute = new Map();
+   const routeImageByRoute = new Map();
 
       for (const row of routeImageResult.rows) {
         routeImageByRoute.set(
@@ -931,12 +778,12 @@ if (!airline) {
               marketing:
                 ACS_MR_number(row.marketing_bonus)
             },
-            authority: "ACS_ROUTE_IMAGE_READ_MODEL_V1"
+            authority: "ACS_GLOBAL_PAX_V3"
           }
         );
       }
 
-      const performanceByRoute = new Map();
+   const performanceByRoute = new Map();
 
       for (const row of performanceResult.rows) {
         const routeId = String(row.route_plan_id);
@@ -1390,32 +1237,36 @@ router.get(
             COALESCE(fleet.model_key, route.model_key)
           )
 
-        LEFT JOIN LATERAL (
+                LEFT JOIN LATERAL (
           SELECT
             COUNT(*)::integer AS flights,
-            COALESCE(
-              SUM(occurrence.settled_passengers),
-              0
-            )::bigint AS passengers,
+
             COALESCE(
               SUM(
-                CASE
-                  WHEN occurrence.settled_load_factor > 0
-                    THEN ROUND(
-                      occurrence.settled_passengers::numeric /
-                      occurrence.settled_load_factor
-                    )
-                  ELSE 0
-                END
+                COALESCE(passenger_result.captured_y, 0)
+                + COALESCE(passenger_result.captured_c, 0)
+                + COALESCE(passenger_result.captured_f, 0)
               ),
               0
+            )::bigint AS passengers,
+
+            COALESCE(
+              SUM(passenger_result.offered_seats),
+              0
             )::bigint AS available_seats
+
           FROM public.flight_occurrences occurrence
+
+          JOIN public.acs_passenger_flight_results passenger_result
+            ON passenger_result.occurrence_id = occurrence.id
+           AND passenger_result.result_status = 'CONSUMED'
+
           WHERE occurrence.route_plan_id = route.id
             AND occurrence.airline_id = route.airline_id
+            AND occurrence.operational_status = 'ARRIVED'
             AND occurrence.settled_at IS NOT NULL
             AND occurrence.arrived_at >=
-              clock.sim_time - INTERVAL '7 days'
+                  clock.sim_time - INTERVAL '7 days'
             AND occurrence.arrived_at < clock.sim_time
         ) traffic ON true
 
