@@ -1056,16 +1056,20 @@ summary: {
     }
   }
 );
-
 /* ============================================================
    GET /v1/routes/my-routes-occ/:routePlanId/airport-market
    ------------------------------------------------------------
-   Returns active route-aircraft assignments that operate at the
-   selected own route destination airport.
+   Returns recorded inbound passenger traffic at the selected
+   own route destination airport.
 
-   The selected route must belong to the authenticated airline.
-   Active route plans are returned even when no settled flights
-   exist yet. Recorded traffic covers the last 7 ACS days.
+   Rules:
+   - PostgreSQL simulation time is authoritative.
+   - Only ARRIVED and CONSUMED passenger results are counted.
+   - Only flights whose actual destination is the selected
+     airport are included.
+   - Airline summary covers the complete airport inbound market.
+   - Route services are paginated independently.
+   - This endpoint is read-only.
    ============================================================ */
 
 router.get(
@@ -1161,20 +1165,103 @@ router.get(
 
       const countResult = await client.query(
         `
-        SELECT COUNT(*)::integer AS total
+        WITH clock AS MATERIALIZED (
+          SELECT $2::timestamp AS sim_time
+        )
+        SELECT
+          COUNT(DISTINCT route.id)::integer AS total
         FROM public.route_plans route
+        CROSS JOIN clock
+        INNER JOIN public.flight_occurrences occurrence
+          ON occurrence.route_plan_id = route.id
+         AND occurrence.airline_id = route.airline_id
+        INNER JOIN public.acs_passenger_flight_results passenger_result
+          ON passenger_result.occurrence_id = occurrence.id
+         AND passenger_result.result_status = 'CONSUMED'
         WHERE UPPER(COALESCE(route.route_state, 'ACTIVE')) = 'ACTIVE'
           AND UPPER(COALESCE(route.route_type, 'PASSENGER')) = 'PASSENGER'
-          AND (
-            UPPER(route.origin) = $1
-            OR UPPER(route.destination) = $1
-          )
+          AND occurrence.operational_status = 'ARRIVED'
+          AND occurrence.settled_at IS NOT NULL
+          AND UPPER(occurrence.destination) = $1
+          AND occurrence.arrived_at >=
+                clock.sim_time - INTERVAL '7 days'
+          AND occurrence.arrived_at < clock.sim_time
         `,
-        [airportIcao]
+        [airportIcao, currentSimTime]
       );
 
       const total = ACS_MR_integer(
         countResult.rows[0]?.total
+      );
+
+      const airlineSummaryResult = await client.query(
+        `
+        WITH clock AS MATERIALIZED (
+          SELECT $2::timestamp AS sim_time
+        )
+        SELECT
+          airline.airline_id,
+          airline.airline_name,
+          airline.iata,
+          airline.icao,
+          airline.color_hex,
+          airline.color_hsl,
+          airline.color_index,
+
+          COUNT(*)::integer AS flights,
+
+          COALESCE(
+            SUM(
+              COALESCE(passenger_result.captured_y, 0)
+              + COALESCE(passenger_result.captured_c, 0)
+              + COALESCE(passenger_result.captured_f, 0)
+            ),
+            0
+          )::bigint AS passengers,
+
+          COALESCE(
+            SUM(passenger_result.offered_seats),
+            0
+          )::bigint AS available_seats
+
+        FROM public.route_plans route
+        CROSS JOIN clock
+
+        INNER JOIN public.airlines airline
+          ON airline.airline_id = route.airline_id
+
+        INNER JOIN public.flight_occurrences occurrence
+          ON occurrence.route_plan_id = route.id
+         AND occurrence.airline_id = route.airline_id
+
+        INNER JOIN public.acs_passenger_flight_results passenger_result
+          ON passenger_result.occurrence_id = occurrence.id
+         AND passenger_result.result_status = 'CONSUMED'
+
+        WHERE UPPER(COALESCE(route.route_state, 'ACTIVE')) = 'ACTIVE'
+          AND UPPER(COALESCE(route.route_type, 'PASSENGER')) = 'PASSENGER'
+          AND occurrence.operational_status = 'ARRIVED'
+          AND occurrence.settled_at IS NOT NULL
+          AND UPPER(occurrence.destination) = $1
+          AND occurrence.arrived_at >=
+                clock.sim_time - INTERVAL '7 days'
+          AND occurrence.arrived_at < clock.sim_time
+
+        GROUP BY
+          airline.airline_id,
+          airline.airline_name,
+          airline.iata,
+          airline.icao,
+          airline.color_hex,
+          airline.color_hsl,
+          airline.color_index
+
+        ORDER BY
+          passengers DESC,
+          airline.airline_name ASC,
+          airline.airline_id ASC
+        `,
+        [airportIcao, currentSimTime]
       );
 
       const marketResult = await client.query(
@@ -1199,6 +1286,14 @@ router.get(
           route.model_key,
           route.aircraft,
 
+          CASE
+            WHEN UPPER(route.destination) = $1
+              THEN route.flight_number_out
+            WHEN UPPER(route.origin) = $1
+              THEN route.flight_number_in
+            ELSE NULL
+          END AS inbound_flight_number,
+
           airline.airline_name,
           airline.iata,
           airline.icao,
@@ -1217,10 +1312,11 @@ router.get(
           catalog.model AS catalog_model,
           catalog.aircraft_name AS catalog_aircraft_name,
 
-          COALESCE(traffic.flights, 0)::integer AS flights,
-          COALESCE(traffic.passengers, 0)::bigint AS passengers,
-          COALESCE(traffic.available_seats, 0)::bigint
-            AS available_seats
+          traffic.inbound_origin,
+          traffic.inbound_destination,
+          traffic.flights,
+          traffic.passengers,
+          traffic.available_seats
 
         FROM public.route_plans route
         CROSS JOIN clock
@@ -1237,8 +1333,14 @@ router.get(
             COALESCE(fleet.model_key, route.model_key)
           )
 
-                LEFT JOIN LATERAL (
+        INNER JOIN LATERAL (
           SELECT
+            MIN(UPPER(occurrence.origin))
+              AS inbound_origin,
+
+            MAX(UPPER(occurrence.destination))
+              AS inbound_destination,
+
             COUNT(*)::integer AS flights,
 
             COALESCE(
@@ -1257,7 +1359,7 @@ router.get(
 
           FROM public.flight_occurrences occurrence
 
-          JOIN public.acs_passenger_flight_results passenger_result
+          INNER JOIN public.acs_passenger_flight_results passenger_result
             ON passenger_result.occurrence_id = occurrence.id
            AND passenger_result.result_status = 'CONSUMED'
 
@@ -1265,23 +1367,21 @@ router.get(
             AND occurrence.airline_id = route.airline_id
             AND occurrence.operational_status = 'ARRIVED'
             AND occurrence.settled_at IS NOT NULL
+            AND UPPER(occurrence.destination) = $1
             AND occurrence.arrived_at >=
                   clock.sim_time - INTERVAL '7 days'
             AND occurrence.arrived_at < clock.sim_time
+
+          HAVING COUNT(*) > 0
         ) traffic ON true
 
         WHERE UPPER(COALESCE(route.route_state, 'ACTIVE')) = 'ACTIVE'
           AND UPPER(COALESCE(route.route_type, 'PASSENGER')) = 'PASSENGER'
-          AND (
-            UPPER(route.origin) = $1
-            OR UPPER(route.destination) = $1
-          )
 
         ORDER BY
-          COALESCE(traffic.passengers, 0) DESC,
+          traffic.passengers DESC,
           airline.airline_name ASC,
-          route.origin ASC,
-          route.destination ASC,
+          traffic.inbound_origin ASC,
           route.id ASC
 
         LIMIT $3
@@ -1290,17 +1390,16 @@ router.get(
         [airportIcao, currentSimTime, limit, offset]
       );
 
-      const operators = marketResult.rows.map(row => {
+      const airlineSummary = airlineSummaryResult.rows.map(row => {
         const passengers = ACS_MR_integer(row.passengers);
         const availableSeats = ACS_MR_integer(
           row.available_seats
         );
 
         return {
-          route_plan_id: ACS_MR_integer(row.route_plan_id),
-          route_uid: row.route_uid || null,
           is_own_airline:
             ACS_MR_integer(row.airline_id) === airlineId,
+
           airline: {
             airline_id: ACS_MR_integer(row.airline_id),
             airline_name: row.airline_name || null,
@@ -1313,51 +1412,7 @@ router.get(
                 ? null
                 : ACS_MR_integer(row.color_index)
           },
-          route: {
-            origin: row.origin || null,
-            destination: row.destination || null,
-            route_state: row.route_state || null,
-            route_type: row.route_type || null,
-            selected_days:
-              Array.isArray(row.selected_days)
-                ? row.selected_days
-                : [],
-            frequency_per_week:
-              Array.isArray(row.selected_days)
-                ? row.selected_days.length
-                : 0,
-            flight_numbers: {
-              outbound: row.flight_number_out || null,
-              return: row.flight_number_in || null
-            },
-            distance_nm: ACS_MR_integer(row.distance_nm)
-          },
-          aircraft: {
-            aircraft_id:
-              row.aircraft_id === null
-                ? null
-                : ACS_MR_integer(row.aircraft_id),
-            aircraft_uid: row.aircraft_uid || null,
-            registration:
-              row.fleet_registration ||
-              row.registration ||
-              null,
-            model_key:
-              row.catalog_model_key ||
-              row.fleet_model_key ||
-              row.model_key ||
-              null,
-            manufacturer:
-              row.catalog_manufacturer ||
-              row.fleet_manufacturer ||
-              null,
-            model: row.catalog_model || null,
-            aircraft_name:
-              row.catalog_aircraft_name ||
-              row.fleet_aircraft_name ||
-              row.aircraft ||
-              null
-          },
+
           last_7_days: {
             flights: ACS_MR_integer(row.flights),
             passengers,
@@ -1369,8 +1424,114 @@ router.get(
                   ) / 10000
                 : 0
           },
-           traffic_data_status:
-            "ACS_GLOBAL_PAX_V3"
+
+          traffic_data_status: "ACS_GLOBAL_PAX_V3"
+        };
+      });
+
+      const operators = marketResult.rows.map(row => {
+        const passengers = ACS_MR_integer(row.passengers);
+        const availableSeats = ACS_MR_integer(
+          row.available_seats
+        );
+
+        return {
+          route_plan_id: ACS_MR_integer(row.route_plan_id),
+          route_uid: row.route_uid || null,
+
+          is_own_airline:
+            ACS_MR_integer(row.airline_id) === airlineId,
+
+          airline: {
+            airline_id: ACS_MR_integer(row.airline_id),
+            airline_name: row.airline_name || null,
+            iata: row.iata || null,
+            icao: row.icao || null,
+            color_hex: row.color_hex || null,
+            color_hsl: row.color_hsl || null,
+            color_index:
+              row.color_index === null
+                ? null
+                : ACS_MR_integer(row.color_index)
+          },
+
+          route: {
+            origin: row.origin || null,
+            destination: row.destination || null,
+
+            inbound_origin: row.inbound_origin || null,
+            inbound_destination:
+              row.inbound_destination || airportIcao,
+            inbound_flight_number:
+              row.inbound_flight_number || null,
+
+            route_state: row.route_state || null,
+            route_type: row.route_type || null,
+
+            selected_days:
+              Array.isArray(row.selected_days)
+                ? row.selected_days
+                : [],
+
+            frequency_per_week:
+              Array.isArray(row.selected_days)
+                ? row.selected_days.length
+                : 0,
+
+            flight_numbers: {
+              outbound: row.flight_number_out || null,
+              return: row.flight_number_in || null
+            },
+
+            distance_nm: ACS_MR_integer(row.distance_nm)
+          },
+
+          aircraft: {
+            aircraft_id:
+              row.aircraft_id === null
+                ? null
+                : ACS_MR_integer(row.aircraft_id),
+
+            aircraft_uid: row.aircraft_uid || null,
+
+            registration:
+              row.fleet_registration ||
+              row.registration ||
+              null,
+
+            model_key:
+              row.catalog_model_key ||
+              row.fleet_model_key ||
+              row.model_key ||
+              null,
+
+            manufacturer:
+              row.catalog_manufacturer ||
+              row.fleet_manufacturer ||
+              null,
+
+            model: row.catalog_model || null,
+
+            aircraft_name:
+              row.catalog_aircraft_name ||
+              row.fleet_aircraft_name ||
+              row.aircraft ||
+              null
+          },
+
+          last_7_days: {
+            flights: ACS_MR_integer(row.flights),
+            passengers,
+            available_seats: availableSeats,
+            load_factor:
+              availableSeats > 0
+                ? Math.round(
+                    (passengers / availableSeats) * 10000
+                  ) / 10000
+                : 0
+          },
+
+          traffic_data_status: "ACS_GLOBAL_PAX_V3"
         };
       });
 
@@ -1379,10 +1540,11 @@ router.get(
 
       return res.json({
         ok: true,
-        endpoint: "ACS_AIRPORT_ROUTE_MARKET",
-        authority: "POSTGRESQL_AIRPORT_ROUTE_MARKET",
+        endpoint: "ACS_AIRPORT_INBOUND_MARKET",
+        authority: "POSTGRESQL_AIRPORT_INBOUND_MARKET_V3",
         current_sim_time: currentSimTime,
         airline_id: airlineId,
+
         selected_route: {
           route_plan_id: ACS_MR_integer(
             selectedRoute.route_plan_id
@@ -1390,7 +1552,10 @@ router.get(
           origin: selectedRoute.origin || null,
           destination: selectedRoute.destination || null
         },
+
         airport_icao: airportIcao,
+        market_direction: "INBOUND",
+
         pagination: {
           page,
           limit,
@@ -1399,18 +1564,21 @@ router.get(
           has_previous: page > 1,
           has_next: page < totalPages
         },
+
+        airline_summary: airlineSummary,
         operators,
-        count: operators.length
+        count: operators.length,
+        traffic_data_status: "ACS_GLOBAL_PAX_V3"
       });
     } catch (error) {
       console.error(
-        "ACS AIRPORT ROUTE MARKET ERROR:",
+        "ACS AIRPORT INBOUND MARKET ERROR:",
         error
       );
 
       return res.status(500).json({
         ok: false,
-        error: "AIRPORT_ROUTE_MARKET_QUERY_FAILED",
+        error: "AIRPORT_INBOUND_MARKET_QUERY_FAILED",
         details: error.message
       });
     } finally {
