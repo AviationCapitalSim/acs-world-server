@@ -119,11 +119,12 @@ router.get("/snapshot", requireAuth, async (req, res) => {
 
           af.id AS aircraft_id,
           af.registration,
+          af.manufacturer,
           af.aircraft_name,
           af.model_key,
           af.current_airport,
           af.base_icao,
-
+          
           ams.maintenance_control_status,
           ams.maintenance_control_reason
 
@@ -532,13 +533,21 @@ router.get("/snapshot", requireAuth, async (req, res) => {
         airlineIdentityColor.index,
      
         registration: row.registration || "-",
+
+        manufacturer:
+          row.manufacturer || null,
+
         model:
           row.aircraft_name || row.model_key || "-",
+
         aircraft:
           row.aircraft_name || row.model_key || "-",
+
         aircraftModel:
           row.aircraft_name || row.model_key || "-",
-        modelKey: row.model_key || null,
+
+        modelKey:
+          row.model_key || null,
 
         baseICAO: row.base_icao || null,
         base_icao: row.base_icao || null,
