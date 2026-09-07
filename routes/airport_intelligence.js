@@ -303,6 +303,102 @@ router.get(
 
 
 /* ============================================================
+   GET /v1/airport-intelligence/catalog
+   ------------------------------------------------------------
+   Canonical selector catalog for the current simulation date.
+
+   IMPORTANT
+   - Never exposes the master airport_catalog table.
+   - Availability is resolved by PostgreSQL.
+   - Only airports that can accept passenger routes now are sent.
+   ============================================================ */
+
+router.get(
+  "/airport-intelligence/catalog",
+  requireAuth,
+  async (req, res) => {
+
+    try {
+
+      const result =
+        await pool.query(
+          `
+          SELECT
+            aa.airport_id AS id,
+            UPPER(BTRIM(aa.icao)) AS icao,
+            NULLIF(UPPER(BTRIM(aa.iata)), '') AS iata,
+            aa.city,
+            aa.country,
+            ${ACS_AI_REGION_SQL} AS continent,
+            aa.region,
+            aa.current_sim_time,
+            aa.sim_year
+          FROM public.v_acs_airport_authority_current aa
+          WHERE COALESCE(aa.passenger_route_allowed, FALSE) = TRUE
+            AND COALESCE(aa.schedule_operation_allowed, FALSE) = TRUE
+          ORDER BY
+            ${ACS_AI_REGION_SQL} ASC,
+            aa.country ASC,
+            aa.city ASC,
+            aa.icao ASC
+          `
+        );
+
+      const airports =
+        result.rows.map(row => ({
+          id:
+            ACS_AI_integer(row.id),
+          icao:
+            ACS_AI_nullableText(row.icao),
+          iata:
+            ACS_AI_nullableText(row.iata),
+          city:
+            ACS_AI_nullableText(row.city),
+          country_code:
+            ACS_AI_nullableText(row.country),
+          country:
+            ACS_AI_countryName(row.country),
+          continent:
+            ACS_AI_nullableText(row.continent),
+          region:
+            ACS_AI_nullableText(row.region),
+          display_label:
+            ACS_AI_buildAirportLabel(
+              row.icao,
+              row.city,
+              row.country
+            )
+        }));
+
+      return res.json({
+        ok: true,
+        current_sim_time:
+          result.rows[0]?.current_sim_time || null,
+        sim_year:
+          ACS_AI_integer(result.rows[0]?.sim_year),
+        count:
+          airports.length,
+        airports
+      });
+
+    } catch (err) {
+
+      console.error(
+        "AIRPORT INTELLIGENCE CATALOG ERROR:",
+        err
+      );
+
+      return res.status(500).json({
+        ok: false,
+        error:
+          "AIRPORT_INTELLIGENCE_CATALOG_FAILED"
+      });
+    }
+  }
+);
+
+
+/* ============================================================
    GET /v1/airport-intelligence/:icao
    ------------------------------------------------------------
    One canonical read-only snapshot for the selected airport.
@@ -1748,3 +1844,5 @@ base_city:
 
 
 export default router;
+
+
