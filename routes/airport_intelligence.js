@@ -1276,6 +1276,16 @@ const airlinesResult =
                 row.icao
               ),
 
+            base_icao:
+  ACS_AI_nullableText(
+    row.base_icao
+  ),
+
+base_city:
+  ACS_AI_nullableText(
+    row.base_city
+  ),
+             
             routes:
               ACS_AI_integer(
                 row.routes
