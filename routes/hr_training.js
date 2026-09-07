@@ -809,6 +809,14 @@ async function completeDuePilotTraining(
    • PostgreSQL calculates every crossed boundary
    ============================================================ */
 
+/* ============================================================
+   ACS HR TRAINING — PERSONNEL MONTHLY BOUNDARIES
+   ------------------------------------------------------------
+   • One recurring personnel-training charge per simulation month
+   • Charge is generated only at the monthly closing boundary
+   • PostgreSQL calculates every crossed monthly boundary
+   ============================================================ */
+
 async function getPersonnelTrainingBoundaries(
   previousSimTime,
   currentSimTime
@@ -823,6 +831,7 @@ async function getPersonnelTrainingBoundaries(
         ) AS previous_sim_time,
         $2::TIMESTAMP AS current_sim_time
     ),
+
     months AS (
       SELECT GENERATE_SERIES(
         DATE_TRUNC(
@@ -837,6 +846,7 @@ async function getPersonnelTrainingBoundaries(
       )::TIMESTAMP AS month_start
       FROM limits
     ),
+
     boundaries AS (
       SELECT
         EXTRACT(
@@ -847,35 +857,7 @@ async function getPersonnelTrainingBoundaries(
           MONTH FROM month_start
         )::INTEGER AS cycle_month,
 
-        1::INTEGER AS cycle_half,
         month_start AS period_start_sim,
-
-        month_start +
-          INTERVAL '14 days'
-            AS period_end_sim,
-
-        month_start +
-          INTERVAL '14 days'
-            AS charged_sim_at
-
-      FROM months
-
-      UNION ALL
-
-      SELECT
-        EXTRACT(
-          YEAR FROM month_start
-        )::INTEGER,
-
-        EXTRACT(
-          MONTH FROM month_start
-        )::INTEGER,
-
-        2::INTEGER AS cycle_half,
-
-        month_start +
-          INTERVAL '15 days'
-            AS period_start_sim,
 
         month_start +
           INTERVAL '1 month' -
@@ -889,10 +871,10 @@ async function getPersonnelTrainingBoundaries(
 
       FROM months
     )
+
     SELECT
       boundaries.cycle_year,
       boundaries.cycle_month,
-      boundaries.cycle_half,
       boundaries.period_start_sim,
       boundaries.period_end_sim,
       boundaries.charged_sim_at
@@ -907,8 +889,7 @@ async function getPersonnelTrainingBoundaries(
           limits.current_sim_time
 
     ORDER BY
-      boundaries.charged_sim_at,
-      boundaries.cycle_half
+      boundaries.charged_sim_at
     `,
     [
       previousSimTime || null,
@@ -932,9 +913,9 @@ async function settlePersonnelTrainingBoundary(
   boundary,
   currentSimTime
 ) {
+   
   const cycleYear = Number(boundary.cycle_year);
   const cycleMonth = Number(boundary.cycle_month);
-  const cycleHalf = Number(boundary.cycle_half);
   const salaryHalf = cycleMonth <= 6 ? 1 : 2;
   const monthKey =
     `${cycleYear}-${String(cycleMonth).padStart(2, "0")}`;
@@ -1144,8 +1125,7 @@ async function settlePersonnelTrainingBoundary(
       }
 
       const referenceUid =
-        `HR_TRAINING_PERSONNEL:${airlineId}:` +
-        `${monthKey}:H${cycleHalf}`;
+      `HR_TRAINING_PERSONNEL:${airlineId}:${monthKey}`;
 
       const logResult = await client.query(
         `
