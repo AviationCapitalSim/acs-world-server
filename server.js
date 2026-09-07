@@ -36,6 +36,7 @@ import cabinPresetsRoutes from "./routes/cabin_presets.js";
 import routePlanRoutes from "./routes/route_plans.js";
 import myRoutesOccRoutes from "./routes/my_routes.js";
 import airportsRoutes from "./routes/airports.js";
+import airportIntelligenceRoutes from "./routes/airport_intelligence.js";
 import skytrackRoutes from "./routes/skytrack.js";
 import skytrackGlobalRoutes
   from "./routes/skytrack_global.js";
@@ -421,6 +422,7 @@ app.use("/v1", myRoutesOccRoutes);
 app.use("/v1/aircraft/factory", factoryRoutes);
 app.use("/v1/route-planning", routePlanningRoutes);
 app.use("/v1", airportsRoutes);
+app.use("/v1", airportIntelligenceRoutes);
 app.use("/v1", flightSettlementRoutes);
 
 const PORT = process.env.PORT || 3000;
