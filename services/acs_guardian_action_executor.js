@@ -220,49 +220,123 @@ async function ACS_assertNoUnexpectedReferences(
 async function ACS_assertNoUserTriggers(
   client,
   tables,
-  allowedTriggers = []
+  operations = [
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "TRUNCATE"
+  ]
 ) {
+  const normalizedOperations =
+    new Set(
+      operations.map(
+        (operation) =>
+          String(operation).toUpperCase()
+      )
+    );
+
   const result = await client.query(
     `
     SELECT
-      namespace.nspname AS table_schema,
-      relation.relname AS table_name,
-      trigger_record.tgname AS trigger_name,
+      namespace.nspname
+        AS table_schema,
+
+      relation.relname
+        AS table_name,
+
+      trigger_record.tgname
+        AS trigger_name,
+
       pg_get_triggerdef(
         trigger_record.oid,
         true
-      ) AS trigger_definition
+      ) AS trigger_definition,
+
+      (
+        trigger_record.tgtype & 4
+      ) <> 0 AS fires_on_insert,
+
+      (
+        trigger_record.tgtype & 8
+      ) <> 0 AS fires_on_delete,
+
+      (
+        trigger_record.tgtype & 16
+      ) <> 0 AS fires_on_update,
+
+      (
+        trigger_record.tgtype & 32
+      ) <> 0 AS fires_on_truncate
+
     FROM pg_trigger trigger_record
+
     JOIN pg_class relation
-      ON relation.oid = trigger_record.tgrelid
+      ON relation.oid =
+        trigger_record.tgrelid
+
     JOIN pg_namespace namespace
-      ON namespace.oid = relation.relnamespace
-    WHERE NOT trigger_record.tgisinternal
+      ON namespace.oid =
+        relation.relnamespace
+
+    WHERE
+      NOT trigger_record.tgisinternal
+
       AND trigger_record.tgenabled <> 'D'
-      AND trigger_record.tgrelid = ANY($1::regclass[])
+
+      AND trigger_record.tgrelid =
+        ANY($1::regclass[])
     `,
     [tables]
   );
 
-  const allowed =
-    new Set(allowedTriggers);
+  const relevantTriggers =
+    result.rows.filter((row) => {
 
-  const unexpected =
-    result.rows.filter(
-      (row) =>
-        !allowed.has(
-          `${row.table_schema}.${row.table_name}.${row.trigger_name}`
+      return (
+        (
+          normalizedOperations.has(
+            "INSERT"
+          ) &&
+          row.fires_on_insert === true
+        ) ||
+
+        (
+          normalizedOperations.has(
+            "UPDATE"
+          ) &&
+          row.fires_on_update === true
+        ) ||
+
+        (
+          normalizedOperations.has(
+            "DELETE"
+          ) &&
+          row.fires_on_delete === true
+        ) ||
+
+        (
+          normalizedOperations.has(
+            "TRUNCATE"
+          ) &&
+          row.fires_on_truncate === true
         )
-    );
+      );
+    });
 
-  if (unexpected.length) {
+  if (relevantTriggers.length) {
     const error = ACS_actionError(
       "GUARDIAN_TARGET_HAS_USER_TRIGGER",
       409
     );
 
     error.guardianDetails = {
-      triggers: unexpected
+      operations:
+        Array.from(
+          normalizedOperations
+        ),
+
+      triggers:
+        relevantTriggers
     };
 
     throw error;
@@ -962,15 +1036,16 @@ async function ACS_compactClosedFlights(client, action) {
     "public.acs_passenger_flight_results"
   );
     await ACS_assertNoUserTriggers(
-    client,
-    [
-      "public.flight_occurrences",
-      "public.acs_passenger_flight_results"
-    ],
-    [
-      "public.flight_occurrences.trg_acs_sync_passenger_result_lifecycle"
-    ]
-  );
+  client,
+  [
+    "public.flight_occurrences",
+    "public.acs_passenger_flight_results"
+  ],
+  [
+    "INSERT",
+    "TRUNCATE"
+  ]
+);
 
   await client.query(`
     LOCK TABLE
