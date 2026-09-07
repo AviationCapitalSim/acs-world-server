@@ -948,115 +948,133 @@ router.get(
          Ordering is factual:
          weekly movements, then airline name.
          ======================================================== */
+const airlinesResult =
+  await client.query(
+    `
+    SELECT
+      airline.airline_id,
+      airline.airline_name,
+      airline.iata,
+      airline.icao,
 
-      const airlinesResult =
-        await client.query(
-          `
-          SELECT
-            airline.airline_id,
-            airline.airline_name,
-            airline.iata,
-            airline.icao,
+      MAX(
+        UPPER(
+          BTRIM(player.base_icao)
+        )
+      )
+        AS base_icao,
 
-            COUNT(
-              DISTINCT route.id
-            )::INTEGER
-              AS routes,
+      MAX(
+        base_airport.city
+      )
+        AS base_city,
 
+      COUNT(
+        DISTINCT route.id
+      )::INTEGER
+        AS routes,
+
+      COALESCE(
+        SUM(
+          JSONB_ARRAY_LENGTH(
             COALESCE(
-              SUM(
-                JSONB_ARRAY_LENGTH(
-                  COALESCE(
-                    route.selected_days,
-                    '[]'::JSONB
-                  )
-                ) * 2
-              ),
-              0
-            )::INTEGER
-              AS weekly_flights,
-
-            COUNT(
-              DISTINCT CASE
-                WHEN UPPER(route.origin) = $1
-                  THEN UPPER(route.destination)
-
-                WHEN UPPER(route.destination) = $1
-                  THEN UPPER(route.origin)
-
-                ELSE NULL
-              END
-            )::INTEGER
-              AS destinations,
-
-            ARRAY_AGG(
-              DISTINCT COALESCE(
-                NULLIF(
-                  BTRIM(route.aircraft),
-                  ''
-                ),
-                NULLIF(
-                  BTRIM(route.model_key),
-                  ''
-                )
-              )
+              route.selected_days,
+              '[]'::JSONB
             )
-            FILTER (
-              WHERE COALESCE(
-                NULLIF(
-                  BTRIM(route.aircraft),
-                  ''
-                ),
-                NULLIF(
-                  BTRIM(route.model_key),
-                  ''
-                )
-              ) IS NOT NULL
-            )
-              AS aircraft_types
+          ) * 2
+        ),
+        0
+      )::INTEGER
+        AS weekly_flights,
 
-          FROM public.route_plans route
+      COUNT(
+        DISTINCT CASE
+          WHEN UPPER(route.origin) = $1
+            THEN UPPER(route.destination)
 
-          INNER JOIN public.airlines airline
-            ON airline.airline_id =
-               route.airline_id
+          WHEN UPPER(route.destination) = $1
+            THEN UPPER(route.origin)
 
-          WHERE UPPER(
-            COALESCE(
-              route.route_state,
-              'ACTIVE'
-            )
-          ) = 'ACTIVE'
+          ELSE NULL
+        END
+      )::INTEGER
+        AS destinations,
 
-            AND UPPER(
-              COALESCE(
-                route.route_type,
-                'PASSENGER'
-              )
-            ) = 'PASSENGER'
+      ARRAY_AGG(
+        DISTINCT COALESCE(
+          NULLIF(
+            BTRIM(route.aircraft),
+            ''
+          ),
+          NULLIF(
+            BTRIM(route.model_key),
+            ''
+          )
+        )
+      )
+      FILTER (
+        WHERE COALESCE(
+          NULLIF(
+            BTRIM(route.aircraft),
+            ''
+          ),
+          NULLIF(
+            BTRIM(route.model_key),
+            ''
+          )
+        ) IS NOT NULL
+      )
+        AS aircraft_types
 
-            AND (
-              UPPER(route.origin) = $1
-              OR
-              UPPER(route.destination) = $1
-            )
+    FROM public.route_plans route
 
-          GROUP BY
-            airline.airline_id,
-            airline.airline_name,
-            airline.iata,
-            airline.icao
+    INNER JOIN public.airlines airline
+      ON airline.airline_id =
+         route.airline_id
 
-          ORDER BY
-            weekly_flights DESC,
-            airline.airline_name ASC,
-            airline.airline_id ASC
-          `,
-          [
-            icao
-          ]
-        );
+    LEFT JOIN public.users player
+      ON player.airline_id =
+         airline.airline_id
 
+    LEFT JOIN public.v_acs_airport_authority_current base_airport
+      ON UPPER(BTRIM(base_airport.icao)) =
+         UPPER(BTRIM(player.base_icao))
+
+    WHERE UPPER(
+      COALESCE(
+        route.route_state,
+        'ACTIVE'
+      )
+    ) = 'ACTIVE'
+
+      AND UPPER(
+        COALESCE(
+          route.route_type,
+          'PASSENGER'
+        )
+      ) = 'PASSENGER'
+
+      AND (
+        UPPER(route.origin) = $1
+        OR
+        UPPER(route.destination) = $1
+      )
+
+    GROUP BY
+      airline.airline_id,
+      airline.airline_name,
+      airline.iata,
+      airline.icao
+
+    ORDER BY
+      weekly_flights DESC,
+      airline.airline_name ASC,
+      airline.airline_id ASC
+    `,
+    [
+      icao
+    ]
+  );
 
       /* ========================================================
          8) SERVED DESTINATIONS
