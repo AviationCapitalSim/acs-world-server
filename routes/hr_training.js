@@ -1160,7 +1160,7 @@ async function settlePersonnelTrainingBoundary(
           totalCost,
           boundary.charged_sim_at || currentSimTime,
           referenceUid,
-          `HR Training Personnel — ${monthKey} H${cycleHalf}`
+          `HR Training Personnel — ${monthKey}`
         ]
       );
 
