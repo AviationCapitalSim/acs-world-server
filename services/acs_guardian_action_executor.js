@@ -217,13 +217,21 @@ async function ACS_assertNoUnexpectedReferences(
   }
 }
 
-async function ACS_assertNoUserTriggers(client, tables) {
+async function ACS_assertNoUserTriggers(
+  client,
+  tables,
+  allowedTriggers = []
+) {
   const result = await client.query(
     `
     SELECT
       namespace.nspname AS table_schema,
       relation.relname AS table_name,
-      trigger_record.tgname AS trigger_name
+      trigger_record.tgname AS trigger_name,
+      pg_get_triggerdef(
+        trigger_record.oid,
+        true
+      ) AS trigger_definition
     FROM pg_trigger trigger_record
     JOIN pg_class relation
       ON relation.oid = trigger_record.tgrelid
@@ -236,12 +244,27 @@ async function ACS_assertNoUserTriggers(client, tables) {
     [tables]
   );
 
-  if (result.rows.length) {
+  const allowed =
+    new Set(allowedTriggers);
+
+  const unexpected =
+    result.rows.filter(
+      (row) =>
+        !allowed.has(
+          `${row.table_schema}.${row.table_name}.${row.trigger_name}`
+        )
+    );
+
+  if (unexpected.length) {
     const error = ACS_actionError(
       "GUARDIAN_TARGET_HAS_USER_TRIGGER",
       409
     );
-    error.guardianDetails = { triggers: result.rows };
+
+    error.guardianDetails = {
+      triggers: unexpected
+    };
+
     throw error;
   }
 }
@@ -928,6 +951,7 @@ async function ACS_compactClosedFinance(client, action) {
 }
 
 async function ACS_compactClosedFlights(client, action) {
+   
   await ACS_assertNoUnexpectedReferences(
     client,
     "public.flight_occurrences",
@@ -937,11 +961,14 @@ async function ACS_compactClosedFlights(client, action) {
     client,
     "public.acs_passenger_flight_results"
   );
-  await ACS_assertNoUserTriggers(
+    await ACS_assertNoUserTriggers(
     client,
     [
       "public.flight_occurrences",
       "public.acs_passenger_flight_results"
+    ],
+    [
+      "public.flight_occurrences.trg_acs_sync_passenger_result_lifecycle"
     ]
   );
 
