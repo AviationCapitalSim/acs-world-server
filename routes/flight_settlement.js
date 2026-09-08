@@ -97,15 +97,52 @@ export async function ACS_runFlightSettlementRuntime({
             OR occurrence.arrived_at > cutoff.cutoff_sim_time
           )
         ORDER BY occurrence.arrived_at, occurrence.id
-        LIMIT $1
+                LIMIT $1
         FOR UPDATE OF occurrence SKIP LOCKED
       ),
+
+      airport_fee_medians AS MATERIALIZED (
+        SELECT
+          due_year.sim_year,
+
+          PERCENTILE_CONT(0.5) WITHIN GROUP (
+            ORDER BY historical_profile.landing_fee_usd
+          )::numeric AS median_landing_fee_usd
+
+        FROM (
+          SELECT DISTINCT
+            EXTRACT(YEAR FROM due.arrived_at)::integer AS sim_year
+          FROM due
+        ) due_year
+
+        JOIN public.airport_historical_profiles historical_profile
+          ON due_year.sim_year
+             BETWEEN historical_profile.era_from
+                 AND historical_profile.era_to
+
+        WHERE historical_profile.landing_fee_usd > 0
+
+        GROUP BY due_year.sim_year
+      ),
+
       economics AS MATERIALIZED (
         SELECT
           due.*,
           catalog.seats,
+          catalog.mtow_kg,
           catalog.fuel_burn_kgph,
           catalog.fuel_code,
+
+          COALESCE(
+            NULLIF(
+              COALESCE(fleet.y_seats, 0)
+              + COALESCE(fleet.c_seats, 0)
+              + COALESCE(fleet.f_seats, 0),
+              0
+            ),
+            NULLIF(catalog.seats, 0),
+            1
+          )::numeric AS configured_seats,
           fuel_product.density_kg_per_us_gallon,
           fuel_market.resolved_fuel_code,
           fuel_market.resolved_price_year,
@@ -114,6 +151,12 @@ export async function ACS_runFlightSettlementRuntime({
           flight_economics.landing_fee_base_usd,
           flight_economics.navigation_usd_per_nm,
           flight_economics.overflight_usd_per_nm,
+
+          destination_airport.landing_fee_usd::numeric
+            AS destination_landing_fee_usd,
+
+          airport_fee_medians.median_landing_fee_usd,
+
           COALESCE(
             pax_tax_rate.rate_percent,
             0
@@ -146,8 +189,34 @@ export async function ACS_runFlightSettlementRuntime({
         JOIN public.acs_economic_periods period
           ON EXTRACT(YEAR FROM due.arrived_at)::integer
              BETWEEN period.era_start_year AND period.era_end_year
-                JOIN public.flight_economics flight_economics
+         JOIN public.flight_economics flight_economics
           ON flight_economics.period_id = period.id
+
+        LEFT JOIN airport_fee_medians
+          ON airport_fee_medians.sim_year =
+             EXTRACT(YEAR FROM due.arrived_at)::integer
+
+        LEFT JOIN LATERAL (
+          SELECT
+            historical_profile.landing_fee_usd
+
+          FROM public.airport_historical_profiles historical_profile
+
+          WHERE historical_profile.airport_icao =
+                UPPER(due.destination)
+
+            AND EXTRACT(YEAR FROM due.arrived_at)::integer
+                BETWEEN historical_profile.era_from
+                    AND historical_profile.era_to
+
+            AND historical_profile.landing_fee_usd > 0
+
+          ORDER BY
+            historical_profile.era_from DESC,
+            historical_profile.era_to DESC
+
+          LIMIT 1
+        ) destination_airport ON true
 
         LEFT JOIN LATERAL (
           SELECT
