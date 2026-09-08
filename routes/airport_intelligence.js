@@ -592,10 +592,6 @@ router.get(
             )
               AS aircraft_limit,
 
-            aa.demand_y,
-            aa.demand_c,
-            aa.demand_f,
-
             aa.slot_cost_usd
               AS slot_cost_base_usd,
 
@@ -798,12 +794,111 @@ router.get(
       }
 
 
-      const airport =
+            const airport =
         airportResult.rows[0];
 
 
       /* ========================================================
-         4) PASSENGER MOVEMENT — CURRENT ACS MONTH
+         4) CANONICAL GLOBAL PASSENGER PROFILE
+         --------------------------------------------------------
+         Uses every historically available passenger market.
+         Y/C/F distribution is controlled by
+         public.acs_passenger_class_rules through
+         public.acs_calculate_passenger_demand.
+         ======================================================== */
+
+      const passengerProfileResult =
+        await client.query(
+          `
+          WITH destinations AS MATERIALIZED (
+            SELECT
+              UPPER(BTRIM(airport.icao))
+                AS icao
+
+            FROM public.v_acs_airport_authority_current
+              airport
+
+            WHERE airport.passenger_route_allowed = TRUE
+
+              AND UPPER(BTRIM(airport.icao)) <> $1
+          ),
+          markets AS MATERIALIZED (
+            SELECT
+              demand.sim_year,
+              demand.period_code,
+              demand.weekly_y,
+              demand.weekly_c,
+              demand.weekly_f,
+              demand.weekly_total
+
+            FROM destinations destination
+
+            CROSS JOIN LATERAL
+              public.acs_calculate_passenger_demand(
+                $1,
+                destination.icao,
+                $2::TIMESTAMP
+              ) demand
+          )
+
+          SELECT
+            COALESCE(
+              SUM(markets.weekly_y),
+              0
+            )::BIGINT
+              AS economy_y,
+
+            COALESCE(
+              SUM(markets.weekly_c),
+              0
+            )::BIGINT
+              AS business_c,
+
+            COALESCE(
+              SUM(markets.weekly_f),
+              0
+            )::BIGINT
+              AS first_f,
+
+            COALESCE(
+              SUM(markets.weekly_total),
+              0
+            )::BIGINT
+              AS total,
+
+            COUNT(*)::INTEGER
+              AS evaluated_markets,
+
+            MAX(markets.sim_year)::INTEGER
+              AS sim_year,
+
+            MAX(markets.period_code)
+              AS period_code,
+
+            (
+              SELECT
+                model.version_code
+
+              FROM public.acs_passenger_demand_models
+                model
+
+              WHERE model.model_status = 'ACTIVE'
+
+              LIMIT 1
+            )
+              AS model_version
+
+          FROM markets
+          `,
+          [
+            icao,
+            currentSimTime
+          ]
+        );
+
+
+      /* ========================================================
+         5) PASSENGER MOVEMENT — CURRENT ACS MONTH
          --------------------------------------------------------
          Actual traffic only:
          - ARRIVED occurrence
@@ -1320,12 +1415,15 @@ const airlinesResult =
          10) RESPONSE NORMALIZATION
          ======================================================== */
 
+      const passengerProfile =
+        passengerProfileResult.rows[0] || {};
+
       const passengerMovement =
         passengerMovementResult.rows[0] || {};
 
       const activeOperations =
         activeOperationsResult.rows[0] || {};
-
+       
       const networkSummary =
         networkSummaryResult.rows[0] || {};
 
@@ -1695,36 +1793,48 @@ base_city:
           },
 
 
-          passenger_profile: {
+                    passenger_profile: {
             source:
-              "AIRPORT_DEMAND_AUTHORITY",
+              "POSTGRESQL_PASSENGER_MARKET_AUTHORITY",
+
+            model_version:
+              ACS_AI_nullableText(
+                passengerProfile.model_version
+              ),
+
+            sim_year:
+              ACS_AI_integer(
+                passengerProfile.sim_year
+              ),
+
+            period_code:
+              ACS_AI_nullableText(
+                passengerProfile.period_code
+              ),
+
+            evaluated_markets:
+              ACS_AI_integer(
+                passengerProfile.evaluated_markets
+              ),
 
             economy_y:
               ACS_AI_integer(
-                airport.demand_y
+                passengerProfile.economy_y
               ),
 
             business_c:
               ACS_AI_integer(
-                airport.demand_c
+                passengerProfile.business_c
               ),
 
             first_f:
               ACS_AI_integer(
-                airport.demand_f
+                passengerProfile.first_f
               ),
 
             total:
               ACS_AI_integer(
-                airport.demand_y
-              )
-              +
-              ACS_AI_integer(
-                airport.demand_c
-              )
-              +
-              ACS_AI_integer(
-                airport.demand_f
+                passengerProfile.total
               )
           },
 
