@@ -275,10 +275,44 @@ export async function ACS_runFlightSettlementRuntime({
             )
           ) AS hr_reduction_fraction,
 
-          GREATEST(
+                    GREATEST(
             0.25,
             COALESCE(block_time_min, 60)::numeric / 60
-          ) AS block_hours
+          ) AS block_hours,
+
+          LEAST(
+            2.50::numeric,
+            GREATEST(
+              0.20::numeric,
+              COALESCE(configured_seats, 1)::numeric
+              / 100::numeric
+            )
+          ) AS handling_factor,
+
+          LEAST(
+            2.50::numeric,
+            GREATEST(
+              0.25::numeric,
+              SQRT(
+                GREATEST(
+                  COALESCE(mtow_kg, 50000)::numeric,
+                  1::numeric
+                ) / 50000::numeric
+              )
+            )
+          ) AS weight_factor,
+
+          LEAST(
+            1.80::numeric,
+            GREATEST(
+              0.60::numeric,
+              COALESCE(
+                destination_landing_fee_usd
+                / NULLIF(median_landing_fee_usd, 0),
+                1::numeric
+              )
+            )
+          ) AS airport_factor
 
         FROM economics
       ),
@@ -365,20 +399,25 @@ export async function ACS_runFlightSettlementRuntime({
 
           ROUND(
             COALESCE(handling_base_usd, 0)
+            * handling_factor
           )::bigint AS handling_amount,
 
           ROUND(
             COALESCE(landing_fee_base_usd, 0)
+            * weight_factor
+            * airport_factor
           )::bigint AS landing_amount,
 
           ROUND(
             COALESCE(distance_nm, 0)
             * COALESCE(navigation_usd_per_nm, 0)
+            * weight_factor
           )::bigint AS navigation_amount,
 
-                    ROUND(
+          ROUND(
             COALESCE(distance_nm, 0)
             * COALESCE(overflight_usd_per_nm, 0)
+            * weight_factor
           )::bigint AS overflight_amount
 
         FROM adjusted_amounts
