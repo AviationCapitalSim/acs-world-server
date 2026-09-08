@@ -1695,6 +1695,40 @@ base_city:
           },
 
 
+          passenger_profile: {
+            source:
+              "AIRPORT_DEMAND_AUTHORITY",
+
+            economy_y:
+              ACS_AI_integer(
+                airport.demand_y
+              ),
+
+            business_c:
+              ACS_AI_integer(
+                airport.demand_c
+              ),
+
+            first_f:
+              ACS_AI_integer(
+                airport.demand_f
+              ),
+
+            total:
+              ACS_AI_integer(
+                airport.demand_y
+              )
+              +
+              ACS_AI_integer(
+                airport.demand_c
+              )
+              +
+              ACS_AI_integer(
+                airport.demand_f
+              )
+          },
+
+
           slots: {
             capacity:
               ACS_AI_integer(
@@ -1844,5 +1878,3 @@ base_city:
 
 
 export default router;
-
-
