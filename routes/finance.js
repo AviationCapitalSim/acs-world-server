@@ -327,251 +327,35 @@ return res.json({
 });
 
 /* ============================================================
-   FINANCE â€” FLIGHT EVENT CANONICAL OCC
+   ACS OCC — LEGACY FLIGHT EVENT HARD FENCE
+   ------------------------------------------------------------
+   Flight financial settlement authority:
+   routes/flight_settlement.js + PostgreSQL.
+
+   This endpoint remains registered only to reject:
+   - cached frontend versions
+   - stale browser tabs
+   - legacy callers
+   - accidental parallel settlement attempts
+
+   It must never write into:
+   - finance_log
+   - company_finance
+   - flight_occurrences
    ============================================================ */
 
-router.post("/finance/flight-event", requireAuth, async (req,res)=>{
-
-  const airline_id = req.airline_id;
-
-  const revenue          = toInt(req.body?.revenue);
-  const cost_fuel        = toInt(req.body?.cost_fuel);
-  const cost_handling    = toInt(req.body?.cost_handling);
-  const cost_slot        = toInt(req.body?.cost_slot);
-  const cost_navigation  = toInt(req.body?.cost_navigation);
-  const cost_overflight  = toInt(req.body?.cost_overflight);
-
-  const route_plan_id    = req.body?.route_plan_id || null;
-  const schedule_item_id = req.body?.schedule_item_id || null;
-
-  const reference_uid = cleanText(req.body?.reference_uid);
-
-  if (!reference_uid) {
-    return res.status(400).json({
+router.post(
+  "/finance/flight-event",
+  requireAuth,
+  (_req, res) => {
+    return res.status(410).json({
       ok: false,
-      error: "REFERENCE_UID_REQUIRED"
+      disabled: true,
+      error: "LEGACY_FLIGHT_EVENT_DISABLED",
+      authority: "POSTGRESQL_FLIGHT_SETTLEMENT_V2"
     });
   }
-
-  if (revenue < 0) {
-    return res.status(400).json({
-      ok: false,
-      error: "INVALID_REVENUE"
-    });
-  }
-
-  const airportCost =
-    cost_handling +
-    cost_slot +
-    cost_navigation +
-    cost_overflight;
-
-  const totalCost =
-    cost_fuel +
-    airportCost;
-
-  const profit =
-    revenue -
-    totalCost;
-
-  const incomeRef  = `FLIGHT:${reference_uid}:INCOME`;
-  const expenseRef = `FLIGHT:${reference_uid}:EXPENSE`;
-
-  const client = await pool.connect();
-
-  try {
-
-    await client.query("BEGIN");
-
-    await client.query(
-      `
-      INSERT INTO company_finance (airline_id, capital)
-      VALUES ($1, 1500000)
-      ON CONFLICT (airline_id)
-      DO NOTHING
-      `,
-      [airline_id]
-    );
-
-    const currentSimTimestampMs =
-    await ACS_getCurrentSimTimestampMs(client);
-    
-    const incomeLog = await client.query(
-      `
-      INSERT INTO finance_log
-      (
-        airline_id,
-        type,
-        source,
-        amount,
-        timestamp,
-        route_plan_id,
-        schedule_item_id,
-        reference_uid,
-        description
-      )
-      VALUES
-      (
-        $1,
-        'INCOME',
-        'FLIGHT_REVENUE',
-        $2,
-        $3,
-        $4,
-        $5,
-        $6,
-        $7
-      )
-      ON CONFLICT (reference_uid)
-      DO NOTHING
-      RETURNING id
-      `,
-      [
-        airline_id,
-        revenue,
-        currentSimTimestampMs,
-        route_plan_id,
-        schedule_item_id,
-        incomeRef,
-        "Flight revenue settled by ACS OCC"
-      ]
-    );
-
-    const expenseLog = await client.query(
-      `
-      INSERT INTO finance_log
-      (
-        airline_id,
-        type,
-        source,
-        amount,
-        timestamp,
-        route_plan_id,
-        schedule_item_id,
-        reference_uid,
-        description
-      )
-      VALUES
-      (
-        $1,
-        'EXPENSE',
-        'FLIGHT_COST',
-        $2,
-        $3,
-        $4,
-        $5,
-        $6,
-        $7
-      )
-      ON CONFLICT (reference_uid)
-      DO NOTHING
-      RETURNING id
-      `,
-      [
-        airline_id,
-        totalCost,
-        currentSimTimestampMs,
-        route_plan_id,
-        schedule_item_id,
-        expenseRef,
-        "Flight costs settled by ACS OCC"
-      ]
-    );
-
-    if (
-      incomeLog.rows.length === 0 &&
-      expenseLog.rows.length === 0
-    ) {
-      const snapshot = await client.query(
-        `SELECT * FROM company_finance WHERE airline_id = $1`,
-        [airline_id]
-      );
-
-      await client.query("COMMIT");
-
-      return res.json({
-        ok: true,
-        already_settled: true,
-        finance: snapshot.rows[0]
-      });
-    }
-
-    if (
-      incomeLog.rows.length !== 1 ||
-      expenseLog.rows.length !== 1
-    ) {
-      throw new Error("PARTIAL_FLIGHT_EVENT_CONFLICT");
-    }
-
-    await client.query(
-      `
-      UPDATE company_finance
-      SET
-        revenue         = COALESCE(revenue,0) + $2,
-        expenses        = COALESCE(expenses,0) + $3,
-        profit          = COALESCE(profit,0) + $4,
-        capital         = COALESCE(capital,0) + $4,
-
-        live_revenue    = COALESCE(live_revenue,0) + $2,
-
-        cost_fuel       = COALESCE(cost_fuel,0) + $5,
-        cost_handling   = COALESCE(cost_handling,0) + $6,
-        cost_slots      = COALESCE(cost_slots,0) + $7,
-        cost_navigation = COALESCE(cost_navigation,0) + $8,
-        cost_overflight = COALESCE(cost_overflight,0) + $9,
-        cost_airport    = COALESCE(cost_airport,0) + $10,
-
-        updated_at = NOW()
-      WHERE airline_id = $1
-      `,
-      [
-        airline_id,
-        revenue,
-        totalCost,
-        profit,
-        cost_fuel,
-        cost_handling,
-        cost_slot,
-        cost_navigation,
-        cost_overflight,
-        airportCost
-      ]
-    );
-
-    const snapshot = await client.query(
-      `SELECT * FROM company_finance WHERE airline_id = $1`,
-      [airline_id]
-    );
-
-    await client.query("COMMIT");
-
-    return res.json({
-      ok: true,
-      applied: true,
-      finance: snapshot.rows[0]
-    });
-
-  }
-    
-  catch(err){
-
-    await client.query("ROLLBACK");
-
-    console.error("FLIGHT EVENT ERROR",err);
-
-    return res.status(500).json({
-      ok:false,
-      error:err.message
-    });
-
-  }
-  finally {
-
-    client.release();
-
-  }
-
-});
+);
 
 /* ============================================================
    FINANCE â€” HR DEPARTMENT BONUS CANONICAL OCC
