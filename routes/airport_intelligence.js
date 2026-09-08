@@ -807,73 +807,111 @@ router.get(
          public.acs_calculate_passenger_demand.
          ======================================================== */
 
+            /* ========================================================
+         4) CANONICAL COMPANY-BASE PASSENGER MARKET
+         --------------------------------------------------------
+         Uses the authenticated company's operational base as
+         origin and the selected airport as destination.
+
+         This is the same market authority used by every
+         continental airport page.
+
+         Historical Y/C/F distribution is resolved by:
+         public.acs_calculate_passenger_demand
+         ======================================================== */
+
       const passengerProfileResult =
         await client.query(
           `
-          WITH destinations AS MATERIALIZED (
+          WITH company_context AS MATERIALIZED (
             SELECT
-              UPPER(BTRIM(airport.icao))
-                AS icao
+              UPPER(BTRIM(player.base_icao))
+                AS base_icao
 
-            FROM public.v_acs_airport_authority_current
-              airport
+            FROM public.users player
 
-            WHERE airport.passenger_route_allowed = TRUE
+            WHERE player.user_id = $1
+              AND player.airline_id = $2
+              AND player.base_icao IS NOT NULL
+              AND BTRIM(player.base_icao) <> ''
 
-              AND UPPER(BTRIM(airport.icao)) <> $1
+            LIMIT 1
           ),
-          markets AS MATERIALIZED (
+          eligible_market AS MATERIALIZED (
             SELECT
+              company.base_icao
+
+            FROM company_context company
+
+            WHERE company.base_icao <> $3
+          ),
+          passenger_market AS MATERIALIZED (
+            SELECT
+              demand.origin_icao,
+              demand.destination_icao,
               demand.sim_year,
               demand.period_code,
+              demand.market_scope,
+              demand.distance_nm,
               demand.weekly_y,
               demand.weekly_c,
               demand.weekly_f,
-              demand.weekly_total
+              demand.weekly_total,
+              demand.average_daily
 
-            FROM destinations destination
+            FROM eligible_market company
 
             CROSS JOIN LATERAL
               public.acs_calculate_passenger_demand(
-                $1,
-                destination.icao,
-                $2::TIMESTAMP
+                company.base_icao,
+                $3,
+                $4::TIMESTAMP
               ) demand
           )
 
           SELECT
+            company.base_icao
+              AS origin_icao,
+
+            $3::TEXT
+              AS destination_icao,
+
             COALESCE(
-              SUM(markets.weekly_y),
+              market.weekly_y,
               0
-            )::BIGINT
+            )::INTEGER
               AS economy_y,
 
             COALESCE(
-              SUM(markets.weekly_c),
+              market.weekly_c,
               0
-            )::BIGINT
+            )::INTEGER
               AS business_c,
 
             COALESCE(
-              SUM(markets.weekly_f),
+              market.weekly_f,
               0
-            )::BIGINT
+            )::INTEGER
               AS first_f,
 
             COALESCE(
-              SUM(markets.weekly_total),
+              market.weekly_total,
               0
-            )::BIGINT
+            )::INTEGER
               AS total,
 
-            COUNT(*)::INTEGER
+            CASE
+              WHEN market.destination_icao IS NULL
+                THEN 0
+              ELSE 1
+            END::INTEGER
               AS evaluated_markets,
 
-            MAX(markets.sim_year)::INTEGER
-              AS sim_year,
-
-            MAX(markets.period_code)
-              AS period_code,
+            market.sim_year,
+            market.period_code,
+            market.market_scope,
+            market.distance_nm,
+            market.average_daily,
 
             (
               SELECT
@@ -888,14 +926,18 @@ router.get(
             )
               AS model_version
 
-          FROM markets
+          FROM company_context company
+
+          LEFT JOIN passenger_market market
+            ON TRUE
           `,
           [
+            req.user_id,
+            airlineId,
             icao,
             currentSimTime
           ]
         );
-
 
       /* ========================================================
          5) PASSENGER MOVEMENT — CURRENT ACS MONTH
