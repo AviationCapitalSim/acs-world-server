@@ -2939,7 +2939,7 @@ if (oldScheduleItemIds.length) {
     ORDER BY id
     FOR UPDATE
     `,
-    [airlineId, oldScheduleItemIds, officialTime.sim_time]
+   [airlineId, oldScheduleItemIds, officialTime.current_sim_time_iso]
   );
 
   const activeOccurrences = oldOccurrencesResult.rows.filter(
@@ -3095,7 +3095,7 @@ if (oldOccurrenceIds.length) {
       AND UPPER(COALESCE(passenger_result.result_status, '')) <> 'CONSUMED'
       AND passenger_result.consumed_at_sim IS NULL
     `,
-    [airlineId, oldOccurrenceIds, officialTime.sim_time]
+    [airlineId, oldScheduleItemIds, officialTime.current_sim_time_iso]
   );
 
   cleanupSummary.passenger_results =
@@ -3112,7 +3112,7 @@ if (oldOccurrenceIds.length) {
       AND operational_status = 'PLANNED'
       AND settled_at IS NULL
     `,
-    [airlineId, oldOccurrenceIds, officialTime.sim_time]
+    [airlineId, oldScheduleItemIds, officialTime.current_sim_time_iso]
   );
 
   cleanupSummary.flight_occurrences =
