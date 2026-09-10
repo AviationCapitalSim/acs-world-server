@@ -1850,12 +1850,16 @@ async function ACS_compactHistoricalPassengerMarkets(
   );
 
   await ACS_assertNoUserTriggers(
-    client,
-    [
-      "public.acs_passenger_market_daily",
-      "public.acs_passenger_flight_results"
-    ]
-  );
+  client,
+  [
+    "public.acs_passenger_market_daily",
+    "public.acs_passenger_flight_results"
+  ],
+  [
+    "INSERT",
+    "TRUNCATE"
+  ]
+);
 
   await client.query(`
     LOCK TABLE
