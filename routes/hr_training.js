@@ -804,8 +804,8 @@ async function completeDuePilotTraining(
 /* ============================================================
    ACS HR TRAINING — PERSONNEL CYCLE BOUNDARIES
    ------------------------------------------------------------
-   • First cycle closes at the start of simulation day 16
-   • Second cycle closes at the start of the following month
+   • First charge: simulation day 15
+   • Second charge: final simulation day of the month
    • PostgreSQL calculates every crossed boundary
    ============================================================ */
 
@@ -823,6 +823,7 @@ async function getPersonnelTrainingBoundaries(
         ) AS previous_sim_time,
         $2::TIMESTAMP AS current_sim_time
     ),
+
     months AS (
       SELECT GENERATE_SERIES(
         DATE_TRUNC(
@@ -837,6 +838,7 @@ async function getPersonnelTrainingBoundaries(
       )::TIMESTAMP AS month_start
       FROM limits
     ),
+
     boundaries AS (
       SELECT
         EXTRACT(
@@ -848,6 +850,7 @@ async function getPersonnelTrainingBoundaries(
         )::INTEGER AS cycle_month,
 
         1::INTEGER AS cycle_half,
+
         month_start AS period_start_sim,
 
         month_start +
@@ -865,11 +868,11 @@ async function getPersonnelTrainingBoundaries(
       SELECT
         EXTRACT(
           YEAR FROM month_start
-        )::INTEGER,
+        )::INTEGER AS cycle_year,
 
         EXTRACT(
           MONTH FROM month_start
-        )::INTEGER,
+        )::INTEGER AS cycle_month,
 
         2::INTEGER AS cycle_half,
 
@@ -889,6 +892,7 @@ async function getPersonnelTrainingBoundaries(
 
       FROM months
     )
+
     SELECT
       boundaries.cycle_year,
       boundaries.cycle_month,
