@@ -704,10 +704,30 @@ router.get("/aircraft/fleet", requireAuth, async (req, res) => {
         af.condition_pct,
         af.maintenance_status,
         af.purchase_price,
-        af.current_value,
-        af.currency,
-        af.created_at,
-        af.updated_at,
+af.current_value,
+af.currency,
+
+/* =====================================================
+   ACS CABIN CONFIGURATION — AIRCRAFT FLEET AUTHORITY
+   ===================================================== */
+
+af.cabin_rules_version,
+af.cabin_configuration_source,
+
+af.y_product,
+af.y_seats,
+
+af.c_product,
+af.c_seats,
+
+af.f_product,
+af.f_seats,
+
+af.cabin_capacity_units,
+af.cabin_configured_at,
+
+af.created_at,
+af.updated_at,
 
          /* =====================================================
            AIRCRAFT CATALOG — TECHNICAL REFERENCE
