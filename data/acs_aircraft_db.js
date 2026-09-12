@@ -5173,7 +5173,7 @@ const ACS_AIRCRAFT_DB = [
     required_runway_m: 2700
   },
   {
-    manufacturer: "British Aircraft Corporation",
+    manufacturer: "BAC",
     model: "One-Eleven 500",
     year: 1969,
     seats: 119,
