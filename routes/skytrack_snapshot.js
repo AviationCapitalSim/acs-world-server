@@ -109,11 +109,12 @@ router.get("/snapshot", requireAuth, async (req, res) => {
 
       fleet AS MATERIALIZED (
         SELECT
-          af.airline_id,
-          al.airline_name,
-          al.iata,
-          al.icao,
-          COALESCE(al.color_hex, '#3A5FFF') AS color_hex,
+  af.airline_id,
+  al.airline_name,
+  al.iata,
+  al.icao,
+  al.callsign,
+  COALESCE(al.color_hex, '#3A5FFF') AS color_hex,
           COALESCE(al.color_hsl, 'hsl(220,70%,50%)') AS color_hsl,
           COALESCE(al.color_index, 0) AS color_index,
 
@@ -520,8 +521,9 @@ router.get("/snapshot", requireAuth, async (req, res) => {
         airlineId: String(row.airline_id),
         airline_id: String(row.airline_id),
         airlineName: row.airline_name || null,
-        airlineIata: row.iata || null,
-        airlineIcao: row.icao || null,
+airlineIata: row.iata || null,
+airlineIcao: row.icao || null,
+airlineCallsign: row.callsign || null,
 
         airlineColorHex:
         airlineIdentityColor.hex,
