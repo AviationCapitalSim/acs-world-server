@@ -70,11 +70,12 @@ router.get("/finance", requireAuth, async (req, res) => {
     const depreciationDisplayResult = await client.query(
       `
       SELECT
-        month_key,
-        cost_depreciation,
-        cost_insurance,
-        cost_leasing,
-        cost_taxes
+       month_key,
+       cost_depreciation,
+       cost_insurance,
+       cost_leasing,
+       cost_taxes,
+       cost_training_qualification
       FROM public.finance_history
       WHERE airline_id = $1
         AND record_kind = 'MONTHLY_CLOSE'
@@ -98,16 +99,33 @@ router.get("/finance", requireAuth, async (req, res) => {
               .cost_depreciation || 0
           );
 
-    financeResult.rows[0].cost_insurance_display =
-      depreciationDisplayResult.rows.length
+    financeResult.rows[0].cost_taxes_display =
+  depreciationDisplayResult.rows.length
+    ? Number(
+        depreciationDisplayResult.rows[0]
+          .cost_taxes || 0
+      )
+    : Number(
+        financeResult.rows[0]
+          .cost_taxes || 0
+      );
+
+const currentTrainingQualification =
+  Number(
+    financeResult.rows[0]
+      .cost_training_qualification || 0
+  );
+
+financeResult.rows[0]
+  .cost_training_qualification_display =
+    currentTrainingQualification > 0
+      ? currentTrainingQualification
+      : depreciationDisplayResult.rows.length
         ? Number(
             depreciationDisplayResult.rows[0]
-              .cost_insurance || 0
+              .cost_training_qualification || 0
           )
-        : Number(
-            financeResult.rows[0]
-              .cost_insurance || 0
-          );
+        : 0;
 
       financeResult.rows[0].cost_leasing_display =
       depreciationDisplayResult.rows.length
