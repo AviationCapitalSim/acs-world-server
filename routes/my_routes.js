@@ -103,22 +103,53 @@ function ACS_MR_buildTrend(current, previous) {
 }
 
 function ACS_MR_normalizeDemand(row, prefix) {
+  const weeklyY = ACS_MR_integer(
+    row?.[`${prefix}_weekly_y`]
+  );
+
+  const weeklyC = ACS_MR_integer(
+    row?.[`${prefix}_weekly_c`]
+  );
+
+  const weeklyF = ACS_MR_integer(
+    row?.[`${prefix}_weekly_f`]
+  );
+
+  const weeklyTotal = ACS_MR_integer(
+    row?.[`${prefix}_weekly_total`]
+  );
+
   return {
     origin: row?.[`${prefix}_origin_icao`] || null,
     destination: row?.[`${prefix}_destination_icao`] || null,
     sim_year: ACS_MR_integer(row?.[`${prefix}_sim_year`]),
     period_code: row?.[`${prefix}_period_code`] || null,
     market_scope: row?.[`${prefix}_market_scope`] || null,
-    distance_nm: ACS_MR_integer(row?.[`${prefix}_distance_nm`]),
-    weekly_y: ACS_MR_integer(row?.[`${prefix}_weekly_y`]),
-    weekly_c: ACS_MR_integer(row?.[`${prefix}_weekly_c`]),
-    weekly_f: ACS_MR_integer(row?.[`${prefix}_weekly_f`]),
-    weekly_total: ACS_MR_integer(row?.[`${prefix}_weekly_total`]),
-    average_daily: ACS_MR_number(row?.[`${prefix}_average_daily`]),
+    distance_nm: ACS_MR_integer(
+      row?.[`${prefix}_distance_nm`]
+    ),
+
+    weekly_y: weeklyY,
+    weekly_c: weeklyC,
+    weekly_f: weeklyF,
+    weekly_total: weeklyTotal,
+
+    daily_y:
+      Math.round((weeklyY / 7) * 100) / 100,
+
+    daily_c:
+      Math.round((weeklyC / 7) * 100) / 100,
+
+    daily_f:
+      Math.round((weeklyF / 7) * 100) / 100,
+
+    average_daily: ACS_MR_number(
+      row?.[`${prefix}_average_daily`]
+    ),
+
     authority: "POSTGRESQL_PASSENGER_MARKET_AUTHORITY"
   };
 }
-
 function ACS_MR_allocatePassengerRevenue(row) {
   const totalRevenue = Math.max(
     0,
