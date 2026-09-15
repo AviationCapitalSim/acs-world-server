@@ -51,21 +51,54 @@ function ACS_MR_emptyPeriod() {
 }
 
 function ACS_MR_normalizePeriod(row, prefix) {
-  const flights = ACS_MR_integer(row?.[`${prefix}_flights`]);
-  const passengers = ACS_MR_integer(row?.[`${prefix}_passengers`]);
-  const availableSeats = ACS_MR_integer(row?.[`${prefix}_available_seats`]);
+  const flights = ACS_MR_integer(
+    row?.[`${prefix}_flights`]
+  );
+
+  const passengers = ACS_MR_integer(
+    row?.[`${prefix}_passengers`]
+  );
+
+  const availableSeats = ACS_MR_integer(
+    row?.[`${prefix}_available_seats`]
+  );
 
   return {
     flights,
     passengers,
+
+    captured_y: ACS_MR_integer(
+      row?.[`${prefix}_captured_y`]
+    ),
+
+    captured_c: ACS_MR_integer(
+      row?.[`${prefix}_captured_c`]
+    ),
+
+    captured_f: ACS_MR_integer(
+      row?.[`${prefix}_captured_f`]
+    ),
+
     available_seats: availableSeats,
+
     load_factor:
       availableSeats > 0
-        ? Math.round((passengers / availableSeats) * 10000) / 10000
+        ? Math.round(
+            (passengers / availableSeats) * 10000
+          ) / 10000
         : 0,
-    revenue: ACS_MR_integer(row?.[`${prefix}_revenue`]),
-    expenses: ACS_MR_integer(row?.[`${prefix}_expenses`]),
-    profit: ACS_MR_integer(row?.[`${prefix}_profit`])
+
+    revenue: ACS_MR_integer(
+      row?.[`${prefix}_revenue`]
+    ),
+
+    expenses: ACS_MR_integer(
+      row?.[`${prefix}_expenses`]
+    ),
+
+    profit: ACS_MR_integer(
+      row?.[`${prefix}_profit`]
+    )
   };
 }
 
@@ -150,6 +183,7 @@ function ACS_MR_normalizeDemand(row, prefix) {
     authority: "POSTGRESQL_PASSENGER_MARKET_AUTHORITY"
   };
 }
+
 function ACS_MR_allocatePassengerRevenue(row) {
   const totalRevenue = Math.max(
     0,
@@ -410,143 +444,201 @@ if (!airline) {
         [airlineId, currentSimTime]
       );
        
-            const performanceResult = await client.query(
-        `
-        WITH clock AS MATERIALIZED (
-          SELECT $2::timestamp AS sim_time
-        )
-        SELECT
-          occurrence.route_plan_id,
-          occurrence.flight_direction,
+      const performanceResult = await client.query(
+  `
+  WITH clock AS MATERIALIZED (
+    SELECT $2::timestamp AS sim_time
+  )
 
-          COUNT(*) FILTER (
-            WHERE occurrence.arrived_at >=
-                    clock.sim_time - INTERVAL '7 days'
-              AND occurrence.arrived_at < clock.sim_time
-          )::integer AS current_flights,
+  SELECT
+    occurrence.route_plan_id,
+    occurrence.flight_direction,
 
-          COALESCE(
-            SUM(occurrence.settled_passengers) FILTER (
-              WHERE occurrence.arrived_at >=
-                      clock.sim_time - INTERVAL '7 days'
-                AND occurrence.arrived_at < clock.sim_time
-            ),
-            0
-          )::bigint AS current_passengers,
+    COUNT(*) FILTER (
+      WHERE occurrence.arrived_at >=
+              clock.sim_time - INTERVAL '7 days'
+        AND occurrence.arrived_at < clock.sim_time
+    )::integer AS current_flights,
 
-          COALESCE(
-            SUM(passenger_result.offered_seats) FILTER (
-              WHERE occurrence.arrived_at >=
-                      clock.sim_time - INTERVAL '7 days'
-                AND occurrence.arrived_at < clock.sim_time
-            ),
-            0
-          )::bigint AS current_available_seats,
-
-          COALESCE(
-            SUM(occurrence.settled_revenue) FILTER (
-              WHERE occurrence.arrived_at >=
-                      clock.sim_time - INTERVAL '7 days'
-                AND occurrence.arrived_at < clock.sim_time
-            ),
-            0
-          )::bigint AS current_revenue,
-
-          COALESCE(
-            SUM(occurrence.settled_expenses) FILTER (
-              WHERE occurrence.arrived_at >=
-                      clock.sim_time - INTERVAL '7 days'
-                AND occurrence.arrived_at < clock.sim_time
-            ),
-            0
-          )::bigint AS current_expenses,
-
-          COALESCE(
-            SUM(occurrence.settled_profit) FILTER (
-              WHERE occurrence.arrived_at >=
-                      clock.sim_time - INTERVAL '7 days'
-                AND occurrence.arrived_at < clock.sim_time
-            ),
-            0
-          )::bigint AS current_profit,
-
-          COUNT(*) FILTER (
-            WHERE occurrence.arrived_at >=
-                    clock.sim_time - INTERVAL '14 days'
-              AND occurrence.arrived_at <
-                    clock.sim_time - INTERVAL '7 days'
-          )::integer AS previous_flights,
-
-          COALESCE(
-            SUM(occurrence.settled_passengers) FILTER (
-              WHERE occurrence.arrived_at >=
-                      clock.sim_time - INTERVAL '14 days'
-                AND occurrence.arrived_at <
-                      clock.sim_time - INTERVAL '7 days'
-            ),
-            0
-          )::bigint AS previous_passengers,
-
-          COALESCE(
-            SUM(passenger_result.offered_seats) FILTER (
-              WHERE occurrence.arrived_at >=
-                      clock.sim_time - INTERVAL '14 days'
-                AND occurrence.arrived_at <
-                      clock.sim_time - INTERVAL '7 days'
-            ),
-            0
-          )::bigint AS previous_available_seats,
-
-          COALESCE(
-            SUM(occurrence.settled_revenue) FILTER (
-              WHERE occurrence.arrived_at >=
-                      clock.sim_time - INTERVAL '14 days'
-                AND occurrence.arrived_at <
-                      clock.sim_time - INTERVAL '7 days'
-            ),
-            0
-          )::bigint AS previous_revenue,
-
-          COALESCE(
-            SUM(occurrence.settled_expenses) FILTER (
-              WHERE occurrence.arrived_at >=
-                      clock.sim_time - INTERVAL '14 days'
-                AND occurrence.arrived_at <
-                      clock.sim_time - INTERVAL '7 days'
-            ),
-            0
-          )::bigint AS previous_expenses,
-
-          COALESCE(
-            SUM(occurrence.settled_profit) FILTER (
-              WHERE occurrence.arrived_at >=
-                      clock.sim_time - INTERVAL '14 days'
-                AND occurrence.arrived_at <
-                      clock.sim_time - INTERVAL '7 days'
-            ),
-            0
-          )::bigint AS previous_profit
-
-        FROM public.flight_occurrences occurrence
-
-        JOIN public.acs_passenger_flight_results passenger_result
-          ON passenger_result.occurrence_id = occurrence.id
-         AND passenger_result.result_status = 'CONSUMED'
-
-        CROSS JOIN clock
-
-        WHERE occurrence.airline_id = $1
-          AND occurrence.arrived_at >=
-                clock.sim_time - INTERVAL '14 days'
+    COALESCE(
+      SUM(occurrence.settled_passengers) FILTER (
+        WHERE occurrence.arrived_at >=
+                clock.sim_time - INTERVAL '7 days'
           AND occurrence.arrived_at < clock.sim_time
-          AND occurrence.settled_at IS NOT NULL
+      ),
+      0
+    )::bigint AS current_passengers,
 
-        GROUP BY
-          occurrence.route_plan_id,
-          occurrence.flight_direction
-        `,
-        [airlineId, currentSimTime]
-      );
+    COALESCE(
+      SUM(passenger_result.captured_y) FILTER (
+        WHERE occurrence.arrived_at >=
+                clock.sim_time - INTERVAL '7 days'
+          AND occurrence.arrived_at < clock.sim_time
+      ),
+      0
+    )::bigint AS current_captured_y,
+
+    COALESCE(
+      SUM(passenger_result.captured_c) FILTER (
+        WHERE occurrence.arrived_at >=
+                clock.sim_time - INTERVAL '7 days'
+          AND occurrence.arrived_at < clock.sim_time
+      ),
+      0
+    )::bigint AS current_captured_c,
+
+    COALESCE(
+      SUM(passenger_result.captured_f) FILTER (
+        WHERE occurrence.arrived_at >=
+                clock.sim_time - INTERVAL '7 days'
+          AND occurrence.arrived_at < clock.sim_time
+      ),
+      0
+    )::bigint AS current_captured_f,
+
+    COALESCE(
+      SUM(passenger_result.offered_seats) FILTER (
+        WHERE occurrence.arrived_at >=
+                clock.sim_time - INTERVAL '7 days'
+          AND occurrence.arrived_at < clock.sim_time
+      ),
+      0
+    )::bigint AS current_available_seats,
+
+    COALESCE(
+      SUM(occurrence.settled_revenue) FILTER (
+        WHERE occurrence.arrived_at >=
+                clock.sim_time - INTERVAL '7 days'
+          AND occurrence.arrived_at < clock.sim_time
+      ),
+      0
+    )::bigint AS current_revenue,
+
+    COALESCE(
+      SUM(occurrence.settled_expenses) FILTER (
+        WHERE occurrence.arrived_at >=
+                clock.sim_time - INTERVAL '7 days'
+          AND occurrence.arrived_at < clock.sim_time
+      ),
+      0
+    )::bigint AS current_expenses,
+
+    COALESCE(
+      SUM(occurrence.settled_profit) FILTER (
+        WHERE occurrence.arrived_at >=
+                clock.sim_time - INTERVAL '7 days'
+          AND occurrence.arrived_at < clock.sim_time
+      ),
+      0
+    )::bigint AS current_profit,
+
+    COUNT(*) FILTER (
+      WHERE occurrence.arrived_at >=
+              clock.sim_time - INTERVAL '14 days'
+        AND occurrence.arrived_at <
+              clock.sim_time - INTERVAL '7 days'
+    )::integer AS previous_flights,
+
+    COALESCE(
+      SUM(occurrence.settled_passengers) FILTER (
+        WHERE occurrence.arrived_at >=
+                clock.sim_time - INTERVAL '14 days'
+          AND occurrence.arrived_at <
+                clock.sim_time - INTERVAL '7 days'
+      ),
+      0
+    )::bigint AS previous_passengers,
+
+    COALESCE(
+      SUM(passenger_result.captured_y) FILTER (
+        WHERE occurrence.arrived_at >=
+                clock.sim_time - INTERVAL '14 days'
+          AND occurrence.arrived_at <
+                clock.sim_time - INTERVAL '7 days'
+      ),
+      0
+    )::bigint AS previous_captured_y,
+
+    COALESCE(
+      SUM(passenger_result.captured_c) FILTER (
+        WHERE occurrence.arrived_at >=
+                clock.sim_time - INTERVAL '14 days'
+          AND occurrence.arrived_at <
+                clock.sim_time - INTERVAL '7 days'
+      ),
+      0
+    )::bigint AS previous_captured_c,
+
+    COALESCE(
+      SUM(passenger_result.captured_f) FILTER (
+        WHERE occurrence.arrived_at >=
+                clock.sim_time - INTERVAL '14 days'
+          AND occurrence.arrived_at <
+                clock.sim_time - INTERVAL '7 days'
+      ),
+      0
+    )::bigint AS previous_captured_f,
+
+    COALESCE(
+      SUM(passenger_result.offered_seats) FILTER (
+        WHERE occurrence.arrived_at >=
+                clock.sim_time - INTERVAL '14 days'
+          AND occurrence.arrived_at <
+                clock.sim_time - INTERVAL '7 days'
+      ),
+      0
+    )::bigint AS previous_available_seats,
+
+    COALESCE(
+      SUM(occurrence.settled_revenue) FILTER (
+        WHERE occurrence.arrived_at >=
+                clock.sim_time - INTERVAL '14 days'
+          AND occurrence.arrived_at <
+                clock.sim_time - INTERVAL '7 days'
+      ),
+      0
+    )::bigint AS previous_revenue,
+
+    COALESCE(
+      SUM(occurrence.settled_expenses) FILTER (
+        WHERE occurrence.arrived_at >=
+                clock.sim_time - INTERVAL '14 days'
+          AND occurrence.arrived_at <
+                clock.sim_time - INTERVAL '7 days'
+      ),
+      0
+    )::bigint AS previous_expenses,
+
+    COALESCE(
+      SUM(occurrence.settled_profit) FILTER (
+        WHERE occurrence.arrived_at >=
+                clock.sim_time - INTERVAL '14 days'
+          AND occurrence.arrived_at <
+                clock.sim_time - INTERVAL '7 days'
+      ),
+      0
+    )::bigint AS previous_profit
+
+  FROM public.flight_occurrences occurrence
+
+  JOIN public.acs_passenger_flight_results passenger_result
+    ON passenger_result.occurrence_id = occurrence.id
+   AND passenger_result.result_status = 'CONSUMED'
+
+  CROSS JOIN clock
+
+  WHERE occurrence.airline_id = $1
+    AND occurrence.arrived_at >=
+          clock.sim_time - INTERVAL '14 days'
+    AND occurrence.arrived_at < clock.sim_time
+    AND occurrence.settled_at IS NOT NULL
+
+  GROUP BY
+    occurrence.route_plan_id,
+    occurrence.flight_direction
+  `,
+  [airlineId, currentSimTime]
+);
 
    const classRevenueResult = await client.query(
         `
