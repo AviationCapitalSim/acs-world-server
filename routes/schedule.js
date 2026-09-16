@@ -1587,7 +1587,8 @@ const anotherCheckAlreadyInProgress =
 const immediateStart =
   requestedCheckIsOverdue &&
   !higherCheckBlocksImmediateStart &&
-  !anotherCheckAlreadyInProgress;
+  !anotherCheckAlreadyInProgress &&
+  !aircraftInCabinMaintenance;
 
 /* ========================================================
    B DOMINANCE — ACS AIRBUS OCC
