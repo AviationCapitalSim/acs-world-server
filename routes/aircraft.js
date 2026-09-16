@@ -1114,6 +1114,566 @@ router.put(
 );
 
 /* ============================================================
+   🟦 MY AIRCRAFT — CABIN MAINTENANCE START AUTHORITY v1.0
+   ------------------------------------------------------------
+   Route:
+   POST /v1/aircraft/fleet/:id/cabin-maintenance/start
+
+   Purpose:
+   - Start real Cabin Maintenance from My Aircraft.
+   - PostgreSQL is the cabin-maintenance authority.
+   - Aircraft category is derived by backend.
+   - Charge Company Finance only when the order starts.
+   - Register finance_log.
+   - Entire operation is transactional.
+   - No frontend finance mutation.
+   ============================================================ */
+
+router.post(
+  "/aircraft/fleet/:id/cabin-maintenance/start",
+  requireAuth,
+  async (req, res) => {
+    const client = await pool.connect();
+
+    try {
+      const airlineId =
+        Number(req.airline_id);
+
+      const aircraftId =
+        Number(req.params.id);
+
+      if (
+        !Number.isInteger(airlineId) ||
+        airlineId <= 0
+      ) {
+        return res.status(401).json({
+          ok: false,
+          error: "NO_AIRLINE_SESSION"
+        });
+      }
+
+      if (
+        !Number.isInteger(aircraftId) ||
+        aircraftId <= 0
+      ) {
+        return res.status(400).json({
+          ok: false,
+          error: "INVALID_AIRCRAFT_ID"
+        });
+      }
+
+      await client.query("BEGIN");
+
+      /* ============================================================
+         1) LOAD + LOCK AIRCRAFT
+         ============================================================ */
+
+      const aircraftResult =
+        await client.query(
+          `
+          SELECT
+            af.id,
+            af.airline_id,
+            af.registration,
+            af.aircraft_name,
+            af.model_key,
+            af.status,
+            af.operational_status,
+
+            af.y_product,
+            af.y_seats,
+            af.c_product,
+            af.c_seats,
+            af.f_product,
+            af.f_seats,
+
+            ac.seats AS catalog_seats
+
+          FROM public.aircraft_fleet af
+
+          LEFT JOIN public.aircraft_catalog ac
+            ON ac.model_key = af.model_key
+
+          WHERE af.id = $1::BIGINT
+            AND af.airline_id = $2::INTEGER
+
+          FOR UPDATE OF af
+          `,
+          [
+            aircraftId,
+            airlineId
+          ]
+        );
+
+      if (aircraftResult.rowCount !== 1) {
+        await client.query("ROLLBACK");
+
+        return res.status(404).json({
+          ok: false,
+          error: "AIRCRAFT_NOT_FOUND"
+        });
+      }
+
+      const aircraft =
+        aircraftResult.rows[0];
+
+      /* ============================================================
+         2) DERIVE CABIN AIRCRAFT CATEGORY — BACKEND AUTHORITY
+         ------------------------------------------------------------
+         Same global ACS cabin categories:
+         SMALL       < 40 seats
+         MEDIUM      40–99
+         LARGE       100–249
+         EXTRA_LARGE 250+
+         ============================================================ */
+
+      const passengerCapacity =
+        Number(
+          aircraft.catalog_seats || 0
+        );
+
+      if (
+        !Number.isFinite(passengerCapacity) ||
+        passengerCapacity <= 0
+      ) {
+        await client.query("ROLLBACK");
+
+        return res.status(409).json({
+          ok: false,
+          error:
+            "AIRCRAFT_HAS_NO_PASSENGER_CABIN"
+        });
+      }
+
+      let aircraftCategory =
+        "SMALL";
+
+      if (passengerCapacity >= 250) {
+        aircraftCategory =
+          "EXTRA_LARGE";
+      } else if (passengerCapacity >= 100) {
+        aircraftCategory =
+          "LARGE";
+      } else if (passengerCapacity >= 40) {
+        aircraftCategory =
+          "MEDIUM";
+      }
+
+      /* ============================================================
+         3) NORMALIZE REQUESTED CABIN
+         ============================================================ */
+
+      const yProduct =
+        String(
+          req.body?.Y?.product ??
+          req.body?.y_product ??
+          ""
+        )
+          .trim()
+          .toUpperCase();
+
+      const ySeats =
+        Number(
+          req.body?.Y?.seats ??
+          req.body?.y_seats
+        );
+
+      const cProduct =
+        String(
+          req.body?.C?.product ??
+          req.body?.c_product ??
+          ""
+        )
+          .trim()
+          .toUpperCase();
+
+      const cSeats =
+        Number(
+          req.body?.C?.seats ??
+          req.body?.c_seats
+        );
+
+      const fProduct =
+        String(
+          req.body?.F?.product ??
+          req.body?.f_product ??
+          ""
+        )
+          .trim()
+          .toUpperCase();
+
+      const fSeats =
+        Number(
+          req.body?.F?.seats ??
+          req.body?.f_seats
+        );
+
+      if (
+        !yProduct ||
+        !cProduct ||
+        !fProduct ||
+        !Number.isInteger(ySeats) ||
+        !Number.isInteger(cSeats) ||
+        !Number.isInteger(fSeats) ||
+        ySeats < 0 ||
+        cSeats < 0 ||
+        fSeats < 0
+      ) {
+        await client.query("ROLLBACK");
+
+        return res.status(400).json({
+          ok: false,
+          error:
+            "INVALID_CABIN_CONFIGURATION"
+        });
+      }
+
+      /* ============================================================
+         4) START CANONICAL POSTGRESQL CABIN MAINTENANCE
+         ------------------------------------------------------------
+         This function:
+         - validates aircraft availability
+         - rejects technical maintenance conflicts
+         - calculates canonical quote
+         - creates aircraft_cabin_maintenance
+         - moves operational_status to CABIN_MAINTENANCE
+         ============================================================ */
+
+      const cabinMaintenanceResult =
+        await client.query(
+          `
+          SELECT *
+          FROM public.acs_start_cabin_maintenance(
+            $1::INTEGER,
+            $2::BIGINT,
+            $3::TEXT,
+            $4::TEXT,
+            $5::INTEGER,
+            $6::TEXT,
+            $7::INTEGER,
+            $8::TEXT,
+            $9::INTEGER
+          )
+          `,
+          [
+            airlineId,
+            aircraftId,
+            aircraftCategory,
+
+            yProduct,
+            ySeats,
+
+            cProduct,
+            cSeats,
+
+            fProduct,
+            fSeats
+          ]
+        );
+
+      if (
+        cabinMaintenanceResult.rowCount !== 1
+      ) {
+        throw new Error(
+          "CABIN_MAINTENANCE_START_FAILED"
+        );
+      }
+
+      const cabinOrder =
+        cabinMaintenanceResult.rows[0];
+
+      const finalCost =
+        Math.round(
+          Number(
+            cabinOrder.final_cost || 0
+          )
+        );
+
+      const durationHours =
+        Number(
+          cabinOrder.duration_hours || 0
+        );
+
+      if (
+        !Number.isFinite(finalCost) ||
+        finalCost < 0
+      ) {
+        throw new Error(
+          "INVALID_CABIN_MAINTENANCE_COST"
+        );
+      }
+
+      /* ============================================================
+         5) LOCK COMPANY FINANCE
+         ============================================================ */
+
+      const financeResult =
+        await client.query(
+          `
+          SELECT
+            *
+          FROM public.company_finance
+          WHERE airline_id = $1
+          FOR UPDATE
+          `,
+          [airlineId]
+        );
+
+      if (!financeResult.rows.length) {
+        await client.query("ROLLBACK");
+
+        return res.status(409).json({
+          ok: false,
+          error:
+            "COMPANY_FINANCE_NOT_FOUND"
+        });
+      }
+
+      const capitalBefore =
+        Math.round(
+          Number(
+            financeResult.rows[0]
+              ?.capital || 0
+          )
+        );
+
+      if (capitalBefore < finalCost) {
+        await client.query("ROLLBACK");
+
+        return res.status(400).json({
+          ok: false,
+          error:
+            "INSUFFICIENT_CAPITAL_FOR_CABIN_MAINTENANCE",
+          capital:
+            capitalBefore,
+          required:
+            finalCost
+        });
+      }
+
+      /* ============================================================
+         6) FINANCE LOG
+         ============================================================ */
+
+      let financeLogId =
+        null;
+
+      if (finalCost > 0) {
+        const financeLogResult =
+          await client.query(
+            `
+            INSERT INTO public.finance_log (
+              airline_id,
+              type,
+              source,
+              amount,
+              timestamp
+            )
+            VALUES (
+              $1,
+              'EXPENSE',
+              $2,
+              $3,
+              (
+                EXTRACT(
+                  EPOCH FROM
+                  acs_get_current_sim_time()
+                ) * 1000
+              )::BIGINT
+            )
+            RETURNING id
+            `,
+            [
+              airlineId,
+
+              `CABIN RECONFIGURATION — ${
+                aircraft.registration ||
+                aircraft.aircraft_name ||
+                `AIRCRAFT ${aircraftId}`
+              }`,
+
+              finalCost
+            ]
+          );
+
+        financeLogId =
+          financeLogResult.rows[0]?.id ??
+          null;
+
+        /* ============================================================
+           7) COMPANY FINANCE
+           ============================================================ */
+
+        await client.query(
+          `
+          UPDATE public.company_finance
+          SET
+            capital =
+              COALESCE(capital, 0) - $2,
+
+            expenses =
+              COALESCE(expenses, 0) + $2,
+
+            profit =
+              COALESCE(profit, 0) - $2,
+
+            cost_maintenance =
+              COALESCE(
+                cost_maintenance,
+                0
+              ) + $2,
+
+            updated_at =
+              NOW()
+
+          WHERE airline_id = $1
+          `,
+          [
+            airlineId,
+            finalCost
+          ]
+        );
+      }
+
+      /* ============================================================
+         8) FINAL AUTHORITATIVE SNAPSHOT
+         ============================================================ */
+
+      const finalAircraftResult =
+        await client.query(
+          `
+          SELECT
+            id,
+            registration,
+            status,
+            operational_status,
+            maintenance_status
+
+          FROM public.aircraft_fleet
+
+          WHERE id = $1
+            AND airline_id = $2
+          `,
+          [
+            aircraftId,
+            airlineId
+          ]
+        );
+
+      const financeAfterResult =
+        await client.query(
+          `
+          SELECT
+            capital,
+            expenses,
+            profit,
+            cost_maintenance
+
+          FROM public.company_finance
+
+          WHERE airline_id = $1
+          `,
+          [airlineId]
+        );
+
+      await client.query("COMMIT");
+
+      return res.json({
+        ok: true,
+
+        endpoint:
+          "ACS_CABIN_MAINTENANCE_START",
+
+        authority:
+          "aircraft_cabin_maintenance",
+
+        aircraft_category:
+          aircraftCategory,
+
+        order:
+          cabinOrder,
+
+        cost: {
+          final_cost:
+            finalCost,
+
+          duration_hours:
+            durationHours,
+
+          currency:
+            "USD",
+
+          finance_log_id:
+            financeLogId
+        },
+
+        aircraft:
+          finalAircraftResult.rows[0] ||
+          null,
+
+        finance:
+          financeAfterResult.rows[0] ||
+          null
+      });
+
+    } catch (error) {
+      try {
+        await client.query(
+          "ROLLBACK"
+        );
+      } catch (_) {}
+
+      console.error(
+        "ACS CABIN MAINTENANCE START ERROR:",
+        error
+      );
+
+      const code =
+        String(
+          error?.code ||
+          error?.message ||
+          "CABIN_MAINTENANCE_START_FAILED"
+        );
+
+      const conflictErrors =
+        new Set([
+          "CABIN_MAINTENANCE_ALREADY_IN_PROGRESS",
+          "AIRCRAFT_NOT_AVAILABLE",
+          "AIRCRAFT_MAINTENANCE_IN_PROGRESS",
+          "AIRCRAFT_MAINTENANCE_REQUIRED",
+          "AIRCRAFT_UNSERVICEABLE"
+        ]);
+
+      const clientErrors =
+        new Set([
+          "INVALID_CABIN_CONFIGURATION",
+          "INVALID_AIRCRAFT_ID"
+        ]);
+
+      const statusCode =
+        conflictErrors.has(code)
+          ? 409
+          : clientErrors.has(code)
+            ? 400
+            : 500;
+
+      return res
+        .status(statusCode)
+        .json({
+          ok: false,
+          error: code,
+          details:
+            error?.details ||
+            null
+        });
+
+    } finally {
+      client.release();
+    }
+  }
+);
+
+/* ============================================================
    🟨 ACS AIRCRAFT SALE QUOTE — BACKEND AUTHORITY v1.0
    ------------------------------------------------------------
    Route:
