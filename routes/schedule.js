@@ -5676,7 +5676,14 @@ FROM inserted_events
             AND ame.check_type IN ('A_CHECK', 'B_CHECK')
             AND ame.scheduled_start_at
                 <= acs_get_current_sim_time()
-
+                
+            AND UPPER(
+            COALESCE(
+           af.operational_status,
+           ''
+            )
+           ) <> 'CABIN_MAINTENANCE'
+            
             AND NOT (
               UPPER(
                 COALESCE(ams.c_check_status, '')
