@@ -1498,11 +1498,18 @@ router.post(
  * It does not start, does not charge and does not change
  * the aircraft's current maintenance status.
  */
-const aircraftInMaintenance =
+       
+const aircraftOperationalStatus =
   ACS_text(
     aircraft.operational_status
-  ).toUpperCase() === "IN_MAINTENANCE";
+  ).toUpperCase();
 
+const aircraftInMaintenance =
+  aircraftOperationalStatus === "IN_MAINTENANCE";
+
+const aircraftInCabinMaintenance =
+  aircraftOperationalStatus === "CABIN_MAINTENANCE";
+       
 const activeCheckInProgress =
   aCheckStatus === "IN_PROGRESS" ||
   bCheckStatus === "IN_PROGRESS" ||
