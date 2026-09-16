@@ -800,13 +800,12 @@ async function completeDuePilotTraining(
 
   return completedCount;
 }
-
 /* ============================================================
-   ACS HR TRAINING — PERSONNEL CYCLE BOUNDARIES
+   ACS HR TRAINING — PERSONNEL MONTHLY CYCLE
    ------------------------------------------------------------
-   • First charge: simulation day 15
-   • Second charge: final simulation day of the month
-   • PostgreSQL calculates every crossed boundary
+   • One recurring training charge per simulation month
+   • Charged on the final simulation day of the month
+   • PostgreSQL calculates every crossed monthly boundary
    ============================================================ */
 
 async function getPersonnelTrainingBoundaries(
@@ -854,33 +853,6 @@ async function getPersonnelTrainingBoundaries(
         month_start AS period_start_sim,
 
         month_start +
-          INTERVAL '14 days'
-            AS period_end_sim,
-
-        month_start +
-          INTERVAL '14 days'
-            AS charged_sim_at
-
-      FROM months
-
-      UNION ALL
-
-      SELECT
-        EXTRACT(
-          YEAR FROM month_start
-        )::INTEGER AS cycle_year,
-
-        EXTRACT(
-          MONTH FROM month_start
-        )::INTEGER AS cycle_month,
-
-        2::INTEGER AS cycle_half,
-
-        month_start +
-          INTERVAL '15 days'
-            AS period_start_sim,
-
-        month_start +
           INTERVAL '1 month' -
           INTERVAL '1 day'
             AS period_end_sim,
@@ -911,8 +883,7 @@ async function getPersonnelTrainingBoundaries(
           limits.current_sim_time
 
     ORDER BY
-      boundaries.charged_sim_at,
-      boundaries.cycle_half
+      boundaries.charged_sim_at
     `,
     [
       previousSimTime || null,
@@ -933,6 +904,7 @@ async function getPersonnelTrainingBoundaries(
    ============================================================ */
 
 async function settlePersonnelTrainingBoundary(
+   
   boundary,
   currentSimTime
 ) {
@@ -1148,8 +1120,7 @@ async function settlePersonnelTrainingBoundary(
       }
 
       const referenceUid =
-        `HR_TRAINING_PERSONNEL:${airlineId}:` +
-        `${monthKey}:H${cycleHalf}`;
+       `HR_TRAINING_PERSONNEL:${airlineId}:${monthKey}`;
 
       const logResult = await client.query(
         `
@@ -1184,7 +1155,7 @@ async function settlePersonnelTrainingBoundary(
           totalCost,
           boundary.charged_sim_at || currentSimTime,
           referenceUid,
-          `HR Training Personnel — ${monthKey} H${cycleHalf}`
+          `HR Training Personnel — ${monthKey}`
         ]
       );
 
