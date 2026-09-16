@@ -6555,6 +6555,15 @@ END AS c_overdue
         END,
 
         operational_status = CASE
+
+         WHEN UPPER(
+            COALESCE(
+              af.operational_status,
+              ''
+            )
+          ) = 'CABIN_MAINTENANCE'
+            THEN 'CABIN_MAINTENANCE'
+        
           WHEN EXISTS (
             SELECT 1
             FROM public.aircraft_market_listings aml
