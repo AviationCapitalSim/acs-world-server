@@ -5075,6 +5075,26 @@ async function ACS_startCDMaintenance(req, res) {
     const aircraftStatus = String(aircraft.status || "").toUpperCase();
     const operationalStatus = String(aircraft.operational_status || "").toUpperCase();
 
+    /* ========================================================
+   ACS CABIN MAINTENANCE EXCLUSIVITY
+   --------------------------------------------------------
+   C/D may become due or overdue during Cabin,
+   but cannot start until Cabin Maintenance is completed.
+   ======================================================== */
+
+if (
+  operationalStatus === "CABIN_MAINTENANCE"
+) {
+  await client.query("ROLLBACK");
+
+  return res.status(409).json({
+    ok: false,
+    error: "CABIN_MAINTENANCE_IN_PROGRESS",
+    message:
+      "C/D maintenance cannot start while Cabin Maintenance is in progress."
+  });
+}     
+     
     if (
       aircraftStatus === "MAINTENANCE" ||
       aircraftStatus === "IN_MAINTENANCE" ||
