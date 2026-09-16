@@ -820,6 +820,300 @@ af.updated_at,
 });
 
 /* ============================================================
+   🟦 MY AIRCRAFT — CABIN CONFIGURATION WRITE AUTHORITY v1.0
+   ------------------------------------------------------------
+   Route:
+   PUT /v1/aircraft/fleet/:id/cabin
+
+   Purpose:
+   - Persist My Aircraft cabin configuration in PostgreSQL
+   - Aircraft must belong to authenticated airline
+   - Reuses canonical ACS cabin products and capacity rules
+   - Does not touch Finance, Maintenance, Registration or Delivery
+   ============================================================ */
+
+router.put(
+  "/aircraft/fleet/:id/cabin",
+  requireAuth,
+  async (req, res) => {
+    const client = await pool.connect();
+
+    try {
+      const airlineId = Number(req.airline_id);
+      const aircraftId = Number(req.params.id);
+
+      if (
+        !Number.isInteger(airlineId) ||
+        airlineId <= 0
+      ) {
+        return res.status(401).json({
+          ok: false,
+          error: "NO_AIRLINE_SESSION"
+        });
+      }
+
+      if (
+        !Number.isInteger(aircraftId) ||
+        aircraftId <= 0
+      ) {
+        return res.status(400).json({
+          ok: false,
+          error: "INVALID_AIRCRAFT_ID"
+        });
+      }
+
+      await client.query("BEGIN");
+
+      /* ============================================================
+         1) LOAD + LOCK AIRCRAFT
+         ============================================================ */
+
+      const aircraftResult = await client.query(
+        `
+        SELECT
+          af.id,
+          af.airline_id,
+          af.model_key,
+          af.aircraft_name,
+
+          ac.seats AS catalog_seats,
+
+          EXTRACT(
+            YEAR FROM acs_get_current_sim_time()
+          )::INTEGER AS sim_year,
+
+          acs_get_current_sim_time()::TIMESTAMP
+            AS sim_time
+
+        FROM public.aircraft_fleet af
+
+        LEFT JOIN public.aircraft_catalog ac
+          ON ac.model_key = af.model_key
+
+        WHERE af.id = $1::BIGINT
+          AND af.airline_id = $2::INTEGER
+
+        FOR UPDATE OF af
+        `,
+        [
+          aircraftId,
+          airlineId
+        ]
+      );
+
+      if (aircraftResult.rowCount !== 1) {
+        await client.query("ROLLBACK");
+
+        return res.status(404).json({
+          ok: false,
+          error: "AIRCRAFT_NOT_FOUND"
+        });
+      }
+
+      const aircraft = aircraftResult.rows[0];
+
+      /* ============================================================
+         2) NORMALIZE REQUEST
+         ============================================================ */
+
+      const rawConfiguration = {
+        Y: {
+          product:
+            req.body?.Y?.product ??
+            req.body?.y_product,
+
+          seats:
+            req.body?.Y?.seats ??
+            req.body?.y_seats
+        },
+
+        C: {
+          product:
+            req.body?.C?.product ??
+            req.body?.c_product,
+
+          seats:
+            req.body?.C?.seats ??
+            req.body?.c_seats
+        },
+
+        F: {
+          product:
+            req.body?.F?.product ??
+            req.body?.f_product,
+
+          seats:
+            req.body?.F?.seats ??
+            req.body?.f_seats
+        }
+      };
+
+      /* ============================================================
+         3) CANONICAL CABIN VALIDATION
+         ============================================================ */
+
+      const cabin =
+        ACS_buildOrderCabinConfiguration({
+          rawConfiguration,
+          catalogCapacity:
+            Number(aircraft.catalog_seats || 0),
+          simYear:
+            Number(aircraft.sim_year)
+        });
+
+      const requestedConfigurationType =
+        String(
+          req.body?.configuration_type ||
+          req.body?.configurationType ||
+          "CUSTOM"
+        )
+          .trim()
+          .toUpperCase();
+
+      const configurationSource =
+        requestedConfigurationType ===
+        "FACTORY_DEFAULT"
+          ? "MY_AIRCRAFT_FACTORY_DEFAULT"
+          : "MY_AIRCRAFT_CUSTOM";
+
+      /* ============================================================
+         4) WRITE ONLY CABIN FIELDS
+         ============================================================ */
+
+      const updateResult = await client.query(
+        `
+        UPDATE public.aircraft_fleet
+
+        SET
+          cabin_rules_version =
+            $3::TEXT,
+
+          cabin_configuration_source =
+            $4::TEXT,
+
+          y_product =
+            $5::TEXT,
+
+          y_seats =
+            $6::INTEGER,
+
+          c_product =
+            $7::TEXT,
+
+          c_seats =
+            $8::INTEGER,
+
+          f_product =
+            $9::TEXT,
+
+          f_seats =
+            $10::INTEGER,
+
+          cabin_capacity_units =
+            $11::NUMERIC,
+
+          cabin_configured_at =
+            $12::TIMESTAMP,
+
+          updated_at =
+            NOW()
+
+        WHERE id = $1::BIGINT
+          AND airline_id = $2::INTEGER
+
+        RETURNING
+          id,
+          airline_id,
+          cabin_rules_version,
+          cabin_configuration_source,
+          y_product,
+          y_seats,
+          c_product,
+          c_seats,
+          f_product,
+          f_seats,
+          cabin_capacity_units,
+          cabin_configured_at
+        `,
+        [
+          aircraftId,
+          airlineId,
+
+          cabin.rulesVersion,
+          configurationSource,
+
+          cabin.economy.product,
+          cabin.economy.seats,
+
+          cabin.business.product,
+          cabin.business.seats,
+
+          cabin.first.product,
+          cabin.first.seats,
+
+          cabin.usedCapacity,
+          aircraft.sim_time
+        ]
+      );
+
+      if (updateResult.rowCount !== 1) {
+        throw new Error(
+          "AIRCRAFT_CABIN_UPDATE_FAILED"
+        );
+      }
+
+      await client.query("COMMIT");
+
+      return res.json({
+        ok: true,
+        endpoint:
+          "ACS_MY_AIRCRAFT_CABIN_UPDATE",
+        authority:
+          "aircraft_fleet",
+        cabin:
+          updateResult.rows[0]
+      });
+
+    } catch (error) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (_) {}
+
+      console.error(
+        "ACS MY AIRCRAFT CABIN UPDATE ERROR:",
+        error
+      );
+
+      const code =
+        error?.code ||
+        error?.message ||
+        "AIRCRAFT_CABIN_UPDATE_FAILED";
+
+      const clientErrors = new Set([
+        "INVALID_CABIN_CONFIGURATION",
+        "AIRCRAFT_HAS_NO_PASSENGER_CABIN",
+        "BUSINESS_CLASS_NOT_HISTORICALLY_AVAILABLE",
+        "EMPTY_CABIN_CONFIGURATION",
+        "CABIN_CONFIGURATION_EXCEEDS_CAPACITY"
+      ]);
+
+      return res
+        .status(clientErrors.has(code) ? 400 : 500)
+        .json({
+          ok: false,
+          error: code,
+          details:
+            error?.details ||
+            null
+        });
+
+    } finally {
+      client.release();
+    }
+  }
+);
+
+/* ============================================================
    🟨 ACS AIRCRAFT SALE QUOTE — BACKEND AUTHORITY v1.0
    ------------------------------------------------------------
    Route:
