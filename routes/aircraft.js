@@ -7575,14 +7575,24 @@ export async function ACS_runCDMaintenanceResolver({
 
       UNION
 
-      SELECT ame.airline_id
-      FROM public.aircraft_maintenance_events ame
-      WHERE ame.airline_id IS NOT NULL
-        AND ame.event_status = 'IN_PROGRESS'
-        AND ame.check_type IN (
-          'C_CHECK',
-          'D_CHECK'
-        )
+SELECT ame.airline_id
+FROM public.aircraft_maintenance_events ame
+WHERE ame.airline_id IS NOT NULL
+  AND ame.event_status = 'IN_PROGRESS'
+  AND ame.check_type IN (
+    'C_CHECK',
+    'D_CHECK'
+  )
+
+UNION
+
+SELECT acm.airline_id
+FROM public.aircraft_cabin_maintenance acm
+WHERE acm.airline_id IS NOT NULL
+  AND acm.status = 'IN_PROGRESS'
+  AND acm.expected_end_sim_time
+      <= acs_get_current_sim_time()
+      
     )
     SELECT DISTINCT airline_id
     FROM candidate_airlines
