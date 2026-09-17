@@ -6752,7 +6752,35 @@ async function ACS_executeMaintenanceSchedulerTick() {
 
   ACS_maintenanceSchedulerRunning = true;
 
+  const client = await pool.connect();
+
   try {
+    /* ========================================================
+       ACS CABIN MAINTENANCE — AUTOMATIC COMPLETION
+       --------------------------------------------------------
+       PostgreSQL remains the authority.
+       Any due Cabin Maintenance job is completed before
+       the A/B resolver evaluates the aircraft.
+       ======================================================== */
+
+    const cabinCompletionResult = await client.query(
+      `
+      SELECT *
+      FROM public.acs_complete_due_cabin_maintenance()
+      `
+    );
+
+    if (cabinCompletionResult.rows.length > 0) {
+      console.log(
+        "[ACS CABIN MAINTENANCE] Completed due jobs:",
+        cabinCompletionResult.rows
+      );
+    }
+
+    /* ========================================================
+       ACS A/B MAINTENANCE RESOLVER
+       ======================================================== */
+
     const result = await ACS_runMaintenanceResolver({
       allAirlines: true
     });
@@ -6764,23 +6792,25 @@ async function ACS_executeMaintenanceSchedulerTick() {
       Number(result?.error_count || 0) > 0
     ) {
       console.log("[ACS A/B MAINTENANCE] Resolver tick:", {
-  airline_count: result?.airline_count || 0,
-  orphan_recovered_count: result?.orphan_recovered_count || 0,
-  phase0_normalized_count: result?.phase0_normalized_count || 0,
-  phase1_candidate_count: result?.phase1_candidate_count || 0,
-  started_count: result?.started_count || 0,
-  completed_count: result?.completed_count || 0,
-  blocked_count: result?.blocked_count || 0,
-  error_count: result?.error_count || 0,
-  errors: result?.errors || []
-});
+        airline_count: result?.airline_count || 0,
+        orphan_recovered_count: result?.orphan_recovered_count || 0,
+        phase0_normalized_count: result?.phase0_normalized_count || 0,
+        phase1_candidate_count: result?.phase1_candidate_count || 0,
+        started_count: result?.started_count || 0,
+        completed_count: result?.completed_count || 0,
+        blocked_count: result?.blocked_count || 0,
+        error_count: result?.error_count || 0,
+        errors: result?.errors || []
+      });
     }
+
   } catch (error) {
     console.error(
-      "[ACS A/B MAINTENANCE] Scheduler tick failed:",
+      "[ACS MAINTENANCE] Scheduler tick failed:",
       error
     );
   } finally {
+    client.release();
     ACS_maintenanceSchedulerRunning = false;
   }
 }
