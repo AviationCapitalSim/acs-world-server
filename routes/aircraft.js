@@ -775,8 +775,42 @@ af.updated_at,
         ams.d_check_due_date,
         ams.d_check_status,
 
-        ams.maintenance_control_status,
+                ams.maintenance_control_status,
         ams.maintenance_control_reason,
+
+        /* =====================================================
+           ACTIVE C / D MAINTENANCE — READ ONLY
+           ===================================================== */
+
+        active_cd.check_type
+          AS active_cd_check_type,
+
+        active_cd.event_status
+          AS active_cd_event_status,
+
+        active_cd.started_at
+          AS active_cd_started_at,
+
+        COALESCE(
+          active_cd.scheduled_end_at,
+          active_cd.expected_completion_at
+        ) AS active_cd_ready_at,
+
+        /* =====================================================
+           ACTIVE CABIN MAINTENANCE — READ ONLY
+           ===================================================== */
+
+        active_cabin.id
+          AS active_cabin_job_id,
+
+        active_cabin.status
+          AS active_cabin_status,
+
+        active_cabin.started_sim_time
+          AS active_cabin_started_at,
+
+        active_cabin.expected_end_sim_time
+          AS active_cabin_ready_at,
 
         acs_get_current_sim_time() AS current_sim_time
 
@@ -785,8 +819,66 @@ af.updated_at,
       LEFT JOIN aircraft_catalog ac
         ON ac.model_key = af.model_key
 
-      LEFT JOIN aircraft_maintenance_status ams
+            LEFT JOIN aircraft_maintenance_status ams
         ON ams.aircraft_id = af.id
+
+      /* =====================================================
+         ACTIVE C / D EVENT — MY AIRCRAFT READ ONLY
+         ===================================================== */
+
+      LEFT JOIN LATERAL (
+        SELECT
+          ame.id,
+          ame.check_type,
+          ame.event_status,
+          ame.started_at,
+          ame.expected_completion_at,
+          ame.scheduled_end_at
+
+        FROM public.aircraft_maintenance_events ame
+
+        WHERE ame.airline_id = af.airline_id
+          AND ame.aircraft_id = af.id
+          AND ame.event_status = 'IN_PROGRESS'
+          AND ame.check_type IN (
+            'C_CHECK',
+            'D_CHECK'
+          )
+
+        ORDER BY
+          CASE ame.check_type
+            WHEN 'D_CHECK' THEN 1
+            WHEN 'C_CHECK' THEN 2
+            ELSE 3
+          END,
+          ame.id DESC
+
+        LIMIT 1
+      ) active_cd
+        ON TRUE
+
+      /* =====================================================
+         ACTIVE CABIN EVENT — MY AIRCRAFT READ ONLY
+         ===================================================== */
+
+      LEFT JOIN LATERAL (
+        SELECT
+          acm.id,
+          acm.status,
+          acm.started_sim_time,
+          acm.expected_end_sim_time
+
+        FROM public.aircraft_cabin_maintenance acm
+
+        WHERE acm.airline_id = af.airline_id
+          AND acm.aircraft_id = af.id
+          AND acm.status = 'IN_PROGRESS'
+
+        ORDER BY acm.id DESC
+
+        LIMIT 1
+      ) active_cabin
+        ON TRUE
 
       WHERE af.airline_id = $1
 
