@@ -344,9 +344,14 @@ router.get("/snapshot", requireAuth, async (req, res) => {
               THEN 'HELD'
 
             WHEN candidate.dispatch_status = 'PENDING'
-             AND candidate.operational_status = 'PLANNED'
-             AND candidate.scheduled_departure_at > sim.sim_time
-              THEN 'FUTURE'
+ AND candidate.operational_status = 'PLANNED'
+ AND candidate.scheduled_departure_at <= sim.sim_time
+  THEN 'PENDING_RELEASE'
+
+WHEN candidate.dispatch_status = 'PENDING'
+ AND candidate.operational_status = 'PLANNED'
+ AND candidate.scheduled_departure_at > sim.sim_time
+  THEN 'FUTURE'
 
             ELSE 'LAST'
           END AS flight_context
