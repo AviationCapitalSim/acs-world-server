@@ -118,13 +118,16 @@ router.get("/snapshot", requireAuth, async (req, res) => {
           COALESCE(al.color_hsl, 'hsl(220,70%,50%)') AS color_hsl,
           COALESCE(al.color_index, 0) AS color_index,
 
-          af.id AS aircraft_id,
+                    af.id AS aircraft_id,
           af.registration,
           af.manufacturer,
           af.aircraft_name,
           af.model_key,
           af.current_airport,
           af.base_icao,
+
+          af.operational_status
+            AS aircraft_operational_status,
           
           ams.maintenance_control_status,
           ams.maintenance_control_reason
@@ -188,11 +191,19 @@ router.get("/snapshot", requireAuth, async (req, res) => {
           WHEN occurrence.flight_context = 'ACTIVE'
             THEN 'EN_ROUTE'
 
-          WHEN occurrence.flight_context = 'HELD'
+                    WHEN occurrence.flight_context = 'HELD'
             THEN COALESCE(
               NULLIF(occurrence.dispatch_reason, ''),
               'NOT_DISPATCHED'
             )
+
+          WHEN UPPER(
+            COALESCE(
+              fleet.aircraft_operational_status,
+              ''
+            )
+          ) = 'CABIN_MAINTENANCE'
+            THEN 'CABIN_MAINTENANCE'
 
           WHEN UPPER(
             COALESCE(fleet.maintenance_control_status, '')
@@ -222,8 +233,20 @@ router.get("/snapshot", requireAuth, async (req, res) => {
           WHEN occurrence.flight_context = 'ACTIVE'
             THEN NULL
 
-          WHEN occurrence.flight_context = 'HELD'
+                    WHEN occurrence.flight_context = 'HELD'
             THEN occurrence.origin
+
+          WHEN UPPER(
+            COALESCE(
+              fleet.aircraft_operational_status,
+              ''
+            )
+          ) = 'CABIN_MAINTENANCE'
+            THEN COALESCE(
+              fleet.current_airport,
+              fleet.base_icao,
+              occurrence.origin
+            )
 
           WHEN UPPER(
             COALESCE(fleet.maintenance_control_status, '')
@@ -233,10 +256,10 @@ router.get("/snapshot", requireAuth, async (req, res) => {
             'UNSERVICEABLE'
           )
             THEN COALESCE(
-             fleet.base_icao,
-             fleet.current_airport,
-             occurrence.origin
-          )
+              fleet.base_icao,
+              fleet.current_airport,
+              occurrence.origin
+            )
 
           WHEN occurrence.flight_context = 'LAST'
             THEN occurrence.destination
@@ -330,11 +353,18 @@ router.get("/snapshot", requireAuth, async (req, res) => {
 
         FROM public.flight_occurrences candidate
 
-                WHERE candidate.airline_id = fleet.airline_id
+         WHERE candidate.airline_id = fleet.airline_id
           AND candidate.aircraft_id = fleet.aircraft_id
 
-          AND NOT (
+         AND NOT (
             UPPER(
+              COALESCE(
+                fleet.aircraft_operational_status,
+                ''
+              )
+            ) = 'CABIN_MAINTENANCE'
+
+            OR UPPER(
               COALESCE(
                 fleet.maintenance_control_status,
                 ''
