@@ -6514,6 +6514,113 @@ export async function ACS_runCDMaintenanceResolverForAirline(
     await client.query("BEGIN");
     transactionStarted = true;
 
+/* ============================================================
+   0. COMPLETE FINISHED CABIN MAINTENANCE
+   ------------------------------------------------------------
+   Cabin authority only.
+   Does NOT modify A/B lifecycle.
+   Does NOT modify C/D due dates.
+   Uses ACS simulated time only.
+   ============================================================ */
+
+const cabinCompletionResult =
+  await client.query(
+    `
+    WITH due_cabin AS (
+      SELECT
+        acm.id,
+        acm.airline_id,
+        acm.aircraft_id,
+        acm.y_product,
+        acm.y_seats,
+        acm.c_product,
+        acm.c_seats,
+        acm.f_product,
+        acm.f_seats,
+        acm.cabin_capacity_units
+      FROM public.aircraft_cabin_maintenance acm
+      WHERE acm.airline_id = $1
+        AND acm.status = 'IN_PROGRESS'
+        AND acm.expected_end_sim_time
+            <= acs_get_current_sim_time()
+      FOR UPDATE
+    ),
+
+    completed AS (
+      UPDATE public.aircraft_cabin_maintenance acm
+      SET
+        status = 'COMPLETED',
+        completed_sim_time =
+          acs_get_current_sim_time(),
+        updated_at =
+          (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+      FROM due_cabin dc
+      WHERE acm.id = dc.id
+      RETURNING
+        acm.id,
+        acm.aircraft_id
+    )
+
+    UPDATE public.aircraft_fleet af
+    SET
+      y_product = dc.y_product,
+      y_seats = dc.y_seats,
+
+      c_product = dc.c_product,
+      c_seats = dc.c_seats,
+
+      f_product = dc.f_product,
+      f_seats = dc.f_seats,
+
+      cabin_capacity_units =
+        dc.cabin_capacity_units,
+
+      cabin_configured_at =
+        acs_get_current_sim_time(),
+
+      operational_status = CASE
+        WHEN ams.maintenance_control_status =
+             'IN_MAINTENANCE'
+          THEN 'IN_MAINTENANCE'
+
+        WHEN ams.maintenance_control_status IN (
+          'MAINTENANCE_REQUIRED',
+          'UNSERVICEABLE'
+        )
+          THEN 'UNAVAILABLE'
+
+        ELSE 'AVAILABLE'
+      END,
+
+      status = CASE
+        WHEN ams.maintenance_control_status =
+             'IN_MAINTENANCE'
+          THEN 'MAINTENANCE'
+        ELSE 'ACTIVE'
+      END,
+
+      updated_at =
+        (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
+
+    FROM due_cabin dc
+
+    LEFT JOIN public.aircraft_maintenance_status ams
+      ON ams.aircraft_id = dc.aircraft_id
+     AND ams.airline_id = dc.airline_id
+
+    WHERE af.id = dc.aircraft_id
+      AND af.airline_id = dc.airline_id
+
+    RETURNING
+      af.id AS aircraft_id,
+      af.registration,
+      af.status,
+      af.operational_status
+    `,
+    [airlineId]
+  );
+
+
     /* ============================================================
        1. COMPLETE FINISHED C/D MAINTENANCE EVENTS ONLY
        ------------------------------------------------------------
