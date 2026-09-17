@@ -261,16 +261,20 @@ router.get("/snapshot", requireAuth, async (req, res) => {
               occurrence.origin
             )
 
-          WHEN occurrence.flight_context = 'LAST'
-            THEN occurrence.destination
+         WHEN occurrence.flight_context = 'LAST'
+  THEN occurrence.destination
 
-          WHEN occurrence.flight_context = 'FUTURE'
-            THEN occurrence.origin
+WHEN occurrence.flight_context IN (
+  'FUTURE',
+  'PENDING_RELEASE'
+)
+  THEN occurrence.origin
 
-          ELSE COALESCE(
-            fleet.current_airport,
-            fleet.base_icao
-          )
+ELSE COALESCE(
+  fleet.current_airport,
+  fleet.base_icao
+)
+
         END AS airport,
 
         CASE
