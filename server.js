@@ -108,6 +108,37 @@ registerACSRuntimeJobHandler(
   }
 );
 
+/* ============================================================
+   ACS CABIN MAINTENANCE — RUNTIME AUTHORITY
+   ------------------------------------------------------------
+   - Completes due Cabin Maintenance automatically.
+   - Uses the existing PostgreSQL Cabin authority.
+   - Independent from A/B/C/D maintenance services.
+   - Uses ACS simulated time through the PostgreSQL function.
+   ============================================================ */
+
+registerACSRuntimeJobHandler(
+  "CABIN_MAINTENANCE",
+  async ({ pool }) => {
+    const result =
+      await pool.query(
+        `
+        SELECT *
+        FROM public.acs_complete_due_cabin_maintenance()
+        `
+      );
+
+    return {
+      processedCount:
+        Number(result.rowCount || 0)
+    };
+  }
+);
+
+/* ============================================================
+   ACS C/D MAINTENANCE — EXISTING RUNTIME AUTHORITY
+   ============================================================ */
+
 registerACSRuntimeJobHandler(
   "MAINTENANCE_CD",
   async () => {
