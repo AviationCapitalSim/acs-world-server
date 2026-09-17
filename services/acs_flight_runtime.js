@@ -378,6 +378,12 @@ export async function ACS_dispatchFlightOccurrences({
           occurrence.scheduled_arrival_at,
           clock.sim_time,
 
+          fleet.status
+            AS aircraft_status,
+
+          fleet.operational_status
+            AS aircraft_operational_status,
+
           maintenance_status.a_check_status,
           maintenance_status.b_check_status,
           maintenance_status.c_check_status,
@@ -385,15 +391,27 @@ export async function ACS_dispatchFlightOccurrences({
           maintenance_status.maintenance_control_status,
           maintenance_status.maintenance_control_reason,
 
-          blocking_event.id AS maintenance_event_id,
-          blocking_event.event_uid AS maintenance_event_uid,
-          blocking_event.check_type AS maintenance_check_type,
+          blocking_event.id
+            AS maintenance_event_id,
+
+          blocking_event.event_uid
+            AS maintenance_event_uid,
+
+          blocking_event.check_type
+            AS maintenance_check_type,
+
           blocking_event.maintenance_start_at,
           blocking_event.maintenance_end_at
 
         FROM public.flight_occurrences occurrence
 
         CROSS JOIN clock
+
+        INNER JOIN public.aircraft_fleet fleet
+          ON fleet.id =
+             occurrence.aircraft_id
+         AND fleet.airline_id =
+             occurrence.airline_id
 
         LEFT JOIN public.aircraft_maintenance_status
           AS maintenance_status
@@ -436,8 +454,10 @@ export async function ACS_dispatchFlightOccurrences({
 
           WHERE event.aircraft_id =
                 occurrence.aircraft_id
+
             AND event.airline_id =
                 occurrence.airline_id
+
             AND event.event_status IN (
               'SCHEDULED',
               'IN_PROGRESS'
@@ -471,6 +491,7 @@ export async function ACS_dispatchFlightOccurrences({
 
           ORDER BY
             maintenance_start_at,
+
             CASE event.check_type
               WHEN 'D_CHECK' THEN 1
               WHEN 'C_CHECK' THEN 2
@@ -478,13 +499,18 @@ export async function ACS_dispatchFlightOccurrences({
               WHEN 'A_CHECK' THEN 4
               ELSE 5
             END,
+
             event.id
 
           LIMIT 1
         ) AS blocking_event ON TRUE
 
-        WHERE occurrence.operational_status = 'PLANNED'
-          AND occurrence.dispatch_status = 'PENDING'
+        WHERE occurrence.operational_status =
+              'PLANNED'
+
+          AND occurrence.dispatch_status =
+              'PENDING'
+
           AND occurrence.scheduled_departure_at <=
               clock.sim_time
 
@@ -502,22 +528,48 @@ export async function ACS_dispatchFlightOccurrences({
           due.*,
 
           (
-            due.maintenance_event_id IS NOT NULL
+            UPPER(
+              COALESCE(
+                due.aircraft_status,
+                ''
+              )
+            ) <> 'ACTIVE'
 
             OR UPPER(
-              COALESCE(due.a_check_status, '')
+              COALESCE(
+                due.aircraft_operational_status,
+                ''
+              )
+            ) <> 'AVAILABLE'
+
+            OR due.maintenance_event_id IS NOT NULL
+
+            OR UPPER(
+              COALESCE(
+                due.a_check_status,
+                ''
+              )
             ) = 'OVERDUE'
 
             OR UPPER(
-              COALESCE(due.b_check_status, '')
+              COALESCE(
+                due.b_check_status,
+                ''
+              )
             ) = 'OVERDUE'
 
             OR UPPER(
-              COALESCE(due.c_check_status, '')
+              COALESCE(
+                due.c_check_status,
+                ''
+              )
             ) = 'OVERDUE'
 
             OR UPPER(
-              COALESCE(due.d_check_status, '')
+              COALESCE(
+                due.d_check_status,
+                ''
+              )
             ) = 'OVERDUE'
 
             OR UPPER(
@@ -532,26 +584,76 @@ export async function ACS_dispatchFlightOccurrences({
           ) AS is_blocked,
 
           CASE
-            WHEN due.maintenance_event_id IS NOT NULL
-            THEN due.maintenance_check_type
+            WHEN UPPER(
+              COALESCE(
+                due.aircraft_operational_status,
+                ''
+              )
+            ) = 'CABIN_MAINTENANCE'
+              THEN 'CABIN_MAINTENANCE'
 
             WHEN UPPER(
-              COALESCE(due.d_check_status, '')
+              COALESCE(
+                due.aircraft_status,
+                ''
+              )
+            ) <> 'ACTIVE'
+              THEN COALESCE(
+                NULLIF(
+                  UPPER(due.aircraft_status),
+                  ''
+                ),
+                'AIRCRAFT_NOT_ACTIVE'
+              )
+
+            WHEN UPPER(
+              COALESCE(
+                due.aircraft_operational_status,
+                ''
+              )
+            ) <> 'AVAILABLE'
+              THEN COALESCE(
+                NULLIF(
+                  UPPER(
+                    due.aircraft_operational_status
+                  ),
+                  ''
+                ),
+                'AIRCRAFT_NOT_AVAILABLE'
+              )
+
+            WHEN due.maintenance_event_id IS NOT NULL
+              THEN due.maintenance_check_type
+
+            WHEN UPPER(
+              COALESCE(
+                due.d_check_status,
+                ''
+              )
             ) = 'OVERDUE'
               THEN 'D_CHECK_OVERDUE'
 
             WHEN UPPER(
-              COALESCE(due.c_check_status, '')
+              COALESCE(
+                due.c_check_status,
+                ''
+              )
             ) = 'OVERDUE'
               THEN 'C_CHECK_OVERDUE'
 
             WHEN UPPER(
-              COALESCE(due.b_check_status, '')
+              COALESCE(
+                due.b_check_status,
+                ''
+              )
             ) = 'OVERDUE'
               THEN 'B_CHECK_OVERDUE'
 
             WHEN UPPER(
-              COALESCE(due.a_check_status, '')
+              COALESCE(
+                due.a_check_status,
+                ''
+              )
             ) = 'OVERDUE'
               THEN 'A_CHECK_OVERDUE'
 
@@ -623,6 +725,7 @@ export async function ACS_dispatchFlightOccurrences({
           WHEN classified.is_blocked
             THEN COALESCE(
               classified.maintenance_check_type,
+
               CASE
                 WHEN UPPER(
                   COALESCE(
@@ -631,6 +734,7 @@ export async function ACS_dispatchFlightOccurrences({
                   )
                 ) = 'OVERDUE'
                   THEN 'D_CHECK'
+
                 WHEN UPPER(
                   COALESCE(
                     classified.c_check_status,
@@ -638,6 +742,7 @@ export async function ACS_dispatchFlightOccurrences({
                   )
                 ) = 'OVERDUE'
                   THEN 'C_CHECK'
+
                 WHEN UPPER(
                   COALESCE(
                     classified.b_check_status,
@@ -645,6 +750,7 @@ export async function ACS_dispatchFlightOccurrences({
                   )
                 ) = 'OVERDUE'
                   THEN 'B_CHECK'
+
                 WHEN UPPER(
                   COALESCE(
                     classified.a_check_status,
@@ -652,6 +758,7 @@ export async function ACS_dispatchFlightOccurrences({
                   )
                 ) = 'OVERDUE'
                   THEN 'A_CHECK'
+
                 ELSE NULL
               END
             )
@@ -686,9 +793,11 @@ export async function ACS_dispatchFlightOccurrences({
 
       FROM classified
 
-      WHERE occurrence.id = classified.id
+      WHERE occurrence.id =
+            classified.id
 
-      RETURNING occurrence.dispatch_status
+      RETURNING
+        occurrence.dispatch_status
       `,
       [normalizedBatchSize]
     );
@@ -697,11 +806,15 @@ export async function ACS_dispatchFlightOccurrences({
     transactionStarted = false;
 
     const heldCount = result.rows.filter(
-      row => row.dispatch_status === "NOT_DISPATCHED"
+      row =>
+        row.dispatch_status ===
+        "NOT_DISPATCHED"
     ).length;
 
     const releasedCount = result.rows.filter(
-      row => row.dispatch_status === "RELEASED"
+      row =>
+        row.dispatch_status ===
+        "RELEASED"
     ).length;
 
     return {
