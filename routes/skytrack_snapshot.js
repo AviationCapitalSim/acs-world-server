@@ -261,16 +261,20 @@ router.get("/snapshot", requireAuth, async (req, res) => {
               occurrence.origin
             )
 
-          WHEN occurrence.flight_context = 'LAST'
-            THEN occurrence.destination
+        WHEN occurrence.flight_context = 'LAST'
+  THEN occurrence.destination
 
-          WHEN occurrence.flight_context = 'FUTURE'
-            THEN occurrence.origin
+WHEN occurrence.flight_context IN (
+  'FUTURE',
+  'PENDING_RELEASE'
+)
+  THEN occurrence.origin
 
-          ELSE COALESCE(
-            fleet.current_airport,
-            fleet.base_icao
-          )
+ELSE COALESCE(
+  fleet.current_airport,
+  fleet.base_icao
+)
+
         END AS airport,
 
         CASE
@@ -344,9 +348,14 @@ router.get("/snapshot", requireAuth, async (req, res) => {
               THEN 'HELD'
 
             WHEN candidate.dispatch_status = 'PENDING'
-             AND candidate.operational_status = 'PLANNED'
-             AND candidate.scheduled_departure_at > sim.sim_time
-              THEN 'FUTURE'
+ AND candidate.operational_status = 'PLANNED'
+ AND candidate.scheduled_departure_at <= sim.sim_time
+  THEN 'PENDING_RELEASE'
+
+WHEN candidate.dispatch_status = 'PENDING'
+ AND candidate.operational_status = 'PLANNED'
+ AND candidate.scheduled_departure_at > sim.sim_time
+  THEN 'FUTURE'
 
             ELSE 'LAST'
           END AS flight_context
@@ -418,9 +427,9 @@ router.get("/snapshot", requireAuth, async (req, res) => {
             OR
 
             (
-              candidate.dispatch_status = 'PENDING'
-              AND candidate.operational_status = 'PLANNED'
-              AND candidate.scheduled_departure_at > sim.sim_time
+              (
+                candidate.dispatch_status = 'PENDING'
+                AND candidate.operational_status = 'PLANNED'
 
               /*
                 A future occurrence is operational only while its
@@ -428,6 +437,7 @@ router.get("/snapshot", requireAuth, async (req, res) => {
                 This prevents edited or reassigned flights from
                 remaining attached to the previous aircraft.
               */
+              
               AND EXISTS (
                 SELECT 1
                 FROM public.schedule_items current_schedule
@@ -459,6 +469,7 @@ router.get("/snapshot", requireAuth, async (req, res) => {
                 This is the second global guard against stale
                 occurrences left by route edits or reassignment.
               */
+              
               AND EXISTS (
                 SELECT 1
                 FROM public.route_plans current_route
@@ -480,24 +491,31 @@ router.get("/snapshot", requireAuth, async (req, res) => {
 
         ORDER BY
           CASE
-            WHEN candidate.dispatch_status = 'RELEASED'
-             AND candidate.scheduled_departure_at <= sim.sim_time
-             AND candidate.scheduled_arrival_at > sim.sim_time
-              THEN 1
+            CASE
+  WHEN candidate.dispatch_status = 'RELEASED'
+   AND candidate.scheduled_departure_at <= sim.sim_time
+   AND candidate.scheduled_arrival_at > sim.sim_time
+    THEN 1
 
-            WHEN candidate.dispatch_status = 'NOT_DISPATCHED'
-             AND candidate.scheduled_departure_at <= sim.sim_time
-             AND candidate.scheduled_arrival_at > sim.sim_time
-              THEN 2
+  WHEN candidate.dispatch_status = 'NOT_DISPATCHED'
+   AND candidate.scheduled_departure_at <= sim.sim_time
+   AND candidate.scheduled_arrival_at > sim.sim_time
+    THEN 2
 
-            WHEN candidate.dispatch_status = 'PENDING'
-             AND candidate.scheduled_departure_at > sim.sim_time
-              THEN 3
+  WHEN candidate.dispatch_status = 'PENDING'
+   AND candidate.operational_status = 'PLANNED'
+   AND candidate.scheduled_departure_at <= sim.sim_time
+    THEN 3
 
-            ELSE 4
-          END,
+  WHEN candidate.dispatch_status = 'PENDING'
+   AND candidate.operational_status = 'PLANNED'
+   AND candidate.scheduled_departure_at > sim.sim_time
+    THEN 4
 
-          CASE
+  ELSE 5
+END,
+        
+        CASE
             WHEN candidate.dispatch_status = 'PENDING'
               THEN candidate.scheduled_departure_at
           END ASC,
