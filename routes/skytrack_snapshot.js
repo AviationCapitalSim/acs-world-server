@@ -491,7 +491,6 @@ WHEN candidate.dispatch_status = 'PENDING'
 
         ORDER BY
           CASE
-            CASE
   WHEN candidate.dispatch_status = 'RELEASED'
    AND candidate.scheduled_departure_at <= sim.sim_time
    AND candidate.scheduled_arrival_at > sim.sim_time
