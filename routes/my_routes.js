@@ -331,15 +331,22 @@ if (!airline) {
           route.updated_at,
 
           fleet.aircraft_uid,
-          fleet.model_key AS fleet_model_key,
-          fleet.manufacturer AS fleet_manufacturer,
-          fleet.aircraft_name AS fleet_aircraft_name,
-          fleet.status AS aircraft_status,
-          fleet.operational_status AS aircraft_operational_status,
-          fleet.maintenance_status AS aircraft_maintenance_status,
-          fleet.condition_pct,
-          fleet.base_icao,
-          fleet.current_airport,
+fleet.model_key AS fleet_model_key,
+fleet.manufacturer AS fleet_manufacturer,
+fleet.aircraft_name AS fleet_aircraft_name,
+fleet.status AS aircraft_status,
+fleet.operational_status AS aircraft_operational_status,
+fleet.maintenance_status AS aircraft_maintenance_status,
+fleet.condition_pct,
+fleet.base_icao,
+fleet.current_airport,
+
+maintenance.c_check_status AS aircraft_c_check_status,
+maintenance.d_check_status AS aircraft_d_check_status,
+maintenance.maintenance_control_status
+  AS aircraft_maintenance_control_status,
+maintenance.maintenance_control_reason
+  AS aircraft_maintenance_control_reason,
 
           catalog.manufacturer AS catalog_manufacturer,
           catalog.model_key AS catalog_model_key,
@@ -379,13 +386,17 @@ if (!airline) {
         CROSS JOIN clock
 
         LEFT JOIN public.aircraft_fleet fleet
-          ON fleet.id = route.aircraft_id
-         AND fleet.airline_id = route.airline_id
+  ON fleet.id = route.aircraft_id
+ AND fleet.airline_id = route.airline_id
 
-        LEFT JOIN public.aircraft_catalog catalog
-        ON LOWER(catalog.model_key) = LOWER(
-        COALESCE(fleet.model_key, route.model_key)
-        )
+LEFT JOIN public.aircraft_maintenance_status maintenance
+  ON maintenance.aircraft_id = fleet.id
+ AND maintenance.airline_id = fleet.airline_id
+
+LEFT JOIN public.aircraft_catalog catalog
+  ON LOWER(catalog.model_key) = LOWER(
+  COALESCE(fleet.model_key, route.model_key)
+)
 
         CROSS JOIN LATERAL
           public.acs_calculate_passenger_demand(
