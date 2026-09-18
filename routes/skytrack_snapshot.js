@@ -238,15 +238,15 @@ router.get("/snapshot", requireAuth, async (req, res) => {
 
           WHEN UPPER(
             COALESCE(
-              fleet.aircraft_operational_status,
-              ''
-            )
-          ) = 'CABIN_MAINTENANCE'
-            THEN COALESCE(
-              fleet.current_airport,
-              fleet.base_icao,
-              occurrence.origin
-            )
+            fleet.aircraft_operational_status,
+             ''
+           )
+         ) = 'CABIN_MAINTENANCE'
+           THEN COALESCE(
+           fleet.base_icao,
+           fleet.current_airport,
+           occurrence.origin
+         )
 
           WHEN UPPER(
             COALESCE(fleet.maintenance_control_status, '')
