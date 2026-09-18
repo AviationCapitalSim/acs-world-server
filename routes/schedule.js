@@ -3123,7 +3123,24 @@ router.patch(
       }
 
       const original =
-        originalResult.rows[0];
+  originalResult.rows[0];
+
+const checkType =
+  ACS_normalizeCheckType(
+    original.check_type
+  );
+
+if (!checkType) {
+  const error =
+    new Error(
+      "MAINTENANCE_CHECK_TYPE_INVALID"
+    );
+
+  error.code =
+    "MAINTENANCE_CHECK_TYPE_INVALID";
+
+  throw error;
+}
 
       const durationMinutes =
         Number(
@@ -3236,41 +3253,75 @@ router.patch(
     ]
   );
        
-      let conflict = null;
+     let conflict = null;
 
-      for (
-        const item
-        of existingItemsResult.rows
-      ) {
+for (
+  const item
+  of existingItemsResult.rows
+) {
+  const existingItemType =
+    ACS_text(
+      item.item_type
+    ).toLowerCase();
 
-        const existingStart =
-          Number(
-            item.dep_abs_min
-          );
+  const existingStart =
+    Number(
+      item.dep_abs_min
+    );
 
-        let existingEnd =
-          Number(
-            item.arr_abs_min
-          );
+  let existingEnd =
+    Number(
+      item.arr_abs_min
+    );
 
-        if (
-          !Number.isFinite(existingStart) ||
-          !Number.isFinite(existingEnd)
-        ) {
-          continue;
-        }
+  if (
+    !Number.isFinite(
+      existingStart
+    ) ||
+    !Number.isFinite(
+      existingEnd
+    )
+  ) {
+    continue;
+  }
 
-        if (
-          ACS_text(
-            item.item_type
-          ).toLowerCase() === "flight"
-        ) {
-          existingEnd +=
-            Number(
-              item.turnaround_min || 0
-            );
-        }
+  if (
+    existingItemType === "flight"
+  ) {
+    existingEnd +=
+      Number(
+        item.turnaround_min || 0
+      );
+  }
 
+  /*
+   * ACS OCC MAINTENANCE RULE
+   *
+   * A-CHECK:
+   * - conflicts only with FLIGHT
+   *
+   * B-CHECK:
+   * - never rejected by FLIGHT
+   * - never rejected by A-CHECK
+   * - B dominates the 24H window
+   * - existing A=100% logic remains untouched
+   */
+
+  if (
+    checkType === "A_CHECK" &&
+    existingItemType === "flight" &&
+    ACS_intervalsOverlap(
+      proposedStartAbs,
+      proposedEndAbs,
+      existingStart,
+      existingEnd
+    )
+  ) {
+    conflict = item;
+    break;
+  }
+}
+       
         if (
           ACS_intervalsOverlap(
             proposedStartAbs,
@@ -3284,20 +3335,34 @@ router.patch(
         }
       }
 
-      if (conflict && checkType === "A_CHECK") {
-        const error =
-          new Error(
-            "MAINTENANCE_SCHEDULE_CONFLICT"
-          );
+      if (
+  checkType === "A_CHECK" &&
+  conflict
+) {
 
-        error.code =
-          "MAINTENANCE_SCHEDULE_CONFLICT";
+  const error =
+    new Error(
+      "MAINTENANCE_SCHEDULE_CONFLICT"
+    );
 
-        error.conflict =
-          conflict;
+  error.code =
+    "MAINTENANCE_SCHEDULE_CONFLICT";
 
-        throw error;
-      }
+  error.conflict =
+    conflict;
+
+  error.message =
+    `Schedule Conflict: ` +
+    `${ACS_checkDisplayName(checkType)} ` +
+    `overlaps flight ` +
+    `${
+      ACS_text(
+        conflict.flight_number
+      ) || "UNNUMBERED"
+    }.`;
+
+  throw error;
+}
 
       /* ========================================================
          CALCULATE NEW ABSOLUTE ACS WINDOW
