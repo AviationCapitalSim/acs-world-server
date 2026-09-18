@@ -3253,16 +3253,12 @@ if (!checkType) {
     ]
   );
        
-     let conflict = null;
+let conflict = null;
 
 for (
   const item
   of existingItemsResult.rows
 ) {
-  const existingItemType =
-    ACS_text(
-      item.item_type
-    ).toLowerCase();
 
   const existingStart =
     Number(
@@ -3275,18 +3271,16 @@ for (
     );
 
   if (
-    !Number.isFinite(
-      existingStart
-    ) ||
-    !Number.isFinite(
-      existingEnd
-    )
+    !Number.isFinite(existingStart) ||
+    !Number.isFinite(existingEnd)
   ) {
     continue;
   }
 
   if (
-    existingItemType === "flight"
+    ACS_text(
+      item.item_type
+    ).toLowerCase() === "flight"
   ) {
     existingEnd +=
       Number(
@@ -3294,22 +3288,14 @@ for (
       );
   }
 
-  /*
-   * ACS OCC MAINTENANCE RULE
-   *
-   * A-CHECK:
-   * - conflicts only with FLIGHT
-   *
-   * B-CHECK:
-   * - never rejected by FLIGHT
-   * - never rejected by A-CHECK
-   * - B dominates the 24H window
-   * - existing A=100% logic remains untouched
-   */
+  const conflictItemType =
+    ACS_text(
+      item.item_type
+    ).toLowerCase();
 
   if (
     checkType === "A_CHECK" &&
-    existingItemType === "flight" &&
+    conflictItemType === "flight" &&
     ACS_intervalsOverlap(
       proposedStartAbs,
       proposedEndAbs,
@@ -3321,23 +3307,10 @@ for (
     break;
   }
 }
-       
-        if (
-          ACS_intervalsOverlap(
-            proposedStartAbs,
-            proposedEndAbs,
-            existingStart,
-            existingEnd
-          )
-        ) {
-          conflict = item;
-          break;
-        }
-      }
 
-      if (
-  checkType === "A_CHECK" &&
-  conflict
+if (
+  conflict &&
+  checkType === "A_CHECK"
 ) {
 
   const error =
@@ -3350,16 +3323,6 @@ for (
 
   error.conflict =
     conflict;
-
-  error.message =
-    `Schedule Conflict: ` +
-    `${ACS_checkDisplayName(checkType)} ` +
-    `overlaps flight ` +
-    `${
-      ACS_text(
-        conflict.flight_number
-      ) || "UNNUMBERED"
-    }.`;
 
   throw error;
 }
