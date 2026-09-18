@@ -10,7 +10,7 @@ import { requireAuth } from "../middleware/auth.js";
 const router = express.Router();
 
 /* ============================================================
-   ACS SKYTRACK — CANONICAL AIRLINE IDENTITY COLOR
+   ACS SKYTRACK â€” CANONICAL AIRLINE IDENTITY COLOR
    ------------------------------------------------------------
    Stable color generated from PostgreSQL airline_id.
    Same airline, same color, on every browser and session.
@@ -168,23 +168,28 @@ router.get("/snapshot", requireAuth, async (req, res) => {
         occurrence.origin AS origin_icao,
         occurrence.destination AS destination_icao,
         occurrence.distance_nm,
+        occurrence.block_time_min,
         occurrence.scheduled_departure_at,
         occurrence.scheduled_arrival_at,
+        occurrence.dispatched_at,
+        occurrence.departed_at,
+        occurrence.effective_departure_at,
+        occurrence.effective_arrival_at,
         occurrence.operational_status,
         occurrence.dispatch_status,
         occurrence.dispatch_reason,
         occurrence.flight_context,
 
         (
-          EXTRACT(DOW FROM occurrence.scheduled_departure_at)::int * 1440
-          + EXTRACT(HOUR FROM occurrence.scheduled_departure_at)::int * 60
-          + EXTRACT(MINUTE FROM occurrence.scheduled_departure_at)::int
+          EXTRACT(DOW FROM occurrence.effective_departure_at)::int * 1440
+          + EXTRACT(HOUR FROM occurrence.effective_departure_at)::int * 60
+          + EXTRACT(MINUTE FROM occurrence.effective_departure_at)::int
         )::int AS dep_abs_min,
 
         (
-          EXTRACT(DOW FROM occurrence.scheduled_arrival_at)::int * 1440
-          + EXTRACT(HOUR FROM occurrence.scheduled_arrival_at)::int * 60
-          + EXTRACT(MINUTE FROM occurrence.scheduled_arrival_at)::int
+          EXTRACT(DOW FROM occurrence.effective_arrival_at)::int * 1440
+          + EXTRACT(HOUR FROM occurrence.effective_arrival_at)::int * 60
+          + EXTRACT(MINUTE FROM occurrence.effective_arrival_at)::int
         )::int AS arr_abs_min,
 
         CASE
@@ -238,15 +243,15 @@ router.get("/snapshot", requireAuth, async (req, res) => {
 
           WHEN UPPER(
             COALESCE(
-            fleet.aircraft_operational_status,
-             ''
-           )
-         ) = 'CABIN_MAINTENANCE'
-           THEN COALESCE(
-           fleet.base_icao,
-           fleet.current_airport,
-           occurrence.origin
-         )
+              fleet.aircraft_operational_status,
+              ''
+            )
+          ) = 'CABIN_MAINTENANCE'
+            THEN COALESCE(
+              fleet.current_airport,
+              fleet.base_icao,
+              occurrence.origin
+            )
 
           WHEN UPPER(
             COALESCE(fleet.maintenance_control_status, '')
@@ -285,15 +290,15 @@ router.get("/snapshot", requireAuth, async (req, res) => {
               EXTRACT(
                 EPOCH FROM (
                   sim.sim_time
-                  - occurrence.scheduled_departure_at
+                  - occurrence.effective_departure_at
                 )
               )
               /
               NULLIF(
                 EXTRACT(
                   EPOCH FROM (
-                    occurrence.scheduled_arrival_at
-                    - occurrence.scheduled_departure_at
+                    occurrence.effective_arrival_at
+                    - occurrence.effective_departure_at
                   )
                 ),
                 0
@@ -314,8 +319,10 @@ router.get("/snapshot", requireAuth, async (req, res) => {
                   fleet.aircraft_id
               AND arrived_occurrence.dispatch_status =
                   'RELEASED'
-              AND arrived_occurrence.scheduled_arrival_at <=
-                  sim.sim_time
+              AND COALESCE(
+                    arrived_occurrence.arrived_at,
+                    arrived_occurrence.scheduled_arrival_at
+                  ) <= sim.sim_time
           )
         ) AS arrived
 
@@ -326,6 +333,8 @@ router.get("/snapshot", requireAuth, async (req, res) => {
       LEFT JOIN LATERAL (
         SELECT
           candidate.*,
+          timing.effective_departure_at,
+          timing.effective_arrival_at,
 
           CASE
             WHEN candidate.dispatch_status = 'RELEASED'
@@ -333,8 +342,8 @@ router.get("/snapshot", requireAuth, async (req, res) => {
                'DISPATCHED',
                'EN_ROUTE'
              )
-             AND candidate.scheduled_departure_at <= sim.sim_time
-             AND candidate.scheduled_arrival_at > sim.sim_time
+             AND timing.effective_departure_at <= sim.sim_time
+             AND timing.effective_arrival_at > sim.sim_time
               THEN 'ACTIVE'
 
             WHEN candidate.dispatch_status = 'NOT_DISPATCHED'
@@ -360,6 +369,35 @@ router.get("/snapshot", requireAuth, async (req, res) => {
           END AS flight_context
 
         FROM public.flight_occurrences candidate
+
+        CROSS JOIN LATERAL (
+          SELECT
+            COALESCE(
+              GREATEST(
+                candidate.departed_at,
+                candidate.dispatched_at
+              ),
+              candidate.departed_at,
+              candidate.dispatched_at,
+              candidate.scheduled_departure_at
+            ) AS effective_departure_at,
+
+            (
+              COALESCE(
+                GREATEST(
+                  candidate.departed_at,
+                  candidate.dispatched_at
+                ),
+                candidate.departed_at,
+                candidate.dispatched_at,
+                candidate.scheduled_departure_at
+              )
+              + (
+                  candidate.block_time_min
+                  * INTERVAL '1 minute'
+                )
+            ) AS effective_arrival_at
+        ) timing
 
          WHERE candidate.airline_id = fleet.airline_id
           AND candidate.aircraft_id = fleet.aircraft_id
@@ -407,8 +445,8 @@ router.get("/snapshot", requireAuth, async (req, res) => {
                 'DISPATCHED',
                 'EN_ROUTE'
               )
-              AND candidate.scheduled_departure_at <= sim.sim_time
-              AND candidate.scheduled_arrival_at > sim.sim_time
+              AND timing.effective_departure_at <= sim.sim_time
+              AND timing.effective_arrival_at > sim.sim_time
             )
 
             OR
@@ -488,8 +526,8 @@ router.get("/snapshot", requireAuth, async (req, res) => {
         ORDER BY
           CASE
             WHEN candidate.dispatch_status = 'RELEASED'
-             AND candidate.scheduled_departure_at <= sim.sim_time
-             AND candidate.scheduled_arrival_at > sim.sim_time
+             AND timing.effective_departure_at <= sim.sim_time
+             AND timing.effective_arrival_at > sim.sim_time
               THEN 1
 
             WHEN candidate.dispatch_status = 'NOT_DISPATCHED'
@@ -642,6 +680,15 @@ airlineCallsign: row.callsign || null,
           row.scheduled_departure_at || null,
         scheduledArrivalAt:
           row.scheduled_arrival_at || null,
+
+        dispatchedAt:
+          row.dispatched_at || null,
+        departedAt:
+          row.departed_at || null,
+        effectiveDepartureAt:
+          row.effective_departure_at || null,
+        effectiveArrivalAt:
+          row.effective_arrival_at || null,
 
         distanceNM: Number(row.distance_nm || 0),
         flightDirection:
