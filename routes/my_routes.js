@@ -1078,11 +1078,27 @@ for (const row of classRevenueResult.rows) {
               row.aircraft ||
               null,
             status: row.aircraft_status || null,
-            operational_status:
-              row.aircraft_operational_status || null,
-            maintenance_status:
-              row.aircraft_maintenance_status || null,
-            condition_pct: ACS_MR_number(row.condition_pct),
+
+operational_status:
+  row.aircraft_operational_status || null,
+
+maintenance_status:
+  row.aircraft_maintenance_status || null,
+
+c_check_status:
+  row.aircraft_c_check_status || null,
+
+d_check_status:
+  row.aircraft_d_check_status || null,
+
+maintenance_control_status:
+  row.aircraft_maintenance_control_status || null,
+
+maintenance_control_reason:
+  row.aircraft_maintenance_control_reason || null,
+
+condition_pct:
+  ACS_MR_number(row.condition_pct),
             base_icao: row.base_icao || null,
             current_airport: row.current_airport || null,
             reference_capacity: ACS_MR_integer(row.catalog_seats),
