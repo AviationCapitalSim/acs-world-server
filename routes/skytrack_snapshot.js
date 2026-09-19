@@ -118,16 +118,19 @@ router.get("/snapshot", requireAuth, async (req, res) => {
           COALESCE(al.color_hsl, 'hsl(220,70%,50%)') AS color_hsl,
           COALESCE(al.color_index, 0) AS color_index,
 
-                    af.id AS aircraft_id,
-          af.registration,
-          af.manufacturer,
-          af.aircraft_name,
-          af.model_key,
-          af.current_airport,
-          af.base_icao,
+          af.id AS aircraft_id,
+af.registration,
+af.manufacturer,
+af.aircraft_name,
+af.model_key,
 
-          af.operational_status
-            AS aircraft_operational_status,
+ac.speed_kts AS aircraft_speed_kts,
+
+af.current_airport,
+af.base_icao,
+
+af.operational_status
+  AS aircraft_operational_status,
           
           ams.maintenance_control_status,
           ams.maintenance_control_reason
@@ -138,8 +141,12 @@ router.get("/snapshot", requireAuth, async (req, res) => {
           ON al.airline_id = af.airline_id
 
         LEFT JOIN public.aircraft_maintenance_status ams
-          ON ams.aircraft_id = af.id
-         AND ams.airline_id = af.airline_id
+  ON ams.aircraft_id = af.id
+ AND ams.airline_id = af.airline_id
+
+LEFT JOIN public.aircraft_catalog ac
+  ON ac.model_key = af.model_key
+ AND ac.is_active = true
 
          WHERE UPPER(
           COALESCE(
@@ -630,10 +637,20 @@ airlineCallsign: row.callsign || null,
           row.aircraft_name || row.model_key || "-",
 
         modelKey:
-          row.model_key || null,
+  row.model_key || null,
 
-        baseICAO: row.base_icao || null,
-        base_icao: row.base_icao || null,
+speedKts:
+  Number.isFinite(Number(row.aircraft_speed_kts))
+    ? Number(row.aircraft_speed_kts)
+    : null,
+
+speed_kts:
+  Number.isFinite(Number(row.aircraft_speed_kts))
+    ? Number(row.aircraft_speed_kts)
+    : null,
+
+baseICAO: row.base_icao || null,
+base_icao: row.base_icao || null,
 
         state: row.state || "GROUND",
         positionType:
