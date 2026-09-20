@@ -230,14 +230,53 @@ router.get("/airports/catalog", requireAuth, async (req, res) => {
     const result = await pool.query(
       `
       WITH reserved_slots AS (
-        SELECT
-          airport_icao AS icao,
-          COUNT(*)::INTEGER AS reserved_slots
-        FROM public.airport_slot_bookings
-        WHERE slot_status = 'RESERVED'
-        GROUP BY airport_icao
+  SELECT
+    airport_icao AS icao,
+    COUNT(*)::INTEGER AS reserved_slots
+  FROM public.airport_slot_bookings
+  WHERE slot_status = 'RESERVED'
+  GROUP BY airport_icao
+),
+route_operator_airlines AS (
+  SELECT
+    UPPER(BTRIM(route.origin)) AS airport_icao,
+    route.airline_id
+  FROM public.route_plans route
+  WHERE UPPER(COALESCE(route.route_state, 'ACTIVE')) = 'ACTIVE'
+    AND UPPER(COALESCE(route.route_type, 'PASSENGER')) = 'PASSENGER'
+    AND route.airline_id IS NOT NULL
+    AND route.origin IS NOT NULL
+    AND BTRIM(route.origin) <> ''
+
+  UNION
+
+  SELECT
+    UPPER(BTRIM(route.destination)) AS airport_icao,
+    route.airline_id
+  FROM public.route_plans route
+  WHERE UPPER(COALESCE(route.route_state, 'ACTIVE')) = 'ACTIVE'
+    AND UPPER(COALESCE(route.route_type, 'PASSENGER')) = 'PASSENGER'
+    AND route.airline_id IS NOT NULL
+    AND route.destination IS NOT NULL
+    AND BTRIM(route.destination) <> ''
+),
+route_operators AS (
+  SELECT
+    roa.airport_icao,
+    COUNT(*)::INTEGER AS active_airlines,
+    JSONB_AGG(
+      JSONB_BUILD_OBJECT(
+        'airline_id', airline.airline_id,
+        'airline_name', airline.airline_name
       )
-      SELECT
+      ORDER BY LOWER(airline.airline_name), airline.airline_id
+    ) AS route_operators
+  FROM route_operator_airlines roa
+  INNER JOIN public.airlines airline
+    ON airline.airline_id = roa.airline_id
+  GROUP BY roa.airport_icao
+)
+SELECT
         aa.airport_id AS id,
         aa.icao,
         aa.iata,
@@ -359,7 +398,17 @@ aa.ticket_fee_percent
           ELSE 0
         END AS slot_utilization_pct,
 
-        aa.current_sim_time,
+COALESCE(
+  ro.active_airlines,
+  0
+)::INTEGER AS active_airlines,
+
+COALESCE(
+  ro.route_operators,
+  '[]'::JSONB
+) AS route_operators,
+
+aa.current_sim_time,
         aa.sim_year AS economic_year,
         aa.sim_year,
         aa.sim_month,
@@ -424,9 +473,12 @@ aa.ticket_fee_percent
         ON TRUE
 
       LEFT JOIN reserved_slots rs
-        ON rs.icao = aa.icao
+  ON rs.icao = aa.icao
 
-      ${whereSql}
+LEFT JOIN route_operators ro
+  ON ro.airport_icao = UPPER(BTRIM(aa.icao))
+
+${whereSql}
 
       ORDER BY
        ${ACS_REGION_SQL},
