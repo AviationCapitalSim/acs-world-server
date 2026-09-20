@@ -220,77 +220,24 @@ router.get("/airports/catalog", requireAuth, async (req, res) => {
       where.push(OPERATION_FILTERS[operation]);
     }
 
-    const airlineId = Number(req.airline_id);
+    values.push(limit);
 
-values.push(
-  Number.isInteger(airlineId) && airlineId > 0
-    ? airlineId
-    : null
-);
-
-const airlineIdParam = values.length;
-
-values.push(limit);
-
-const whereSql =
-  where.length > 0
-    ? `WHERE ${where.join(" AND ")}`
-    : "";
+    const whereSql =
+      where.length > 0
+        ? `WHERE ${where.join(" AND ")}`
+        : "";
 
     const result = await pool.query(
       `
       WITH reserved_slots AS (
-  SELECT
-    airport_icao AS icao,
-    COUNT(*)::INTEGER AS reserved_slots
-  FROM public.airport_slot_bookings
-  WHERE slot_status = 'RESERVED'
-  GROUP BY airport_icao
-),
-player_base AS (
-  SELECT
-    UPPER(BTRIM(u.base_icao)) AS base_icao
-  FROM public.users u
-  WHERE u.airline_id = $${airlineIdParam}
-    AND u.base_icao IS NOT NULL
-    AND BTRIM(u.base_icao) <> ''
-  LIMIT 1
-),
-route_operator_airlines AS (
-  SELECT DISTINCT
-    CASE
-      WHEN UPPER(BTRIM(asb.origin)) = pb.base_icao
-        THEN UPPER(BTRIM(asb.destination))
-      ELSE UPPER(BTRIM(asb.origin))
-    END AS destination_icao,
-    asb.airline_id
-  FROM public.airport_slot_bookings asb
-  CROSS JOIN player_base pb
-  WHERE asb.slot_status = 'RESERVED'
-    AND asb.airline_id IS NOT NULL
-    AND (
-      UPPER(BTRIM(asb.origin)) = pb.base_icao
-      OR UPPER(BTRIM(asb.destination)) = pb.base_icao
-    )
-),
-route_operators AS (
-  SELECT
-    roa.destination_icao,
-    COUNT(*)::INTEGER AS active_airlines,
-    JSONB_AGG(
-      JSONB_BUILD_OBJECT(
-        'airline_id', a.airline_id,
-        'airline_name', a.airline_name
+        SELECT
+          airport_icao AS icao,
+          COUNT(*)::INTEGER AS reserved_slots
+        FROM public.airport_slot_bookings
+        WHERE slot_status = 'RESERVED'
+        GROUP BY airport_icao
       )
-      ORDER BY LOWER(a.airline_name), a.airline_id
-    ) AS route_operators
-  FROM route_operator_airlines roa
-  INNER JOIN public.airlines a
-    ON a.airline_id = roa.airline_id
-  WHERE roa.destination_icao IS NOT NULL
-  GROUP BY roa.destination_icao
-)
-SELECT
+      SELECT
         aa.airport_id AS id,
         aa.icao,
         aa.iata,
@@ -412,17 +359,7 @@ aa.ticket_fee_percent
           ELSE 0
         END AS slot_utilization_pct,
 
-COALESCE(
-  ro.active_airlines,
-  0
-)::INTEGER AS active_airlines,
-
-COALESCE(
-  ro.route_operators,
-  '[]'::JSONB
-) AS route_operators,
-
-aa.current_sim_time,
+        aa.current_sim_time,
         aa.sim_year AS economic_year,
         aa.sim_year,
         aa.sim_month,
@@ -487,12 +424,9 @@ aa.current_sim_time,
         ON TRUE
 
       LEFT JOIN reserved_slots rs
-  ON rs.icao = aa.icao
+        ON rs.icao = aa.icao
 
-LEFT JOIN route_operators ro
-  ON ro.destination_icao = UPPER(BTRIM(aa.icao))
-
-${whereSql}
+      ${whereSql}
 
       ORDER BY
        ${ACS_REGION_SQL},
