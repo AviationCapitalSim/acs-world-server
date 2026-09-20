@@ -473,351 +473,103 @@ function validateCreateAirlinePayload(payload) {
   };
 }
 
-  }
-);
-
 /* ============================================================
-   GET ROUTE OPERATORS
+   GET ACTIVE AIRLINES
    ------------------------------------------------------------
-   Global ACS authority for the AIRLINES airport-table column.
+   Public player directory for authenticated ACS users.
 
-   Designed for:
-   - 8 current airlines.
-   - 200 to 700 future airlines.
-   - One PostgreSQL request per continent page.
-   - No request per airport.
-   - No complete airline directory sent to the browser.
-   - No special treatment for the authenticated airline.
+   An airline is considered active when:
+   - The airline exists.
+   - It is linked to its user.
+   - The user has completed base assignment.
+
+   Exposes only:
+   - Airline name.
+   - Country.
+   - Base ICAO.
+
+   No passenger data.
+   No user data.
+   No image data.
    ============================================================ */
 
 router.get(
-  "/airlines/route-operators",
+  "/airlines/active",
   requireAuth,
   async (req, res) => {
     try {
-      const userId =
-        Number(req.user_id);
+   const result = await pool.query(
+  `
+  SELECT
+    a.airline_id,
+    a.airline_name,
+    a.country,
+    a.business_model,
 
-      const airlineId =
-        Number(req.airline_id);
+    UPPER(BTRIM(u.base_icao))
+      AS base_icao,
 
-      if (
-        !Number.isInteger(userId) ||
-        userId <= 0 ||
-        !Number.isInteger(airlineId) ||
-        airlineId <= 0
-      ) {
-        return res.status(401).json({
-          ok: false,
-          error: "NO_AIRLINE_SESSION"
-        });
-      }
+    UPPER(BTRIM(airport.country))
+      AS country_code,
 
-      const continent =
-        String(
-          req.query?.continent || ""
-        ).trim();
+    (
+      SELECT COUNT(*)::INTEGER
+      FROM public.aircraft_fleet af
+      WHERE af.airline_id = a.airline_id
+    ) AS active_aircraft,
 
-      const allowedContinents =
-        new Set([
-          "South America",
-          "Europe",
-          "Asia",
-          "Africa",
-          "North America",
-          "Oceania",
-          "Middle East"
-        ]);
-
-      if (
-        !allowedContinents.has(continent)
-      ) {
-        return res.status(400).json({
-          ok: false,
-          error: "INVALID_CONTINENT"
-        });
-      }
-
-      const result =
-        await pool.query(
-          `
-          WITH player_base AS MATERIALIZED (
-            SELECT
-              UPPER(
-                BTRIM(player.base_icao)
-              ) AS origin_icao
-
-            FROM public.users player
-
-            WHERE player.user_id = $1
-              AND player.airline_id = $2
-              AND player.base_icao IS NOT NULL
-              AND BTRIM(player.base_icao) <> ''
-
-            LIMIT 1
-          ),
-
-          connected_operators AS MATERIALIZED (
-            SELECT
-              UPPER(
-                BTRIM(route.destination)
-              ) AS destination_icao,
-
-              route.airline_id
-
-            FROM public.route_plans route
-
-            CROSS JOIN player_base base
-
-            WHERE UPPER(
-              BTRIM(route.origin)
-            ) = base.origin_icao
-
-              AND UPPER(
-                COALESCE(
-                  route.route_state,
-                  'ACTIVE'
-                )
-              ) = 'ACTIVE'
-
-              AND UPPER(
-                COALESCE(
-                  route.route_type,
-                  'PASSENGER'
-                )
-              ) = 'PASSENGER'
-
-            UNION
-
-            SELECT
-              UPPER(
-                BTRIM(route.origin)
-              ) AS destination_icao,
-
-              route.airline_id
-
-            FROM public.route_plans route
-
-            CROSS JOIN player_base base
-
-            WHERE UPPER(
-              BTRIM(route.destination)
-            ) = base.origin_icao
-
-              AND UPPER(
-                COALESCE(
-                  route.route_state,
-                  'ACTIVE'
-                )
-              ) = 'ACTIVE'
-
-              AND UPPER(
-                COALESCE(
-                  route.route_type,
-                  'PASSENGER'
-                )
-              ) = 'PASSENGER'
-          ),
-
-          eligible_operators AS MATERIALIZED (
-            SELECT
-              connected.destination_icao,
-              airline.airline_id,
-              airline.airline_name
-
-            FROM connected_operators connected
-
-            INNER JOIN public.airlines airline
-              ON airline.airline_id =
-                 connected.airline_id
-
-            INNER JOIN
-              public.v_acs_airport_authority_current
-                destination_airport
-              ON UPPER(
-                   BTRIM(
-                     destination_airport.icao
-                   )
-                 ) =
-                 connected.destination_icao
-
-            WHERE connected.destination_icao
-                  ~ '^[A-Z0-9]{4}$'
-
-              AND connected.destination_icao <>
-                  (
-                    SELECT origin_icao
-                    FROM player_base
-                  )
-
-              AND (
-                CASE
-                  WHEN UPPER(
-                    destination_airport.country
-                  ) IN (
-                    'AE',
-                    'BH',
-                    'IQ',
-                    'IR',
-                    'IL',
-                    'JO',
-                    'KW',
-                    'LB',
-                    'OM',
-                    'PS',
-                    'QA',
-                    'SA',
-                    'SY',
-                    'TR',
-                    'YE'
-                  )
-                  THEN 'Middle East'
-
-                  ELSE
-                    destination_airport.continent
-                END
-              ) = $3
-
-              AND EXISTS (
-                SELECT 1
-
-                FROM public.users owner
-
-                WHERE owner.airline_id =
-                      airline.airline_id
-
-                  AND owner.base_icao IS NOT NULL
-                  AND BTRIM(owner.base_icao) <> ''
-              )
-          ),
-
-          route_markets AS MATERIALIZED (
-            SELECT
-              operators.destination_icao,
-
-              COUNT(*)::INTEGER
-                AS active_airlines,
-
-              JSONB_AGG(
-                JSONB_BUILD_OBJECT(
-                  'airline_id',
-                    operators.airline_id,
-
-                  'airline_name',
-                    operators.airline_name,
-
-                  'status',
-                    'ACTIVE'
-                )
-
-                ORDER BY
-                  LOWER(
-                    operators.airline_name
-                  ) ASC,
-
-                  operators.airline_id ASC
-              )
-                AS operators
-
-            FROM eligible_operators operators
-
-            GROUP BY
-              operators.destination_icao
+    (
+      SELECT COUNT(*)::INTEGER
+      FROM public.route_plans rp
+      WHERE rp.airline_id = a.airline_id
+        AND UPPER(
+          COALESCE(
+            rp.route_state,
+            'ACTIVE'
           )
+        ) = 'ACTIVE'
+    ) AS active_routes,
 
-          SELECT
-            base.origin_icao,
+    NULL::NUMERIC
+      AS company_value,
 
-            (
-              SELECT COUNT(*)::INTEGER
-              FROM route_markets
-            )
-              AS route_markets,
+    NULL::INTEGER
+      AS global_rank
 
-            COALESCE(
-              (
-                SELECT JSONB_AGG(
-                  JSONB_BUILD_OBJECT(
-                    'destination_icao',
-                      market.destination_icao,
+  FROM public.airlines a
 
-                    'active_airlines',
-                      market.active_airlines,
+  INNER JOIN public.users u
+    ON u.airline_id = a.airline_id
 
-                    'operators',
-                      market.operators
-                  )
+  LEFT JOIN
+    public.v_acs_airport_authority_current
+      airport
+    ON UPPER(airport.icao) =
+       UPPER(BTRIM(u.base_icao))
 
-                  ORDER BY
-                    market.destination_icao ASC
-                )
+  WHERE u.base_icao IS NOT NULL
+    AND BTRIM(u.base_icao) <> ''
 
-                FROM route_markets market
-              ),
-              '[]'::JSONB
-            )
-              AS routes
-
-          FROM player_base base
-          `,
-          [
-            userId,
-            airlineId,
-            continent
-          ]
-        );
-
-      if (!result.rows.length) {
-        return res.status(404).json({
-          ok: false,
-          error: "PLAYER_BASE_NOT_FOUND"
-        });
-      }
-
-      const payload =
-        result.rows[0];
+  ORDER BY
+    LOWER(a.airline_name),
+    a.airline_id
+  `
+);
 
       return res.json({
         ok: true,
-
-        endpoint:
-          "ACS_ROUTE_OPERATORS",
-
-        version:
-          "v1.0",
-
-        authority:
-          "POSTGRESQL_ACTIVE_ROUTE_PLANS",
-
-        continent,
-
-        origin_icao:
-          String(
-            payload.origin_icao || ""
-          )
-            .trim()
-            .toUpperCase(),
-
-        route_markets:
-          Number(
-            payload.route_markets || 0
-          ),
-
-        routes:
-          Array.isArray(payload.routes)
-            ? payload.routes
-            : []
+        count: result.rows.length,
+        airlines: result.rows
       });
     } catch (err) {
       console.error(
-        "GET ROUTE OPERATORS ERROR:",
+        "GET ACTIVE AIRLINES ERROR:",
         err
       );
 
       return res.status(500).json({
         ok: false,
-        error:
-          "ROUTE_OPERATORS_FAILED"
+        error: "ACTIVE_AIRLINES_FAILED"
       });
     }
   }
