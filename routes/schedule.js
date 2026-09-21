@@ -8041,7 +8041,12 @@ const conflictResult = await client.query(
              + COALESCE(existing.turnaround_min, 0)
 
       WHEN existing.item_type = 'service'
-           AND UPPER(COALESCE(existing.service_type, '')) = 'A'
+           AND UPPER(
+             COALESCE(existing.service_type, '')
+           ) IN (
+             'A',
+             'A_CHECK'
+           )
         THEN existing.arr_abs_min
 
       ELSE NULL
@@ -8053,26 +8058,54 @@ const conflictResult = await client.query(
     ON rp.id = target.route_plan_id
    AND rp.airline_id = target.airline_id
 
+  /*
+   * ACS weekly schedule is circular.
+   *
+   * These three positions allow the comparison to detect:
+   * - Normal conflicts inside the same week.
+   * - Sunday operations extending into Monday.
+   * - Monday operations conflicting with Sunday services.
+   */
+  CROSS JOIN LATERAL (
+    VALUES
+      (-10080),
+      (0),
+      (10080)
+  ) AS week_shift(offset_minutes)
+
   JOIN public.schedule_items existing
     ON existing.airline_id = target.airline_id
    AND existing.aircraft_id = $3
 
    AND (
      existing.item_type = 'flight'
+
      OR (
        existing.item_type = 'service'
-       AND UPPER(COALESCE(existing.service_type, '')) = 'A'
+
+       AND UPPER(
+         COALESCE(existing.service_type, '')
+       ) IN (
+         'A',
+         'A_CHECK'
+       )
      )
    )
 
-   AND LOWER(COALESCE(existing.status, 'planned'))
-       NOT IN ('cancelled', 'completed')
+   AND LOWER(
+     COALESCE(existing.status, 'planned')
+   ) NOT IN (
+     'cancelled',
+     'completed'
+   )
 
    AND target.dep_abs_min IS NOT NULL
    AND existing.dep_abs_min IS NOT NULL
    AND existing.arr_abs_min IS NOT NULL
 
-   /* Do not compare the target route against itself. */
+   /*
+    * Do not compare the target route against itself.
+    */
    AND (
      existing.route_plan_id IS NULL
      OR existing.route_plan_id <> target.route_plan_id
@@ -8081,14 +8114,15 @@ const conflictResult = await client.query(
    /* ------------------------------------------------------
       REAL WEEKLY INTERVAL OVERLAP
 
-      target:
-      DEP -> rotation -> final turnaround -> NEXT FLIGHT
+      Target flight:
+      departure -> complete rotation -> final turnaround
+      -> Next Flight availability
 
-      existing A:
-      A start -> A end
+      Existing A-Check:
+      start -> complete 5-hour maintenance window
 
-      existing flight:
-      DEP -> arrival + final turnaround
+      Exact boundary contact is allowed:
+      A end == flight start means no conflict.
       ------------------------------------------------------ */
 
    AND target.dep_abs_min
@@ -8096,43 +8130,112 @@ const conflictResult = await client.query(
        CASE
          WHEN existing.item_type = 'flight'
            THEN existing.arr_abs_min
-                + COALESCE(existing.turnaround_min, 0)
+                + COALESCE(
+                    existing.turnaround_min,
+                    0
+                  )
+                + week_shift.offset_minutes
 
          WHEN existing.item_type = 'service'
-              AND UPPER(COALESCE(existing.service_type, '')) = 'A'
+              AND UPPER(
+                COALESCE(
+                  existing.service_type,
+                  ''
+                )
+              ) IN (
+                'A',
+                'A_CHECK'
+              )
            THEN existing.arr_abs_min
+                + week_shift.offset_minutes
 
          ELSE NULL
        END
 
    AND existing.dep_abs_min
+       + week_shift.offset_minutes
        <
        (
          target.dep_abs_min
          +
          (
-           COALESCE(rp.total_rotation_min, 0)
+           COALESCE(
+             rp.total_rotation_min,
+             0
+           )
            +
-           COALESCE(rp.turnaround_min, 0)
+           COALESCE(
+             rp.turnaround_min,
+             0
+           )
          )
        )
 
   WHERE target.route_plan_id = $1
     AND target.airline_id = $2
     AND target.item_type = 'flight'
-    AND LOWER(COALESCE(target.status, 'planned')) <> 'cancelled'
+
+    AND LOWER(
+      COALESCE(target.status, 'planned')
+    ) <> 'cancelled'
 
   LIMIT 1
   `,
-  [routePlanId, airlineId, aircraftId]
+  [
+    routePlanId,
+    airlineId,
+    aircraftId
+  ]
 );
 
-    if (conflictResult.rows.length) {
-      const error = new Error("AIRCRAFT_SCHEDULE_CONFLICT");
-      error.code = "AIRCRAFT_SCHEDULE_CONFLICT";
-      error.conflict = conflictResult.rows[0];
-      throw error;
-    }
+if (conflictResult.rows.length) {
+  const conflict =
+    conflictResult.rows[0];
+
+  const conflictsWithACheck =
+    ACS_text(
+      conflict.existing_item_type
+    ).toLowerCase() === "service" &&
+
+    [
+      "A",
+      "A_CHECK"
+    ].includes(
+      ACS_text(
+        conflict.existing_service_type
+      ).toUpperCase()
+    );
+
+  const error =
+    new Error(
+      conflictsWithACheck
+        ? (
+            `Schedule Conflict: aircraft ` +
+            `${aircraft.registration} has an ` +
+            `A-Check on ` +
+            `${ACS_text(
+              conflict.existing_day
+            ).toUpperCase()} ` +
+            `${ACS_text(
+              conflict.existing_departure
+            )}–` +
+            `${ACS_text(
+              conflict.existing_arrival
+            )}. ` +
+            `The complete 5-hour A-Check window ` +
+            `must remain free of flights.`
+          )
+        : "AIRCRAFT_SCHEDULE_CONFLICT"
+    );
+
+  error.code =
+    "AIRCRAFT_SCHEDULE_CONFLICT";
+
+  error.conflict =
+    conflict;
+
+  throw error;
+}
 
     await client.query(
       `
