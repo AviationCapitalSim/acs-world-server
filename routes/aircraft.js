@@ -10405,10 +10405,115 @@ const systemRefresh = {
     const airlineListings =
       airlineListingsResult.rows;
 
-    const usedMarketListings = [
+        const usedMarketListings = [
       ...airlineListings,
       ...systemListings
     ];
+
+    const marketPricingResult = await client.query(
+      `
+      SELECT
+        ac.model_key,
+        ac.price_acs_usd,
+        ac.aircraft_category AS catalog_category,
+        ac.aircraft_name AS catalog_name,
+        ac.seats AS catalog_seats,
+        amp.*,
+        acs_get_current_sim_time() AS current_sim_time
+      FROM aircraft_catalog ac
+      JOIN aircraft_maintenance_policy amp
+        ON amp.is_active = TRUE
+       AND amp.aircraft_category = 'ANY'
+       AND amp.era_start_year <=
+           EXTRACT(YEAR FROM acs_get_current_sim_time())
+       AND amp.era_end_year >=
+           EXTRACT(YEAR FROM acs_get_current_sim_time())
+      WHERE ac.model_key = ANY($1::text[])
+      ORDER BY amp.era_start_year DESC
+      `,
+      [usedMarketListings.map(ac => ac.model_key)]
+    );
+
+    const marketPricingByModel = new Map();
+
+    for (const row of marketPricingResult.rows) {
+      const category =
+        String(row.catalog_category || "").toUpperCase();
+
+      const name =
+        String(row.catalog_name || "").toUpperCase();
+
+      const seats =
+        Number(row.catalog_seats || 0);
+
+      const sizeClass =
+        category.includes("WIDEBODY") ||
+        ["747", "DC-10", "L-1011", "A300", "A310"]
+          .some(model => name.includes(model)) ||
+        seats >= 220
+          ? "HEAVY"
+          : category.includes("NARROWBODY") ||
+            category.includes("REGIONAL") ||
+            [
+              "707", "720", "727", "737", "DC-8",
+              "DC-9", "CONSTELLATION", "DC-6", "DC-7"
+            ].some(model => name.includes(model)) ||
+            seats >= 80
+            ? "MEDIUM"
+            : "LIGHT";
+
+      if (
+        row.aircraft_size_class !== sizeClass ||
+        marketPricingByModel.has(row.model_key)
+      ) {
+        continue;
+      }
+
+      marketPricingByModel.set(row.model_key, row);
+    }
+
+    for (const listing of usedMarketListings) {
+      const policy =
+        marketPricingByModel.get(listing.model_key);
+
+      listing.maintenance_estimate = {
+        c_check: null,
+        d_check: null
+      };
+
+      if (!policy) continue;
+
+      try {
+        const aircraft = {
+          ...listing,
+          price_acs_usd: policy.price_acs_usd,
+          currency: "USD"
+        };
+
+        listing.maintenance_estimate.c_check =
+          ACS_calculateMaintenancePrice({
+            aircraft,
+            policy,
+            checkType: "C_CHECK",
+            simTime: policy.current_sim_time
+          }).final_cost;
+
+        listing.maintenance_estimate.d_check =
+          ACS_calculateMaintenancePrice({
+            aircraft,
+            policy,
+            checkType: "D_CHECK",
+            simTime: policy.current_sim_time
+          }).final_cost;
+
+      } catch (error) {
+        console.warn(
+          "USED_MARKET_QUOTE_UNAVAILABLE",
+          listing.id,
+          error.message
+        );
+      }
+    }
      
     await client.query("COMMIT");
 
