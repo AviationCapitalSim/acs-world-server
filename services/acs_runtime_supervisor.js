@@ -1,4 +1,5 @@
 import { pool } from "../db/pool.js";
+import { ACS_isWorldActive } from "./acs_world_control.js";
 
 const ACS_RUNTIME_LOCK_NAMESPACE = 1095783251;
 const ACS_RUNTIME_HANDLERS = new Map();
@@ -247,6 +248,10 @@ async function ACS_executeRuntimePoll() {
   ACS_runtimePollRunning = true;
 
   try {
+    if (!(await ACS_isWorldActive())) {
+      return;
+    }
+
     const result = await pool.query(
       `
       WITH sim_clock AS MATERIALIZED (
@@ -289,7 +294,7 @@ async function ACS_executeRuntimePoll() {
       `
     );
 
-      if (result.rowCount > 0) {
+    if (result.rowCount > 0) {
       console.log(
         `[ACS RUNTIME] OBSERVE heartbeat: ${result.rowCount} jobs`
       );
@@ -297,7 +302,6 @@ async function ACS_executeRuntimePoll() {
 
     await ACS_executeActiveRuntimeJobs();
 
-    
   } catch (error) {
     console.error(
       "[ACS RUNTIME] Supervisor poll failed:",
